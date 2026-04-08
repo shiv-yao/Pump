@@ -1,7 +1,0 @@
-fastapi==0.115.12
-uvicorn[standard]==0.34.0
-streamlit==1.44.1
-httpx==0.28.1
-websockets==15.0.1
-solders==0.26.0
-pydantic==2.11.3
