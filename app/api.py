@@ -2,6 +2,7 @@
 import os
 import asyncio
 import importlib
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
@@ -9,22 +10,19 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.state import engine
+from app.execution.jupiter_exec import execute_swap
+from app.config import SOL_MINT as SOL, SOL_DECIMALS
 
-
-# =========================================================
-# ENGINE IMPORT RESOLVER
-# Compatible with:
-# - app.engine
-# - app.engine.main
-# - app.core.engine
-# - app.engine.v62
-# - older/future layouts
-# =========================================================
 
 ENGINE_TASK: Optional[asyncio.Task] = None
 ENGINE_MAIN_LOOP = None
 ENGINE_GET_METRICS = None
+ENGINE_MODULE = None
 
+
+# =========================================================
+# FALLBACK METRICS
+# =========================================================
 
 def _safe_get_metrics_fallback() -> Dict[str, Any]:
     positions = getattr(engine, "positions", []) or []
@@ -40,6 +38,10 @@ def _safe_get_metrics_fallback() -> Dict[str, Any]:
     return_pct = (total_return / start_capital) if start_capital > 0 else 0.0
     drawdown = ((peak_capital - capital) / peak_capital) if peak_capital > 0 else 0.0
 
+    wins = int(stats.get("wins", 0))
+    losses = int(stats.get("losses", 0))
+    trade_count = len(trades)
+
     return {
         "summary": {
             "capital": capital,
@@ -52,12 +54,10 @@ def _safe_get_metrics_fallback() -> Dict[str, Any]:
             "mode": "REAL" if str(os.getenv("REAL_TRADING", "false")).lower() == "true" else "PAPER",
         },
         "performance": {
-            "trades": len(trades),
-            "wins": int(stats.get("wins", 0)),
-            "losses": int(stats.get("losses", 0)),
-            "win_rate": (
-                int(stats.get("wins", 0)) / len(trades) if len(trades) > 0 else 0.0
-            ),
+            "trades": trade_count,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": (wins / trade_count) if trade_count > 0 else 0.0,
             "profit_factor": 0.0,
             "total_return": total_return,
         },
@@ -77,13 +77,22 @@ def _safe_get_metrics_fallback() -> Dict[str, Any]:
     }
 
 
+# =========================================================
+# ENGINE IMPORT RESOLVER
+# =========================================================
+
 def _resolve_engine_module():
-    global ENGINE_MAIN_LOOP, ENGINE_GET_METRICS
+    global ENGINE_MAIN_LOOP, ENGINE_GET_METRICS, ENGINE_MODULE
 
     candidates = [
-        "app.engine",
+        "app.main",          # 你目前這版最重要
         "app.engine.main",
+        "app.engine",
         "app.core.engine",
+        "app.engine.v66",
+        "app.engine.v65",
+        "app.engine.v64",
+        "app.engine.v63",
         "app.engine.v62",
         "app.engine.v61",
         "app.engine.v60",
@@ -99,13 +108,16 @@ def _resolve_engine_module():
             if callable(main_loop):
                 ENGINE_MAIN_LOOP = main_loop
                 ENGINE_GET_METRICS = get_metrics if callable(get_metrics) else _safe_get_metrics_fallback
+                ENGINE_MODULE = mod
                 print(f"✅ ENGINE LOADED: {mod_name}")
                 return mod
+
         except Exception as e:
             print(f"ENGINE_IMPORT_SKIP {mod_name}: {e}")
 
     ENGINE_MAIN_LOOP = None
     ENGINE_GET_METRICS = _safe_get_metrics_fallback
+    ENGINE_MODULE = None
     print("⚠️ NO REAL ENGINE MODULE FOUND; USING FALLBACK METRICS")
     return None
 
@@ -123,43 +135,42 @@ def ensure_engine():
     engine.start_capital = float(getattr(engine, "start_capital", engine.capital))
     engine.peak_capital = float(getattr(engine, "peak_capital", engine.capital))
 
-    engine.running = bool(getattr(engine, "running", True))
+    engine.running = bool(getattr(engine, "running", False))
     engine.no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0))
 
     engine.last_signal = getattr(engine, "last_signal", "")
     engine.last_trade = getattr(engine, "last_trade", "")
 
     engine.stats = getattr(engine, "stats", {})
-    engine.stats.setdefault("signals", 0)
-    engine.stats.setdefault("executed", 0)
-    engine.stats.setdefault("rejected", 0)
-    engine.stats.setdefault("errors", 0)
-    engine.stats.setdefault("open_positions", 0)
-    engine.stats.setdefault("open_exposure", 0.0)
-    engine.stats.setdefault("trades", 0)
-    engine.stats.setdefault("wins", 0)
-    engine.stats.setdefault("losses", 0)
-    engine.stats.setdefault("forced_trades", 0)
+    defaults = {
+        "signals": 0,
+        "executed": 0,
+        "rejected": 0,
+        "errors": 0,
+        "open_positions": 0,
+        "open_exposure": 0.0,
+        "trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "forced_trades": 0,
+    }
+    for k, v in defaults.items():
+        engine.stats.setdefault(k, v)
 
 
 def push_log(msg: str):
     print(msg)
     engine.logs.append(str(msg))
-    engine.logs = engine.logs[-1000:]
+    engine.logs = engine.logs[-1200:]
 
 
 # =========================================================
-# V63 / V64 BOOT
+# ENGINE RUNNER
 # =========================================================
 
 async def _engine_runner():
-    """
-    V63 = real trading loop
-    V64 = AI fund brain loop
-    This wrapper keeps Railway alive and captures crash logs.
-    """
     ensure_engine()
-    push_log("🚀 V63/V64 COMPLETE LIVE ENGINE START")
+    push_log("🚀 V66 API ENGINE RUNNER START")
 
     if ENGINE_MAIN_LOOP is None:
         push_log("❌ ENGINE_MAIN_LOOP missing")
@@ -179,6 +190,12 @@ async def _engine_runner():
 async def start_engine_task():
     global ENGINE_TASK
 
+    ensure_engine()
+    _resolve_engine_module()
+
+    if ENGINE_MAIN_LOOP is None:
+        raise RuntimeError("engine_main_loop_not_found")
+
     if ENGINE_TASK and not ENGINE_TASK.done():
         return False
 
@@ -197,6 +214,8 @@ async def stop_engine_task():
         ENGINE_TASK.cancel()
         try:
             await ENGINE_TASK
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
 
@@ -215,7 +234,10 @@ async def lifespan(app: FastAPI):
 
     auto_start = str(os.getenv("AUTO_START_ENGINE", "true")).lower() == "true"
     if auto_start:
-        await start_engine_task()
+        try:
+            await start_engine_task()
+        except Exception as e:
+            push_log(f"⚠️ AUTO_START_FAIL: {e}")
 
     yield
 
@@ -223,8 +245,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="V63/V64 Pump Trading API",
-    version="63.64.0",
+    title="V66 Pump Trading API",
+    version="66.0.0",
     lifespan=lifespan,
 )
 
@@ -237,9 +259,10 @@ app = FastAPI(
 async def root():
     return {
         "status": "ok",
-        "name": "V63/V64 COMPLETE LIVE ENGINE",
+        "name": "V66 COMPLETE LIVE ENGINE API",
         "real_trading": str(os.getenv("REAL_TRADING", "false")).lower() == "true",
         "engine_running": bool(getattr(engine, "running", False)),
+        "task_alive": bool(ENGINE_TASK and not ENGINE_TASK.done()),
     }
 
 
@@ -251,6 +274,8 @@ async def health():
         "task_alive": bool(ENGINE_TASK and not ENGINE_TASK.done()),
         "real_trading": str(os.getenv("REAL_TRADING", "false")).lower() == "true",
         "capital": float(getattr(engine, "capital", 0.0)),
+        "positions": len(getattr(engine, "positions", []) or []),
+        "errors": int((getattr(engine, "stats", {}) or {}).get("errors", 0)),
     }
 
 
@@ -282,12 +307,16 @@ async def logs(limit: int = 200):
 
 @app.post("/start")
 async def start():
-    started = await start_engine_task()
-    return {
-        "ok": True,
-        "started": started,
-        "engine_running": bool(getattr(engine, "running", False)),
-    }
+    try:
+        started = await start_engine_task()
+        return {
+            "ok": True,
+            "started": started,
+            "engine_running": bool(getattr(engine, "running", False)),
+            "task_alive": bool(ENGINE_TASK and not ENGINE_TASK.done()),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"start_error: {e}")
 
 
 @app.post("/stop")
@@ -296,6 +325,20 @@ async def stop():
     return {
         "ok": True,
         "engine_running": bool(getattr(engine, "running", False)),
+        "task_alive": bool(ENGINE_TASK and not ENGINE_TASK.done()),
+    }
+
+
+@app.post("/restart")
+async def restart():
+    await stop_engine_task()
+    await asyncio.sleep(1)
+    started = await start_engine_task()
+    return {
+        "ok": True,
+        "started": started,
+        "engine_running": bool(getattr(engine, "running", False)),
+        "task_alive": bool(ENGINE_TASK and not ENGINE_TASK.done()),
     }
 
 
@@ -341,36 +384,139 @@ async def signal():
 
 @app.get("/config")
 async def config():
+    keys = [
+        "REAL_TRADING",
+        "AUTO_START_ENGINE",
+        "MAX_POSITIONS",
+        "MAX_EXPOSURE",
+        "MAX_POSITION_SIZE",
+        "TAKE_PROFIT",
+        "STOP_LOSS",
+        "ENTRY_THRESHOLD",
+        "SOLANA_RPC_HTTP",
+        "SOLANA_RPC_WSS",
+        "JUP_BASE_API",
+        "USE_JITO",
+        "BIRDEYE_API_KEY",
+        "MIN_LIQUIDITY_TRADE",
+        "TOP_K_PRESELECT",
+        "TOP_N_TO_TRADE",
+        "TOKEN_COOLDOWN",
+    ]
+    return {k: os.getenv(k) for k in keys}
+
+
+# =========================================================
+# MANUAL TRADE HELPERS
+# =========================================================
+
+def _find_position_by_mint(mint: str):
+    positions = getattr(engine, "positions", []) or []
+    for p in positions:
+        if p.get("mint") == mint:
+            return p
+    return None
+
+
+async def _fallback_manual_buy(mint: str, amount_sol: float):
+    amt_atomic = int(amount_sol * SOL_DECIMALS)
+    res = await execute_swap(SOL, mint, amt_atomic)
+
+    if not res:
+        raise RuntimeError("empty_swap_result")
+
+    if res.get("error"):
+        raise RuntimeError(str(res.get("error")))
+
+    out_amount = int((res.get("quote", {}) or {}).get("outAmount") or 0)
+    tx_sig = res.get("result") if isinstance(res.get("result"), str) else res.get("signature")
+
+    price_guess = 0.0
+    if out_amount > 0:
+        try:
+            price_guess = amt_atomic / out_amount
+        except Exception:
+            price_guess = 0.0
+
+    position = {
+        "mint": mint,
+        "entry": price_guess,
+        "size": amount_sol,
+        "order_sol": amount_sol,
+        "token_amount_atomic": out_amount,
+        "time": time.time(),
+        "mode": "manual",
+        "source": "manual_api",
+        "meta": {"manual": True},
+        "price_source": "manual_api",
+        "liq": 0,
+        "high": price_guess,
+        "wallet_count": 0,
+        "tx_buy": tx_sig,
+        "forced": False,
+        "paper": bool(res.get("paper")),
+        "score": 0.0,
+        "tier": "MANUAL",
+    }
+
+    engine.positions.append(position)
+    engine.capital = max(float(getattr(engine, "capital", 0.0)) - amount_sol, 0.0)
+    engine.stats["executed"] = int(engine.stats.get("executed", 0)) + 1
+    engine.stats["signals"] = int(engine.stats.get("signals", 0)) + 1
+    engine.last_trade = f"MANUAL BUY {mint[:6]} sol={amount_sol:.4f}"
+    engine.last_signal = engine.last_trade
+    push_log(engine.last_trade)
+
     return {
-        "REAL_TRADING": str(os.getenv("REAL_TRADING", "false")).lower() == "true",
-        "AUTO_START_ENGINE": str(os.getenv("AUTO_START_ENGINE", "true")).lower() == "true",
-        "MAX_POSITIONS": os.getenv("MAX_POSITIONS"),
-        "MAX_EXPOSURE": os.getenv("MAX_EXPOSURE"),
-        "MAX_POSITION_SIZE": os.getenv("MAX_POSITION_SIZE"),
-        "TAKE_PROFIT": os.getenv("TAKE_PROFIT"),
-        "STOP_LOSS": os.getenv("STOP_LOSS"),
-        "ENTRY_THRESHOLD": os.getenv("ENTRY_THRESHOLD"),
-        "SOLANA_RPC_HTTP": os.getenv("SOLANA_RPC_HTTP"),
-        "SOLANA_RPC_WSS": os.getenv("SOLANA_RPC_WSS"),
-        "JUP_BASE_API": os.getenv("JUP_BASE_API"),
-        "USE_JITO": os.getenv("USE_JITO"),
+        "swap": res,
+        "position": position,
+    }
+
+
+async def _fallback_manual_sell(mint: str, pct: float):
+    pos = _find_position_by_mint(mint)
+    if not pos:
+        raise RuntimeError("position_not_found")
+
+    token_amount_atomic = int(pos.get("token_amount_atomic") or 0)
+    if token_amount_atomic <= 0:
+        raise RuntimeError("token_amount_atomic_missing")
+
+    sell_atomic = int(token_amount_atomic * pct)
+    if sell_atomic <= 0:
+        raise RuntimeError("sell_amount_zero")
+
+    res = await execute_swap(mint, SOL, sell_atomic)
+    if not res:
+        raise RuntimeError("empty_swap_result")
+    if res.get("error"):
+        raise RuntimeError(str(res.get("error")))
+
+    if pct >= 0.999:
+        try:
+            engine.positions.remove(pos)
+        except ValueError:
+            pass
+    else:
+        pos["token_amount_atomic"] = max(token_amount_atomic - sell_atomic, 0)
+        pos["size"] = float(pos.get("size", 0.0)) * (1 - pct)
+
+    engine.last_trade = f"MANUAL SELL {mint[:6]} pct={pct:.2f}"
+    push_log(engine.last_trade)
+
+    return {
+        "swap": res,
+        "mint": mint,
+        "pct": pct,
     }
 
 
 # =========================================================
-# MANUAL V63 REAL TRADE ENDPOINTS
+# MANUAL TRADE ENDPOINTS
 # =========================================================
 
 @app.post("/trade/buy")
 async def trade_buy(payload: Dict[str, Any]):
-    """
-    Manual buy endpoint for V63 real trading.
-    Expected payload:
-    {
-        "mint": "...",
-        "amount_sol": 0.02
-    }
-    """
     mint = str(payload.get("mint", "")).strip()
     amount_sol = float(payload.get("amount_sol", 0.0))
 
@@ -381,15 +527,16 @@ async def trade_buy(payload: Dict[str, Any]):
 
     try:
         mod = _resolve_engine_module()
-        if mod is None:
-            raise HTTPException(status_code=500, detail="engine_not_loaded")
 
-        manual_buy = getattr(mod, "manual_buy", None)
-        if not callable(manual_buy):
-            raise HTTPException(status_code=500, detail="manual_buy_not_implemented_in_engine")
+        if mod is not None:
+            manual_buy = getattr(mod, "manual_buy", None)
+            if callable(manual_buy):
+                res = await manual_buy(mint, amount_sol)
+                return {"ok": True, "result": res}
 
-        res = await manual_buy(mint, amount_sol)
+        res = await _fallback_manual_buy(mint, amount_sol)
         return {"ok": True, "result": res}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -398,14 +545,6 @@ async def trade_buy(payload: Dict[str, Any]):
 
 @app.post("/trade/sell")
 async def trade_sell(payload: Dict[str, Any]):
-    """
-    Manual sell endpoint for V63 real trading.
-    Expected payload:
-    {
-        "mint": "...",
-        "pct": 1.0
-    }
-    """
     mint = str(payload.get("mint", "")).strip()
     pct = float(payload.get("pct", 1.0))
 
@@ -416,15 +555,16 @@ async def trade_sell(payload: Dict[str, Any]):
 
     try:
         mod = _resolve_engine_module()
-        if mod is None:
-            raise HTTPException(status_code=500, detail="engine_not_loaded")
 
-        manual_sell = getattr(mod, "manual_sell", None)
-        if not callable(manual_sell):
-            raise HTTPException(status_code=500, detail="manual_sell_not_implemented_in_engine")
+        if mod is not None:
+            manual_sell = getattr(mod, "manual_sell", None)
+            if callable(manual_sell):
+                res = await manual_sell(mint, pct)
+                return {"ok": True, "result": res}
 
-        res = await manual_sell(mint, pct)
+        res = await _fallback_manual_sell(mint, pct)
         return {"ok": True, "result": res}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -432,27 +572,26 @@ async def trade_sell(payload: Dict[str, Any]):
 
 
 # =========================================================
-# V64 AI FUND BRAIN CONTROL
+# FUND / BRAIN
 # =========================================================
 
 @app.get("/fund/brain")
 async def fund_brain():
-    """
-    Returns allocator / brain snapshot if engine exposes it.
-    """
     try:
         mod = _resolve_engine_module()
         if mod is None:
             return {
                 "ok": True,
-                "brain": {},
-                "note": "engine_not_loaded",
+                "brain": {
+                    "allocator": getattr(engine, "engine_allocator", {}),
+                    "engine_stats": getattr(engine, "engine_stats", {}),
+                },
+                "note": "engine_not_loaded_fallback",
             }
 
         getter = getattr(mod, "get_fund_brain", None)
         if callable(getter):
-            data = getter()
-            return {"ok": True, "brain": data}
+            return {"ok": True, "brain": getter()}
 
         return {
             "ok": True,
@@ -462,15 +601,13 @@ async def fund_brain():
             },
             "note": "fallback_brain_snapshot",
         }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"fund_brain_error: {e}")
 
 
 @app.post("/fund/rebalance")
 async def fund_rebalance():
-    """
-    Triggers rebalance if V64 engine implements it.
-    """
     try:
         mod = _resolve_engine_module()
         if mod is None:
@@ -482,6 +619,7 @@ async def fund_rebalance():
 
         res = await fn()
         return {"ok": True, "result": res}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -504,4 +642,5 @@ async def debug_state():
         "stats": getattr(engine, "stats", {}) or {},
         "last_signal": getattr(engine, "last_signal", ""),
         "last_trade": getattr(engine, "last_trade", ""),
+        "engine_module": ENGINE_MODULE.__name__ if ENGINE_MODULE else None,
     }
