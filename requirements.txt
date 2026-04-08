@@ -1,7 +1,0 @@
-
-httpx
-asyncio
-base58
-pynacl
-numpy
-websockets
