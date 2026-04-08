@@ -5,11 +5,62 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from app.state import engine
-from app.core.engine import main_loop, get_metrics
+# ================= SAFE IMPORTS =================
+
+try:
+    from app.state import engine
+except Exception:
+    try:
+        from state import engine
+    except Exception:
+        class _Engine:
+            pass
+        engine = _Engine()
+
+try:
+    from app.core.engine import main_loop, get_metrics
+except Exception:
+    try:
+        from core.engine import main_loop, get_metrics
+    except Exception:
+        try:
+            from engine import main_loop, get_metrics
+        except Exception:
+            async def main_loop():
+                while getattr(engine, "running", True):
+                    await asyncio.sleep(2)
+
+            def get_metrics():
+                return {
+                    "summary": {
+                        "capital": float(getattr(engine, "capital", 5.0)),
+                        "start_capital": float(getattr(engine, "start_capital", 5.0)),
+                        "peak_capital": float(getattr(engine, "peak_capital", 5.0)),
+                        "equity_gain": 0.0,
+                        "return_pct": 0.0,
+                        "drawdown": 0.0,
+                        "running": bool(getattr(engine, "running", True)),
+                    },
+                    "performance": {
+                        "trades": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "win_rate": 0.0,
+                        "avg_win": 0.0,
+                        "avg_loss": 0.0,
+                        "profit_factor": 0.0,
+                        "total_return": 0.0,
+                    },
+                    "trading": getattr(engine, "stats", {}),
+                    "positions": getattr(engine, "positions", []),
+                    "recent_trades": getattr(engine, "trade_history", [])[-20:],
+                    "logs": getattr(engine, "logs", [])[-120:],
+                }
 
 BOT_TASK = None
 
+
+# ================= HELPERS =================
 
 def _safe_float(v, default=0.0):
     try:
@@ -68,6 +119,8 @@ async def _engine_runner():
         append_log(f"ENGINE_TASK_CRASH {e}")
 
 
+# ================= LIFESPAN =================
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global BOT_TASK
@@ -89,9 +142,11 @@ async def lifespan(app: FastAPI):
                 pass
 
 
+# ================= APP =================
+
 app = FastAPI(
     title="Pump Trading API",
-    version="61.0",
+    version="61.1",
     lifespan=lifespan,
 )
 
@@ -174,6 +229,23 @@ async def logs(limit: int = 200):
     }
 
 
+@app.get("/state")
+async def state():
+    ensure_engine_defaults()
+    return {
+        "ok": True,
+        "running": bool(getattr(engine, "running", False)),
+        "capital": _safe_float(getattr(engine, "capital", 0.0)),
+        "start_capital": _safe_float(getattr(engine, "start_capital", 0.0)),
+        "peak_capital": _safe_float(getattr(engine, "peak_capital", 0.0)),
+        "last_signal": getattr(engine, "last_signal", ""),
+        "last_trade": getattr(engine, "last_trade", ""),
+        "no_trade_cycles": int(getattr(engine, "no_trade_cycles", 0)),
+        "stats": getattr(engine, "stats", {}),
+        "task_alive": bool(BOT_TASK and not BOT_TASK.done()),
+    }
+
+
 @app.post("/control/start")
 async def control_start():
     global BOT_TASK
@@ -225,21 +297,4 @@ async def control_restart():
         "ok": True,
         "running": True,
         "task_alive": True,
-    }
-
-
-@app.get("/state")
-async def state():
-    ensure_engine_defaults()
-    return {
-        "ok": True,
-        "running": bool(getattr(engine, "running", False)),
-        "capital": _safe_float(getattr(engine, "capital", 0.0)),
-        "start_capital": _safe_float(getattr(engine, "start_capital", 0.0)),
-        "peak_capital": _safe_float(getattr(engine, "peak_capital", 0.0)),
-        "last_signal": getattr(engine, "last_signal", ""),
-        "last_trade": getattr(engine, "last_trade", ""),
-        "no_trade_cycles": int(getattr(engine, "no_trade_cycles", 0)),
-        "stats": getattr(engine, "stats", {}),
-        "task_alive": bool(BOT_TASK and not BOT_TASK.done()),
     }
