@@ -1,5 +1,6 @@
 import asyncio
 import random
+from collections import defaultdict
 
 from app.alpha.adaptive_filter import adaptive_filter
 from app.alpha.helius_wallet_tracker import update_token_wallets
@@ -9,11 +10,67 @@ from app.engine.risk import detect_regime
 from app.engine.sources import get_price, get_price_info
 from app.engine.utils import clamp, now, score_stat_add, sf
 
+
+# =========================================================
+# INTERNAL HELPERS
+# =========================================================
+def _ensure_runtime_state():
+    if not hasattr(rt, "WALLET_GRAPH_CACHE") or rt.WALLET_GRAPH_CACHE is None:
+        rt.WALLET_GRAPH_CACHE = {}
+
+    if not hasattr(rt, "MEMPOOL_SEEN_TS") or rt.MEMPOOL_SEEN_TS is None:
+        rt.MEMPOOL_SEEN_TS = {}
+
+    if not hasattr(rt, "MEMPOOL_HITS") or rt.MEMPOOL_HITS is None:
+        rt.MEMPOOL_HITS = defaultdict(int)
+
+    if not hasattr(rt, "LAST_PRICE") or rt.LAST_PRICE is None:
+        rt.LAST_PRICE = {}
+
+    if not hasattr(rt, "LAST_MOMENTUM") or rt.LAST_MOMENTUM is None:
+        rt.LAST_MOMENTUM = {}
+
+    if not hasattr(rt, "LAST_PRICE_SOURCE") or rt.LAST_PRICE_SOURCE is None:
+        rt.LAST_PRICE_SOURCE = {}
+
+    if not hasattr(rt, "TOKEN_TRADE_COUNT") or rt.TOKEN_TRADE_COUNT is None:
+        rt.TOKEN_TRADE_COUNT = defaultdict(int)
+
+    if not hasattr(rt, "SOURCE_STATS") or rt.SOURCE_STATS is None:
+        rt.SOURCE_STATS = defaultdict(
+            lambda: {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+        )
+
+
+def _get_wallet_graph_fn():
+    fn = getattr(rt, "get_wallet_graph_score", None)
+    if callable(fn):
+        return fn
+
+    async def _fallback(_mint: str, wallets=None):
+        return {
+            "score": 0.0,
+            "cluster_size": 0,
+            "smart_ratio": 0.0,
+            "concentration": 0.0,
+            "fresh_wallet_ratio": 0.0,
+        }
+
+    return _fallback
+
+
+# =========================================================
+# SAFE WRAPPERS
+# =========================================================
 async def safe_update_token_wallets(mint: str):
     try:
-        return await asyncio.wait_for(update_token_wallets(mint), timeout=rt.WALLET_TRACKER_TIMEOUT_SEC)
+        return await asyncio.wait_for(
+            update_token_wallets(mint),
+            timeout=getattr(rt, "WALLET_TRACKER_TIMEOUT_SEC", 1.2),
+        )
     except Exception:
         return []
+
 
 def safe_adaptive_filter(feature_row, _context=None, _no_trade_cycles=0):
     try:
@@ -23,22 +80,31 @@ def safe_adaptive_filter(feature_row, _context=None, _no_trade_cycles=0):
         score = sf(feature_row.get("_score", feature_row.get("score", 0.0)), 0.0)
         liq = sf(feature_row.get("liq", 0.0), 0.0)
         breakout = sf(feature_row.get("breakout", 0.0), 0.0)
-        ok = score >= 0.08 and liq >= 3_000 and breakout > -0.03
+        ok = score >= 0.08 and liq >= 3000 and breakout > -0.03
         return ok, {"fallback": True}
 
+
 async def safe_wallet_graph_score(mint: str, wallets=None):
+    _ensure_runtime_state()
+
     cached = rt.WALLET_GRAPH_CACHE.get(mint)
     if cached and now() - cached.get("_ts", 0.0) < 20:
         return cached
+
+    graph_fn = _get_wallet_graph_fn()
+
     try:
-        res = await asyncio.wait_for(rt.get_wallet_graph_score(mint, wallets=wallets), timeout=rt.WALLET_GRAPH_TIMEOUT_SEC)
+        res = await asyncio.wait_for(
+            graph_fn(mint, wallets=wallets),
+            timeout=getattr(rt, "WALLET_GRAPH_TIMEOUT_SEC", 1.0),
+        )
         if not isinstance(res, dict):
             res = {"score": 0.0}
     except Exception:
         res = {"score": 0.0}
-    score = clamp(sf(res.get("score", 0.0), 0.0), 0.0, 1.0)
+
     out = {
-        "score": score,
+        "score": clamp(sf(res.get("score", 0.0), 0.0), 0.0, 1.0),
         "cluster_size": int(sf(res.get("cluster_size", 0), 0)),
         "smart_ratio": clamp(sf(res.get("smart_ratio", 0.0), 0.0), 0.0, 1.0),
         "concentration": clamp(sf(res.get("concentration", 0.0), 0.0), 0.0, 1.0),
@@ -48,39 +114,63 @@ async def safe_wallet_graph_score(mint: str, wallets=None):
     rt.WALLET_GRAPH_CACHE[mint] = out
     return out
 
+
+# =========================================================
+# MEMPOOL HELPERS
+# =========================================================
 def mempool_age_sec(mint: str):
+    _ensure_runtime_state()
+
     ts = rt.MEMPOOL_SEEN_TS.get(mint)
     if not ts:
         return None
     return max(0.0, now() - ts)
 
+
 def mempool_recent_bonus(mint: str):
     age = mempool_age_sec(mint)
     if age is None:
         return 0.0
-    if age <= rt.SNIPER_RECENT_WINDOW_SEC:
-        return rt.MEMPOOL_RECENCY_BONUS
-    if age <= rt.MEMPOOL_MAX_AGE_SEC:
-        return rt.MEMPOOL_RECENCY_BONUS * 0.45
+
+    recent_window = getattr(rt, "SNIPER_RECENT_WINDOW_SEC", 18)
+    max_age = getattr(rt, "MEMPOOL_MAX_AGE_SEC", 25)
+    recent_bonus = getattr(rt, "MEMPOOL_RECENCY_BONUS", 0.028)
+
+    if age <= recent_window:
+        return recent_bonus
+    if age <= max_age:
+        return recent_bonus * 0.45
     return 0.0
 
+
+# =========================================================
+# FEATURE EXTRACTION
+# =========================================================
 async def features(t):
+    _ensure_runtime_state()
+
     m = t.get("mint")
     if not m:
         return None
+
     pinfo = await get_price_info(m, prefer_clean=True)
     if not pinfo or pinfo.get("source") not in {"jupiter", "dexscreener"}:
         return None
-    if rt.HARD_REJECT_NON_JUPITER_PRICE and pinfo.get("source") != "jupiter":
+
+    if getattr(rt, "HARD_REJECT_NON_JUPITER_PRICE", False) and pinfo.get("source") != "jupiter":
         return None
+
     liq = sf(pinfo.get("liq", 0), 0.0)
-    if liq < rt.MIN_LIQUIDITY_TRADE:
+    if liq < getattr(rt, "MIN_LIQUIDITY_TRADE", 20000):
         return None
 
     price = pinfo["price"]
     prev = rt.LAST_PRICE.get(m)
+
+    max_breakout_abs = getattr(rt, "MAX_BREAKOUT_ABS", 0.20)
+
     breakout = (price - prev) / prev if prev and prev > 0 else random.uniform(0.003, 0.015)
-    breakout = clamp(breakout, -rt.MAX_BREAKOUT_ABS, rt.MAX_BREAKOUT_ABS)
+    breakout = clamp(breakout, -max_breakout_abs, max_breakout_abs)
     if abs(breakout) < 0.001:
         breakout = 0.003
 
@@ -93,7 +183,7 @@ async def features(t):
     except Exception:
         momentum = 0.0
 
-    momentum = clamp(momentum, -rt.MAX_BREAKOUT_ABS, rt.MAX_BREAKOUT_ABS)
+    momentum = clamp(momentum, -max_breakout_abs, max_breakout_abs)
     if abs(momentum) < 0.001:
         momentum = breakout * 0.5
 
@@ -106,6 +196,7 @@ async def features(t):
     smart = min(wallet_count / 3.0, 1.0)
 
     graph = await safe_wallet_graph_score(m, wallets=wallets)
+
     sniper_boost = 0.0
     if t.get("source") == "pumpfun":
         sniper_boost += 0.05
@@ -114,8 +205,15 @@ async def features(t):
     if pinfo.get("source") == "jupiter":
         sniper_boost += 0.02
 
+    recent_window = getattr(rt, "SNIPER_RECENT_WINDOW_SEC", 18)
+    early_entry_bonus = getattr(rt, "EARLY_ENTRY_BONUS", 0.018)
+
     mp_bonus = mempool_recent_bonus(m)
-    early_bonus = rt.EARLY_ENTRY_BONUS if (t.get("source") == "mempool" and (mempool_age_sec(m) or 999) <= rt.SNIPER_RECENT_WINDOW_SEC) else 0.0
+    early_bonus = (
+        early_entry_bonus
+        if t.get("source") == "mempool" and (mempool_age_sec(m) or 999) <= recent_window
+        else 0.0
+    )
 
     return {
         "mint": m,
@@ -141,6 +239,10 @@ async def features(t):
         "mempool_age_sec": mempool_age_sec(m),
     }
 
+
+# =========================================================
+# MODE / SCORE COMPONENTS
+# =========================================================
 def mode(f):
     if f["is_new"]:
         return "sniper"
@@ -148,20 +250,33 @@ def mode(f):
         return "smart"
     return "momentum"
 
+
 def breakout_strength(b):
-    b = clamp(sf(b), -rt.MAX_BREAKOUT_ABS, rt.MAX_BREAKOUT_ABS)
+    b = clamp(sf(b), -getattr(rt, "MAX_BREAKOUT_ABS", 0.20), getattr(rt, "MAX_BREAKOUT_ABS", 0.20))
     if b <= 0:
         return 0.0
     return min(b / 0.05, 1.0) * 0.35
 
+
 def momentum_strength(m):
-    m = clamp(sf(m), -rt.MAX_BREAKOUT_ABS, rt.MAX_BREAKOUT_ABS)
+    m = clamp(sf(m), -getattr(rt, "MAX_BREAKOUT_ABS", 0.20), getattr(rt, "MAX_BREAKOUT_ABS", 0.20))
     if m <= 0:
         return 0.0
     return min(m / 0.05, 1.0) * 0.30
 
+
 def zero_detail():
-    return {"bscore": 0.0, "mscore": 0.0, "sscore": 0.0, "lscore": 0.0, "wscore": 0.0, "nscore": 0.0, "gscore": 0.0, "erscore": 0.0}
+    return {
+        "bscore": 0.0,
+        "mscore": 0.0,
+        "sscore": 0.0,
+        "lscore": 0.0,
+        "wscore": 0.0,
+        "nscore": 0.0,
+        "gscore": 0.0,
+        "erscore": 0.0,
+    }
+
 
 def score_alpha(f):
     breakout = sf(f.get("breakout", 0.0), 0.0)
@@ -174,16 +289,27 @@ def score_alpha(f):
     smart_ratio = clamp(sf(f.get("smart_ratio", 0.0), 0.0), 0.0, 1.0)
     fresh_wallet_ratio = clamp(sf(f.get("fresh_wallet_ratio", 0.0), 0.0), 0.0, 1.0)
 
-    if liq < rt.MIN_LIQUIDITY_OBSERVE or concentration > rt.MAX_WALLET_CLUSTER_CONCENTRATION or smart_ratio < rt.MIN_SMART_RATIO or fresh_wallet_ratio < rt.MIN_FRESH_WALLET_RATIO:
+    if liq < getattr(rt, "MIN_LIQUIDITY_OBSERVE", 3000):
+        return 0.0, zero_detail()
+
+    if concentration > getattr(rt, "MAX_WALLET_CLUSTER_CONCENTRATION", 0.65):
+        return 0.0, zero_detail()
+
+    if smart_ratio < getattr(rt, "MIN_SMART_RATIO", 0.0):
+        return 0.0, zero_detail()
+
+    if fresh_wallet_ratio < getattr(rt, "MIN_FRESH_WALLET_RATIO", 0.0):
         return 0.0, zero_detail()
 
     source_penalty = 1.0 if price_source == "jupiter" else 0.70
-    if price_source == "jupiter" and liq < rt.MIN_LIQUIDITY_TRADE:
+    if price_source == "jupiter" and liq < getattr(rt, "MIN_LIQUIDITY_TRADE", 20000):
         source_penalty = 0.85
-    if momentum < rt.MIN_CONFIRM_MOMENTUM:
+
+    if momentum < getattr(rt, "MIN_CONFIRM_MOMENTUM", 0.002):
         momentum *= 0.5
-    if breakout < rt.MIN_CONFIRM_BREAKOUT:
+    if breakout < getattr(rt, "MIN_CONFIRM_BREAKOUT", 0.003):
         breakout *= 0.5
+
     if breakout > 0.012 and momentum < 0:
         return 0.0, zero_detail()
 
@@ -191,59 +317,119 @@ def score_alpha(f):
     mscore = momentum_strength(momentum)
     sscore = clamp(smart, 0.0, 1.0) * 0.40
     lscore = min(liq / 1_000_000, 1.0) * 0.12
+
     wc = f.get("wallet_count", 0)
     wscore = 0.08 if wc >= 3 else 0.05 if wc >= 2 else 0.02 if wc >= 1 else 0.0
     nscore = clamp(sf(f.get("sniper_boost", 0)), 0.0, 0.12)
-    gscore = clamp(wallet_graph_score * rt.WALLET_GRAPH_WEIGHT, 0.0, rt.WALLET_GRAPH_BONUS_CAP)
-    erscore = clamp(sf(f.get("mempool_bonus", 0.0), 0.0) + sf(f.get("early_bonus", 0.0), 0.0), 0.0, 0.06)
+    gscore = clamp(
+        wallet_graph_score * getattr(rt, "WALLET_GRAPH_WEIGHT", 0.12),
+        0.0,
+        getattr(rt, "WALLET_GRAPH_BONUS_CAP", 0.18),
+    )
+    erscore = clamp(
+        sf(f.get("mempool_bonus", 0.0), 0.0) + sf(f.get("early_bonus", 0.0), 0.0),
+        0.0,
+        0.06,
+    )
 
-    for name, val in [("breakout", breakout), ("momentum", momentum), ("smart_money", smart), ("liquidity", liq), ("wallet_count", wc), ("price", f.get("price", 0)), ("wallet_graph_score", wallet_graph_score)]:
+    for name, val in [
+        ("breakout", breakout),
+        ("momentum", momentum),
+        ("smart_money", smart),
+        ("liquidity", liq),
+        ("wallet_count", wc),
+        ("price", f.get("price", 0)),
+        ("wallet_graph_score", wallet_graph_score),
+    ]:
         score_stat_add(name, val)
 
     score = (
-        bscore * rt.ALPHA_BREAKOUT_WEIGHT + mscore * rt.ALPHA_MOMENTUM_WEIGHT +
-        sscore * rt.ALPHA_SMART_WEIGHT + lscore * rt.ALPHA_LIQ_WEIGHT +
-        wscore * rt.ALPHA_WALLET_WEIGHT + nscore * 0.05 + gscore + erscore
+        bscore * getattr(rt, "ALPHA_BREAKOUT_WEIGHT", 0.35)
+        + mscore * getattr(rt, "ALPHA_MOMENTUM_WEIGHT", 0.25)
+        + sscore * getattr(rt, "ALPHA_SMART_WEIGHT", 0.25)
+        + lscore * getattr(rt, "ALPHA_LIQ_WEIGHT", 0.10)
+        + wscore * getattr(rt, "ALPHA_WALLET_WEIGHT", 0.05)
+        + nscore * 0.05
+        + gscore
+        + erscore
     ) * source_penalty
 
-    if wallet_graph_score < rt.WALLET_GRAPH_MIN_SCORE:
+    if wallet_graph_score < getattr(rt, "WALLET_GRAPH_MIN_SCORE", 0.0):
         score *= 0.85
 
     mtype = mode(f)
     if mtype == "sniper":
-        score *= rt.SNIPER_MULTIPLIER
+        score *= getattr(rt, "SNIPER_MULTIPLIER", 1.30)
     elif mtype == "smart":
-        score *= rt.SMART_MULTIPLIER
+        score *= getattr(rt, "SMART_MULTIPLIER", 1.20)
     else:
-        score *= rt.MOMENTUM_MULTIPLIER
+        score *= getattr(rt, "MOMENTUM_MULTIPLIER", 1.00)
 
-    return clamp(score, 0.0, rt.MAX_SCORE), {"bscore": bscore, "mscore": mscore, "sscore": sscore, "lscore": lscore, "wscore": wscore, "nscore": nscore, "gscore": gscore, "erscore": erscore}
+    return clamp(score, 0.0, getattr(rt, "MAX_SCORE", 1.5)), {
+        "bscore": bscore,
+        "mscore": mscore,
+        "sscore": sscore,
+        "lscore": lscore,
+        "wscore": wscore,
+        "nscore": nscore,
+        "gscore": gscore,
+        "erscore": erscore,
+    }
 
+
+# =========================================================
+# SOURCE / FINAL SCORE
+# =========================================================
 def source_quality(source):
-    return {"pumpfun": 1.18, "mempool": 1.22, "dexscreener": 0.75, "fusion": 1.05, "jupiter": 1.00, "synthetic": 0.25}.get(source, 1.0)
+    return {
+        "pumpfun": 1.18,
+        "mempool": 1.22,
+        "dexscreener": 0.75,
+        "fusion": 1.05,
+        "jupiter": 1.00,
+        "synthetic": 0.25,
+    }.get(source, 1.0)
+
 
 def source_weight(src):
-    s = rt.SOURCE_STATS[src]
-    total = s["wins"] + s["losses"]
+    _ensure_runtime_state()
+
+    s = rt.SOURCE_STATS.get(src)
+    if s is None:
+        s = {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+        rt.SOURCE_STATS[src] = s
+
+    wins = int(s.get("wins", 0))
+    losses = int(s.get("losses", 0))
+    total = wins + losses
+
     mem = 1.0
     if total >= 5:
-        winrate = s["wins"] / total if total else 0.0
+        winrate = wins / total if total else 0.0
         if winrate > 0.6:
             mem = 1.12
         elif winrate < 0.3:
             mem = 0.82
+
     return mem * source_quality(src)
 
+
 def score_with_allocator(f):
+    _ensure_runtime_state()
+
     base, detail = score_alpha(f)
     base *= source_weight(f["source"])
-    if rt.TOKEN_TRADE_COUNT[f["mint"]] > 2:
+
+    if rt.TOKEN_TRADE_COUNT.get(f["mint"], 0) > 2:
         base *= 0.7
+
     regime = detect_regime()
     if regime == "bull":
         base *= 1.08
     elif regime == "bear":
         base *= 0.88
+
     mtype = mode(f)
     base *= fund_multiplier(mtype)
+
     return max(base, 0.0), mtype, detail
