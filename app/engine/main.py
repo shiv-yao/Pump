@@ -146,6 +146,14 @@ FUND_SMART_BASE = float(os.getenv("FUND_SMART_BASE", "0.35"))
 FUND_MOMENTUM_BASE = float(os.getenv("FUND_MOMENTUM_BASE", "0.35"))
 FUND_EXPLORE_BASE = float(os.getenv("FUND_EXPLORE_BASE", "0.08"))
 
+FUND_ALLOC_MIN = float(os.getenv("FUND_ALLOC_MIN", "0.05"))
+FUND_ALLOC_MAX = float(os.getenv("FUND_ALLOC_MAX", "0.60"))
+FUND_EXPLORE_MAX = float(os.getenv("FUND_EXPLORE_MAX", "0.15"))
+
+MAX_POSITION_HARD_CAP_SOL = float(os.getenv("MAX_POSITION_HARD_CAP_SOL", "0.20"))
+SELL_VALUE_CAP_MULT = float(os.getenv("SELL_VALUE_CAP_MULT", "3.0"))
+PNL_SOL_HARD_CAP_MULT = float(os.getenv("PNL_SOL_HARD_CAP_MULT", "2.0"))
+
 
 # =========================================================
 # RUNTIME MEMORY
@@ -260,6 +268,11 @@ def clamp(x, lo, hi):
 
 def exposure():
     return sum(sf(p.get("entry_value", p.get("size", 0.0))) for p in engine.positions)
+
+
+def remaining_exposure_capacity():
+    cap = sf(engine.capital, 0.0) * MAX_EXPOSURE - exposure()
+    return max(0.0, cap)
 
 
 def update_open_stats():
@@ -396,6 +409,19 @@ def parse_signature(obj):
 # FUND BRAIN
 # =========================================================
 
+def _normalize_allocator():
+    total = sum(max(0.0, sf(v, 0.0)) for v in FUND_ALLOCATOR.values())
+    if total <= 0:
+        FUND_ALLOCATOR["sniper"] = FUND_SNIPER_BASE
+        FUND_ALLOCATOR["smart"] = FUND_SMART_BASE
+        FUND_ALLOCATOR["momentum"] = FUND_MOMENTUM_BASE
+        FUND_ALLOCATOR["explore"] = FUND_EXPLORE_BASE
+        total = sum(FUND_ALLOCATOR.values())
+
+    for k in list(FUND_ALLOCATOR.keys()):
+        FUND_ALLOCATOR[k] = max(0.0, sf(FUND_ALLOCATOR[k], 0.0)) / total
+
+
 def ensure_fund_state():
     for key, default_val in {
         "sniper": FUND_SNIPER_BASE,
@@ -405,6 +431,7 @@ def ensure_fund_state():
     }.items():
         FUND_ALLOCATOR.setdefault(key, default_val)
         _ = FUND_PERF[key]
+    _normalize_allocator()
 
 
 def strategy_bucket_from_mode(mode_name: str) -> str:
@@ -472,16 +499,12 @@ def update_fund_allocator(force=False):
     for strat, score in raw_scores.items():
         FUND_ALLOCATOR[strat] = score / total_score
 
-    FUND_ALLOCATOR["sniper"] = clamp(FUND_ALLOCATOR["sniper"], 0.10, 0.55)
-    FUND_ALLOCATOR["smart"] = clamp(FUND_ALLOCATOR["smart"], 0.10, 0.55)
-    FUND_ALLOCATOR["momentum"] = clamp(FUND_ALLOCATOR["momentum"], 0.10, 0.55)
-    FUND_ALLOCATOR["explore"] = clamp(FUND_ALLOCATOR["explore"], 0.02, 0.15)
+    FUND_ALLOCATOR["sniper"] = clamp(FUND_ALLOCATOR["sniper"], FUND_ALLOC_MIN, FUND_ALLOC_MAX)
+    FUND_ALLOCATOR["smart"] = clamp(FUND_ALLOCATOR["smart"], FUND_ALLOC_MIN, FUND_ALLOC_MAX)
+    FUND_ALLOCATOR["momentum"] = clamp(FUND_ALLOCATOR["momentum"], FUND_ALLOC_MIN, FUND_ALLOC_MAX)
+    FUND_ALLOCATOR["explore"] = clamp(FUND_ALLOCATOR["explore"], 0.02, FUND_EXPLORE_MAX)
 
-    s = sum(FUND_ALLOCATOR.values())
-    if s <= 0:
-        s = 1.0
-    for k in list(FUND_ALLOCATOR.keys()):
-        FUND_ALLOCATOR[k] = FUND_ALLOCATOR[k] / s
+    _normalize_allocator()
 
     FUND_STATE["last_update"] = now()
     FUND_STATE["last_reason"] = "perf_rebalance"
@@ -1367,10 +1390,20 @@ def allocate_size(score, n_candidates, strategy="momentum"):
     if agent_in_cooldown():
         base *= 0.60
 
-    alloc_cap = clamp(FUND_ALLOCATOR.get(strategy, 0.25), 0.05, 0.60)
+    alloc_cap = clamp(FUND_ALLOCATOR.get(strategy, 0.25), FUND_ALLOC_MIN, FUND_ALLOC_MAX)
+    if strategy == "explore":
+        alloc_cap = clamp(alloc_cap, 0.02, FUND_EXPLORE_MAX)
+
     hard_cap = engine.capital * alloc_cap
-    base = min(base, 0.20)
-    return min(base, engine.capital * MAX_POSITION_SIZE, hard_cap)
+    exposure_cap = remaining_exposure_capacity()
+    base = min(base, MAX_POSITION_HARD_CAP_SOL)
+
+    return min(
+        base,
+        engine.capital * MAX_POSITION_SIZE,
+        hard_cap,
+        exposure_cap if exposure_cap > 0 else 0.0,
+    )
 
 
 # =========================================================
@@ -1400,6 +1433,17 @@ def atomic_to_token_amount(out_amount, decimals):
         return 0.0
     scale = 10 ** decimals
     return out_amount / scale
+
+
+def atomic_to_sol(atomic_amount):
+    return sf(atomic_amount, 0.0) / float(SOL_DECIMALS)
+
+
+def extract_exit_value_sol_from_sell_res(res):
+    out_amount = parse_out_amount(res)
+    if out_amount <= 0:
+        return None
+    return atomic_to_sol(out_amount)
 
 
 async def calc_position_market_value(p):
@@ -1439,7 +1483,15 @@ async def calc_equity():
 async def buy(m, f, position_size, mtype, forced=False):
     mtype = strategy_bucket_from_mode(mtype)
 
+    position_size = min(position_size, remaining_exposure_capacity())
+    if position_size <= 0:
+        return False
+
     order_sol = max(position_size, MIN_ORDER_SOL)
+
+    if order_sol > remaining_exposure_capacity() + 1e-9:
+        return False
+
     amt_atomic = int(order_sol * SOL_DECIMALS)
 
     res = await safe_execute_swap(SOL, m, amt_atomic)
@@ -1568,23 +1620,36 @@ async def sell(p, reason, price, sell_fraction=1.0):
     if p.get("paper"):
         res = {"paper": True}
         fee_sol = ESTIMATED_TX_FEE_SOL
+        exit_value = token_amount_to_sell * price
+        max_reasonable_exit = entry_value_total * sell_fraction * SELL_VALUE_CAP_MULT
+        exit_value = clamp(exit_value, 0.0, max_reasonable_exit)
     else:
         res = await safe_execute_swap(m, SOL, atomic_sell)
         fee_sol = extract_fee_sol_from_res(res)
 
-    if not res or res.get("error"):
-        engine.stats["errors"] += 1
-        log(f"SELL_FAIL {m[:6]} {res.get('error') if res else 'empty'}")
-        return False
+        if not res or res.get("error"):
+            engine.stats["errors"] += 1
+            log(f"SELL_FAIL {m[:6]} {res.get('error') if res else 'empty'}")
+            return False
+
+        actual_exit_value = extract_exit_value_sol_from_sell_res(res)
+        if actual_exit_value is not None and actual_exit_value > 0:
+            exit_value = actual_exit_value
+        else:
+            fallback_exit = token_amount_to_sell * price
+            max_reasonable_exit = entry_value_total * sell_fraction * SELL_VALUE_CAP_MULT
+            exit_value = clamp(fallback_exit, 0.0, max_reasonable_exit)
 
     engine.stats["fees_paid_sol"] += fee_sol
-
-    exit_value = token_amount_to_sell * price
 
     entry_value_sold = entry_value_total * sell_fraction
     fees_allocated = fees_paid_total * sell_fraction + fee_sol
 
     pnl_sol = exit_value - entry_value_sold - fees_allocated
+
+    pnl_sol_cap = entry_value_sold * PNL_SOL_HARD_CAP_MULT
+    pnl_sol = clamp(pnl_sol, -pnl_sol_cap, pnl_sol_cap)
+
     pnl = safe_div(pnl_sol, entry_value_sold, 0.0)
     pnl = clamp(pnl, -MAX_PNL_ABS, MAX_PNL_ABS)
 
@@ -1836,7 +1901,8 @@ async def exploration_trade():
             size = min(
                 engine.capital * EXPLORATION_SIZE_FRAC,
                 engine.capital * MAX_POSITION_SIZE,
-                engine.capital * clamp(FUND_ALLOCATOR.get("explore", 0.08), 0.02, 0.15),
+                engine.capital * clamp(FUND_ALLOCATOR.get("explore", 0.08), 0.02, FUND_EXPLORE_MAX),
+                remaining_exposure_capacity(),
             )
             return bool(await buy(t["mint"], f, size, "explore", forced=True))
 
@@ -1899,6 +1965,8 @@ async def execute_portfolio(ranked):
             pos_size = min(pos_size, engine.capital * EXPLORATION_SIZE_FRAC)
         if in_breathing_cooldown:
             pos_size *= 0.70
+
+        pos_size = min(pos_size, remaining_exposure_capacity())
 
         if pos_size <= 0 or engine.capital < pos_size + ESTIMATED_TX_FEE_SOL:
             continue
@@ -2236,7 +2304,7 @@ async def main_loop():
     global MEMPOOL_TASK
 
     await start_once()
-    log("V67 FUND BRAIN COMPLETE LIVE ENGINE START")
+    log("V68.5 FINAL FUND BRAIN HARDENED START")
 
     while engine.running:
         try:
@@ -2283,10 +2351,16 @@ async def main_loop():
                     if f.get("_tier") not in {"A", "A+"}:
                         continue
 
+                    buy_size = allocate_size(
+                        max(f["_score"], STRICT_A_TIER_THRESHOLD),
+                        1,
+                        f["_mode"],
+                    )
+
                     ok = await buy(
                         f["mint"],
                         f,
-                        allocate_size(max(f["_score"], STRICT_A_TIER_THRESHOLD), 1, f["_mode"]),
+                        buy_size,
                         f["_mode"],
                         forced=True,
                     )
