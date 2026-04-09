@@ -3,13 +3,23 @@ import time
 from collections import defaultdict
 
 from app.state import engine
-from app.config import SOL_MINT as SOL, SOL_DECIMALS, HTTP_TIMEOUT, BIRDEYE_API_KEY, REAL_TRADING
+from app.config import (
+    SOL_MINT as SOL,
+    SOL_DECIMALS,
+    HTTP_TIMEOUT,
+    BIRDEYE_API_KEY,
+    REAL_TRADING,
+)
 
+# =========================================================
+# OPTIONAL MODULES
+# =========================================================
 try:
     from app.execution.jito_exec import send_jito_bundle
 except Exception:
     async def send_jito_bundle(*args, **kwargs):
         return {"error": "jito_exec_not_available"}
+
 
 try:
     from app.alpha.wallet_graph import get_wallet_graph_score, get_wallet_cluster_stats
@@ -31,6 +41,10 @@ except Exception:
             "fresh_wallet_ratio": 0.0,
         }
 
+
+# =========================================================
+# CONFIG
+# =========================================================
 AMOUNT = int(os.getenv("AMOUNT", "1000000"))
 MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "2"))
 MAX_EXPOSURE = float(os.getenv("MAX_EXPOSURE", "0.35"))
@@ -141,7 +155,10 @@ HTTP_GET_RETRY = int(os.getenv("HTTP_GET_RETRY", "2"))
 SEARCH_TERMS = ["SOL", "USDC", "BONK", "MEME", "PEPE", "DOG", "AI", "PUMP", "NEW", "MOON", "100x"]
 MEME_SEARCH_TERMS = ["pumpfun", "pepe", "doge", "meme", "cat", "frog", "moonshot", "100x"]
 
-JUPITER_PROGRAM_ID = os.getenv("JUPITER_PROGRAM_ID", "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")
+JUPITER_PROGRAM_ID = os.getenv(
+    "JUPITER_PROGRAM_ID",
+    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+)
 
 FUND_BRAIN_UPDATE_SEC = int(os.getenv("FUND_BRAIN_UPDATE_SEC", "20"))
 FUND_MIN_TRADES = int(os.getenv("FUND_MIN_TRADES", "3"))
@@ -179,6 +196,10 @@ DAILY_LOSS_LIMIT_SOL = float(os.getenv("DAILY_LOSS_LIMIT_SOL", "0.60"))
 MAX_STRATEGY_EXPOSURE = float(os.getenv("MAX_STRATEGY_EXPOSURE", "0.18"))
 MAX_SNIPER_EXPOSURE = float(os.getenv("MAX_SNIPER_EXPOSURE", "0.14"))
 
+
+# =========================================================
+# RUNTIME MEMORY
+# =========================================================
 LAST_TRADE = defaultdict(float)
 LAST_PRICE = {}
 LAST_MOMENTUM = {}
@@ -197,12 +218,25 @@ MEMPOOL_TASK = None
 BREATHING_STATE = {"risk_mult": 1.0, "cooldown_until": 0.0}
 REGIME_STATE = {"mode": "neutral", "last_update": 0.0}
 AGENT_STATE = {
-    "last_update": 0.0, "mode": "normal", "risk_mult": 1.0,
-    "confidence": 0.5, "cooldown_until": 0.0, "last_reason": "boot",
+    "last_update": 0.0,
+    "mode": "normal",
+    "risk_mult": 1.0,
+    "confidence": 0.5,
+    "cooldown_until": 0.0,
+    "last_reason": "boot",
 }
-AUTO_PARAMS = {"entry_threshold": ENTRY_THRESHOLD, "take_profit": TAKE_PROFIT, "stop_loss": STOP_LOSS}
+AUTO_PARAMS = {
+    "entry_threshold": ENTRY_THRESHOLD,
+    "take_profit": TAKE_PROFIT,
+    "stop_loss": STOP_LOSS,
+}
 
-FUND_ALLOCATOR = {"sniper": FUND_SNIPER_BASE, "smart": FUND_SMART_BASE, "momentum": FUND_MOMENTUM_BASE, "explore": FUND_EXPLORE_BASE}
+FUND_ALLOCATOR = {
+    "sniper": FUND_SNIPER_BASE,
+    "smart": FUND_SMART_BASE,
+    "momentum": FUND_MOMENTUM_BASE,
+    "explore": FUND_EXPLORE_BASE,
+}
 FUND_PERF = defaultdict(lambda: {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0})
 FUND_STATE = {"last_update": 0.0, "last_reason": "boot"}
 
@@ -216,3 +250,104 @@ INSTITUTIONAL_STATE = {
     "day_bucket": int(time.time() // 86400),
     "last_reason": "boot",
 }
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+def ensure_engine_state():
+    engine.positions = getattr(engine, "positions", [])
+    engine.trade_history = getattr(engine, "trade_history", [])
+    engine.logs = getattr(engine, "logs", [])
+
+    engine.capital = float(getattr(engine, "capital", 5.0))
+    engine.start_capital = float(getattr(engine, "start_capital", engine.capital))
+    engine.peak_capital = float(getattr(engine, "peak_capital", engine.capital))
+
+    engine.running = getattr(engine, "running", True)
+    engine.no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0))
+
+    engine.last_signal = getattr(engine, "last_signal", "")
+    engine.last_trade = getattr(engine, "last_trade", "")
+
+    engine.stats = getattr(engine, "stats", {})
+    defaults = {
+        "signals": 0,
+        "executed": 0,
+        "rejected": 0,
+        "errors": 0,
+        "open_positions": 0,
+        "open_exposure": 0.0,
+        "trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "forced_trades": 0,
+        "fees_paid_sol": 0.0,
+        "realized_pnl_sol": 0.0,
+        "unrealized_pnl_sol": 0.0,
+        "jito_sent": 0,
+        "jito_ok": 0,
+        "jito_fail": 0,
+    }
+    for k, v in defaults.items():
+        engine.stats.setdefault(k, v)
+
+
+def reset_runtime_memory():
+    LAST_TRADE.clear()
+    LAST_PRICE.clear()
+    LAST_MOMENTUM.clear()
+    LAST_PRICE_SOURCE.clear()
+    TOKEN_TRADE_COUNT.clear()
+    BLACKLIST.clear()
+
+    SOURCE_STATS.clear()
+    STRATEGY_STATS.clear()
+    SCORE_COMPONENT_STATS.clear()
+
+    BUY_TIMES.clear()
+    MEMPOOL_BUFFER.clear()
+
+    BREATHING_STATE["risk_mult"] = 1.0
+    BREATHING_STATE["cooldown_until"] = 0.0
+
+    REGIME_STATE["mode"] = "neutral"
+    REGIME_STATE["last_update"] = 0.0
+
+    AGENT_STATE["last_update"] = 0.0
+    AGENT_STATE["mode"] = "normal"
+    AGENT_STATE["risk_mult"] = 1.0
+    AGENT_STATE["confidence"] = 0.5
+    AGENT_STATE["cooldown_until"] = 0.0
+    AGENT_STATE["last_reason"] = "boot"
+
+    AUTO_PARAMS["entry_threshold"] = ENTRY_THRESHOLD
+    AUTO_PARAMS["take_profit"] = TAKE_PROFIT
+    AUTO_PARAMS["stop_loss"] = STOP_LOSS
+
+    FUND_ALLOCATOR["sniper"] = FUND_SNIPER_BASE
+    FUND_ALLOCATOR["smart"] = FUND_SMART_BASE
+    FUND_ALLOCATOR["momentum"] = FUND_MOMENTUM_BASE
+    FUND_ALLOCATOR["explore"] = FUND_EXPLORE_BASE
+
+    FUND_PERF.clear()
+    FUND_STATE["last_update"] = 0.0
+    FUND_STATE["last_reason"] = "boot"
+
+    MEMPOOL_SEEN_TS.clear()
+    MEMPOOL_HITS.clear()
+    WALLET_GRAPH_CACHE.clear()
+
+    JITO_STATS["sent"] = 0
+    JITO_STATS["ok"] = 0
+    JITO_STATS["fail"] = 0
+    JITO_STATS["last_error"] = ""
+
+    INSTITUTIONAL_STATE["pause_until"] = 0.0
+    INSTITUTIONAL_STATE["daily_realized_pnl_sol"] = 0.0
+    INSTITUTIONAL_STATE["day_bucket"] = int(time.time() // 86400)
+    INSTITUTIONAL_STATE["last_reason"] = "boot"
+
+
+def ensure_runtime():
+    ensure_engine_state()
