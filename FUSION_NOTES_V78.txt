@@ -1,0 +1,11 @@
+
+Best-effort integrated fusion build.
+
+What's added:
+- 3-strategy routing: stable / sniper / momentum
+- ML-like adaptive allocator
+- Memory metrics + dashboard fund allocation block
+- Railway-safe run_server.py
+
+Recommended start command:
+python run_server.py
