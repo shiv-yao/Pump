@@ -99,8 +99,10 @@ def calc_drawdown(equity):
     ensure_engine_defaults()
 
     peak = sf(getattr(engine, "peak_capital", equity), equity)
-    peak = max(peak, sf(equity, 0.0))
-    engine.peak_capital = peak
+
+    if equity > peak:
+        engine.peak_capital = equity
+        peak = equity
 
     dd = (peak - equity) / peak if peak > 0 else 0.0
     return dd
@@ -332,6 +334,53 @@ def update_metrics():
 
 
 def get_metrics():
-    if not LAST_METRICS:
-        update_metrics()
-    return LAST_METRICS if LAST_METRICS else {"status": "warming_up"}
+    try:
+        if not LAST_METRICS or "summary" not in LAST_METRICS:
+            update_metrics()
+
+        m = LAST_METRICS or {}
+
+        # 🔥 強制補齊 UI 必要欄位
+        if "summary" not in m:
+            m["summary"] = {
+                "capital": 0.0,
+                "equity": 0.0,
+                "drawdown": 0.0,
+                "positions": 0,
+                "running": False,
+                "last_signal": "",
+                "last_trade": "",
+                "no_trade_cycles": 0,
+            }
+
+        if "stats" not in m:
+            m["stats"] = {}
+
+        if "equity_curve" not in m:
+            m["equity_curve"] = []
+
+        if "recent_trades" not in m:
+            m["recent_trades"] = []
+
+        if "logs" not in m:
+            m["logs"] = []
+
+        return m
+
+    except Exception as e:
+        return {
+            "summary": {
+                "capital": 0.0,
+                "equity": 0.0,
+                "drawdown": 0.0,
+                "positions": 0,
+                "running": False,
+                "last_signal": "",
+                "last_trade": "",
+                "no_trade_cycles": 0,
+            },
+            "stats": {"error": str(e)},
+            "equity_curve": [],
+            "recent_trades": [],
+            "logs": [],
+        }
