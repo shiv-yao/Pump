@@ -127,6 +127,14 @@ def institutional_pause_active():
     return now() < sf(rt.INSTITUTIONAL_STATE.get("pause_until", 0.0), 0.0)
 
 
+def institutional_paused():
+    """
+    Backward-compatible alias.
+    Older modules may import institutional_paused().
+    """
+    return institutional_pause_active()
+
+
 def institutional_loss_pause_if_needed():
     _roll_day_if_needed()
 
