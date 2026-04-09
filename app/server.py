@@ -203,3 +203,81 @@ async def shutdown():
 
         ENGINE_TASK = None
         print("🧹 ENGINE TASK CLEANED")
+
+@app.get("/ui", response_class=HTMLResponse)
+async def dashboard():
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pump Fund Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body style="background:#0b0f1a;color:#fff;font-family:sans-serif;padding:20px">
+
+<h2>🔥 Pump Fund Dashboard</h2>
+
+<div>
+    <b>Capital:</b> <span id="capital"></span><br>
+    <b>Equity:</b> <span id="equity"></span><br>
+    <b>Drawdown:</b> <span id="dd"></span><br>
+    <b>Positions:</b> <span id="pos"></span>
+</div>
+
+<br>
+
+<canvas id="chart" width="800" height="300"></canvas>
+
+<br>
+
+<h3>📊 Stats</h3>
+<pre id="stats"></pre>
+
+<script>
+let chart;
+
+async function load() {
+    const res = await fetch("/metrics");
+    const data = await res.json();
+
+    if (!data.summary) return;
+
+    document.getElementById("capital").innerText = data.summary.capital.toFixed(4);
+    document.getElementById("equity").innerText = data.summary.equity.toFixed(4);
+    document.getElementById("dd").innerText = (data.summary.drawdown * 100).toFixed(2) + "%";
+    document.getElementById("pos").innerText = data.summary.positions;
+
+    document.getElementById("stats").innerText = JSON.stringify(data.stats, null, 2);
+
+    const labels = data.equity_curve.map(x => new Date(x.t * 1000).toLocaleTimeString());
+    const values = data.equity_curve.map(x => x.equity);
+
+    if (!chart) {
+        const ctx = document.getElementById("chart").getContext("2d");
+        chart = new Chart(ctx, {
+            type: "line",
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: "Equity",
+                    data: values,
+                    borderColor: "#00ffcc",
+                    fill: false
+                }]
+            }
+        });
+    } else {
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = values;
+        chart.update();
+    }
+}
+
+setInterval(load, 2000);
+load();
+</script>
+
+</body>
+</html>
+"""
