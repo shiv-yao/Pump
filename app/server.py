@@ -1,6 +1,7 @@
 import sys
 import os
 import asyncio
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, HTMLResponse
 
@@ -36,20 +37,22 @@ except Exception as e:
 try:
     from app.engine.metrics_runtime import get_metrics
 except Exception as e:
-    print("❌ METRICS IMPORT ERROR:", e)
+    _metrics_import_error = str(e)
+    print("❌ METRICS IMPORT ERROR:", _metrics_import_error)
 
     def get_metrics():
         return {
             "status": "metrics_not_loaded",
-            "error": str(e),
+            "error": _metrics_import_error,
         }
+
 
 # =========================
 # APP INIT
 # =========================
 app = FastAPI(
     title="Pump Fusion V74",
-    version="74.2",
+    version="74.3",
 )
 
 ENGINE_TASK = None
