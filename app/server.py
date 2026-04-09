@@ -187,14 +187,15 @@ async def debug():
 @app.get("/metrics")
 async def metrics():
     try:
-        return JSONResponse(content=get_metrics())
+        data = get_metrics()
+        return JSONResponse(
+            content=data,
+            headers={"Cache-Control": "no-store"}
+        )
     except Exception as e:
         return JSONResponse(
-            content={
-                "status": "metrics_error",
-                "error": str(e),
-            },
-            status_code=500,
+            content={"error": str(e)},
+            status_code=500
         )
 
 
@@ -278,19 +279,73 @@ let equityChart, stratChart;
 
 function safe(v,d=0){ return (typeof v==="number"&&!isNaN(v))?v:d }
 
-async function load(){
+async function load() {
+    try {
+        const res = await fetch("/metrics?ts=" + Date.now(), {
+            cache: "no-store"
+        });
 
-    const res = await fetch("/metrics?ts="+Date.now())
-    const data = await res.json()
+        const data = await res.json();
 
-    if(!data.summary){
-        document.body.innerText = JSON.stringify(data,null,2)
-        return
+        // 🔥 防爆（超重要）
+        if (!data || !data.summary) {
+            document.getElementById("stats").innerText =
+                JSON.stringify(data, null, 2);
+            return;
+        }
+
+        const summary = data.summary || {};
+        const stats = data.stats || {};
+        const equityCurve = Array.isArray(data.equity_curve)
+            ? data.equity_curve
+            : [];
+
+        document.getElementById("capital").innerText =
+            (summary.capital || 0).toFixed(4);
+
+        document.getElementById("equity").innerText =
+            (summary.equity || 0).toFixed(4);
+
+        document.getElementById("dd").innerText =
+            ((summary.drawdown || 0) * 100).toFixed(2) + "%";
+
+        document.getElementById("pos").innerText =
+            summary.positions || 0;
+
+        document.getElementById("stats").innerText =
+            JSON.stringify(stats, null, 2);
+
+        const labels = equityCurve.map(x =>
+            new Date((x.t || 0) * 1000).toLocaleTimeString()
+        );
+
+        const values = equityCurve.map(x => x.equity || 0);
+
+        if (!chart) {
+            const ctx = document.getElementById("chart").getContext("2d");
+            chart = new Chart(ctx, {
+                type: "line",
+                data: {
+                    labels,
+                    datasets: [{
+                        label: "Equity",
+                        data: values,
+                        borderColor: "#00ffcc",
+                        fill: false
+                    }]
+                }
+            });
+        } else {
+            chart.data.labels = labels;
+            chart.data.datasets[0].data = values;
+            chart.update();
+        }
+
+    } catch (err) {
+        document.getElementById("stats").innerText =
+            "UI ERROR: " + err;
     }
-
-    const s = data.summary
-    const stats = data.trading || {}
-    const curve = data.equity_curve || []
+}
 
     // ===== summary =====
     capital.innerText = safe(s.capital).toFixed(4)
