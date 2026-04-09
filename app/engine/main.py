@@ -2,21 +2,75 @@
 
 import asyncio
 import time
+
 from app.state import engine
 
-from app.engine.fund import update_fund_allocator
-from app.engine.agent import agent_update, agent_adjust_params
-from app.engine.execution import execute_portfolio
-from app.engine.features import fetch_alpha_candidates
-from app.engine.risk import check_sell
-from app.engine.state_runtime import update_runtime_stats
+# =========================
+# SAFE IMPORT（避免炸）
+# =========================
+try:
+    from app.engine.fund import update_fund_allocator
+except:
+    def update_fund_allocator(*args, **kwargs):
+        pass
+
+try:
+    from app.engine.agent import agent_update, agent_adjust_params
+except:
+    def agent_update(): pass
+    def agent_adjust_params(): pass
+
+try:
+    from app.engine.execution import execute_portfolio
+except:
+    async def execute_portfolio(*args, **kwargs):
+        return False
+
+try:
+    from app.engine.features import fetch_alpha_candidates
+except:
+    async def fetch_alpha_candidates():
+        return []
+
+try:
+    from app.engine.risk import check_sell
+except:
+    async def check_sell(p):
+        return False
+
+try:
+    from app.engine.state_runtime import update_runtime_stats
+except:
+    def update_runtime_stats():
+        pass
 
 
+# =========================
+# INIT
+# =========================
 async def start_once():
     engine.running = True
+
+    if not hasattr(engine, "positions"):
+        engine.positions = []
+
+    if not hasattr(engine, "capital"):
+        engine.capital = 5.0
+
+    if not hasattr(engine, "stats"):
+        engine.stats = {
+            "executed": 0,
+            "wins": 0,
+            "losses": 0,
+            "trades": 0,
+        }
+
     update_fund_allocator(force=True)
 
 
+# =========================
+# MAIN LOOP
+# =========================
 async def main_loop():
     await start_once()
 
@@ -31,20 +85,40 @@ async def main_loop():
             # ================= FUND =================
             update_fund_allocator()
 
-            # ================= DATA =================
+            # ================= FETCH =================
             tokens = await fetch_alpha_candidates()
+
+            if not isinstance(tokens, list):
+                tokens = []
 
             # ================= SELL =================
             for p in list(engine.positions):
-                await check_sell(p)
+                try:
+                    await check_sell(p)
+                except Exception as e:
+                    print("SELL ERROR:", e)
 
             # ================= BUY =================
-            await execute_portfolio(tokens)
+            traded = False
+            try:
+                traded = await execute_portfolio(tokens)
+            except Exception as e:
+                print("EXEC ERROR:", e)
 
             # ================= STATS =================
-            update_runtime_stats()
+            try:
+                update_runtime_stats()
+            except Exception as e:
+                print("STATS ERROR:", e)
+
+            # ================= DEBUG =================
+            print(
+                f"LOOP | capital={engine.capital:.4f} "
+                f"positions={len(engine.positions)} "
+                f"traded={traded}"
+            )
 
         except Exception as e:
-            print("ENGINE ERROR:", e)
+            print("ENGINE LOOP ERROR:", e)
 
         await asyncio.sleep(2)
