@@ -1,8 +1,9 @@
-# app/server.py
-
 import sys
 import os
 import asyncio
+import json
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -14,21 +15,74 @@ sys.path.append(os.getcwd())
 # =========================
 # IMPORT ENGINE
 # =========================
+ENGINE_IMPORT_ERROR = None
+
 try:
     from app.engine.main import main_loop
 except Exception as e:
     print("❌ ENGINE IMPORT ERROR:", e)
+    ENGINE_IMPORT_ERROR = str(e)
     main_loop = None
+
+try:
+    from app.state import engine
+except Exception as e:
+    print("❌ ENGINE STATE IMPORT ERROR:", e)
+    engine = None
 
 # =========================
 # APP INIT
 # =========================
 app = FastAPI(
     title="Pump Fusion V74",
-    version="74.0",
+    version="74.1",
 )
 
 ENGINE_TASK = None
+
+
+# =========================
+# HELPERS
+# =========================
+def engine_task_running() -> bool:
+    global ENGINE_TASK
+    return ENGINE_TASK is not None and not ENGINE_TASK.done()
+
+
+def safe_engine_summary():
+    if engine is None:
+        return {
+            "loaded": False,
+            "reason": "engine_state_import_failed",
+        }
+
+    try:
+        return {
+            "loaded": True,
+            "running": bool(getattr(engine, "running", False)),
+            "capital": float(getattr(engine, "capital", 0.0)),
+            "positions": len(getattr(engine, "positions", []) or []),
+            "last_signal": getattr(engine, "last_signal", ""),
+            "last_trade": getattr(engine, "last_trade", ""),
+            "no_trade_cycles": int(getattr(engine, "no_trade_cycles", 0)),
+            "stats": getattr(engine, "stats", {}),
+        }
+    except Exception as e:
+        return {
+            "loaded": False,
+            "reason": f"engine_summary_error: {e}",
+        }
+
+
+def safe_read_metrics():
+    path = Path("metrics.json")
+    if not path.exists():
+        return {"error": "metrics_not_found"}
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"error": f"metrics_read_error: {e}"}
 
 
 # =========================
@@ -44,11 +98,16 @@ async def startup():
         print("❌ Engine not loaded")
         return
 
+    if engine_task_running():
+        print("⚠️ ENGINE TASK ALREADY RUNNING")
+        return
+
     try:
-        ENGINE_TASK = asyncio.create_task(main_loop())
+        ENGINE_TASK = asyncio.create_task(main_loop(), name="pump_engine_main_loop")
         print("🔥 ENGINE TASK STARTED")
     except Exception as e:
         print("❌ ENGINE START ERROR:", e)
+        ENGINE_TASK = None
 
 
 # =========================
@@ -58,7 +117,8 @@ async def startup():
 async def root():
     return {
         "status": "running",
-        "engine": "alive" if ENGINE_TASK else "not_started"
+        "engine": "alive" if engine_task_running() else "not_started_or_stopped",
+        "engine_loaded": main_loop is not None,
     }
 
 
@@ -67,7 +127,11 @@ async def root():
 # =========================
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "engine_loaded": main_loop is not None,
+        "engine_task_running": engine_task_running(),
+    }
 
 
 # =========================
@@ -75,10 +139,48 @@ async def health():
 # =========================
 @app.get("/debug")
 async def debug():
+    task_state = None
+    task_error = None
+
+    if ENGINE_TASK is None:
+        task_state = "none"
+    elif ENGINE_TASK.cancelled():
+        task_state = "cancelled"
+    elif ENGINE_TASK.done():
+        task_state = "done"
+        try:
+            exc = ENGINE_TASK.exception()
+            if exc:
+                task_error = str(exc)
+        except Exception as e:
+            task_error = f"exception_read_error: {e}"
+    else:
+        task_state = "running"
+
     return {
         "engine_loaded": main_loop is not None,
-        "engine_task": str(ENGINE_TASK),
+        "engine_import_error": ENGINE_IMPORT_ERROR,
+        "engine_task_state": task_state,
+        "engine_task_error": task_error,
+        "engine_summary": safe_engine_summary(),
     }
+
+
+# =========================
+# METRICS
+# =========================
+@app.get("/metrics")
+async def metrics():
+    data = safe_read_metrics()
+    return JSONResponse(content=data)
+
+
+# =========================
+# LIVE ENGINE SNAPSHOT
+# =========================
+@app.get("/engine")
+async def engine_info():
+    return safe_engine_summary()
 
 
 # =========================
@@ -90,11 +192,14 @@ async def shutdown():
 
     print("🛑 SERVER SHUTDOWN")
 
-    if ENGINE_TASK:
+    if ENGINE_TASK is not None:
         ENGINE_TASK.cancel()
         try:
             await ENGINE_TASK
-        except:
+        except asyncio.CancelledError:
             pass
+        except Exception as e:
+            print("⚠️ ENGINE TASK SHUTDOWN ERROR:", e)
 
+        ENGINE_TASK = None
         print("🧹 ENGINE TASK CLEANED")
