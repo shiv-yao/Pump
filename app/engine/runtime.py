@@ -375,3 +375,26 @@ try:
     _ = FUND_PERF["stable"]
 except Exception:
     pass
+
+# ===== STRATEGY MULTIPLIER =====
+SNIPER_MULTIPLIER = 1.35
+SMART_MULTIPLIER = 1.15
+MOMENTUM_MULTIPLIER = 1.05
+
+# ===== SNIPER BOOST =====
+SNIPER_RECENT_WINDOW_SEC = 10
+EARLY_ENTRY_BONUS = 0.02
+MEMPOOL_RECENCY_BONUS = 0.025
+
+# ===== FUND =====
+FUND_ALLOCATOR = {
+    "stable": 0.4,
+    "sniper": 0.2,
+    "momentum": 0.4,
+}
+
+FUND_PERF = {
+    "stable": {"pnl": 0, "trades": 0, "wins": 0, "losses": 0},
+    "sniper": {"pnl": 0, "trades": 0, "wins": 0, "losses": 0},
+    "momentum": {"pnl": 0, "trades": 0, "wins": 0, "losses": 0},
+}
