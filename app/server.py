@@ -1,14 +1,11 @@
 import sys
 import os
 import asyncio
-import json
-from pathlib import Path
-from fastapi.responses import HTMLResponse
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 
 # =========================
-# 🔥 FIX: 確保 module 不爆
+# FIX: 確保 module 不爆
 # =========================
 sys.path.append(os.getcwd())
 
@@ -16,6 +13,8 @@ sys.path.append(os.getcwd())
 # IMPORT ENGINE
 # =========================
 ENGINE_IMPORT_ERROR = None
+main_loop = None
+engine = None
 
 try:
     from app.engine.main import main_loop
@@ -28,14 +27,29 @@ try:
     from app.state import engine
 except Exception as e:
     print("❌ ENGINE STATE IMPORT ERROR:", e)
+    if ENGINE_IMPORT_ERROR:
+        ENGINE_IMPORT_ERROR += f" | state_error={e}"
+    else:
+        ENGINE_IMPORT_ERROR = f"state_error={e}"
     engine = None
+
+try:
+    from app.engine.metrics_runtime import get_metrics
+except Exception as e:
+    print("❌ METRICS IMPORT ERROR:", e)
+
+    def get_metrics():
+        return {
+            "status": "metrics_not_loaded",
+            "error": str(e),
+        }
 
 # =========================
 # APP INIT
 # =========================
 app = FastAPI(
     title="Pump Fusion V74",
-    version="74.1",
+    version="74.2",
 )
 
 ENGINE_TASK = None
@@ -74,40 +88,37 @@ def safe_engine_summary():
         }
 
 
-def safe_read_metrics():
-    path = Path("metrics.json")
-    if not path.exists():
-        return {"error": "metrics_not_found"}
-
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        return {"error": f"metrics_read_error: {e}"}
-
-
 # =========================
 # STARTUP
 # =========================
 @app.on_event("startup")
 async def startup():
-    global ENGINE_TASK
-
     print("🚀 SERVER START")
 
-    if main_loop is None:
-        print("❌ Engine not loaded")
-        return
+    async def delayed_start():
+        global ENGINE_TASK
 
-    if engine_task_running():
-        print("⚠️ ENGINE TASK ALREADY RUNNING")
-        return
+        await asyncio.sleep(0.5)
 
-    try:
-        ENGINE_TASK = asyncio.create_task(main_loop(), name="pump_engine_main_loop")
-        print("🔥 ENGINE TASK STARTED")
-    except Exception as e:
-        print("❌ ENGINE START ERROR:", e)
-        ENGINE_TASK = None
+        if main_loop is None:
+            print("❌ Engine not loaded")
+            return
+
+        if engine_task_running():
+            print("⚠️ ENGINE TASK ALREADY RUNNING")
+            return
+
+        try:
+            ENGINE_TASK = asyncio.create_task(
+                main_loop(),
+                name="pump_engine_main_loop",
+            )
+            print("🔥 ENGINE TASK STARTED (DELAYED)")
+        except Exception as e:
+            print("❌ ENGINE START ERROR:", e)
+            ENGINE_TASK = None
+
+    asyncio.create_task(delayed_start())
 
 
 # =========================
@@ -119,6 +130,7 @@ async def root():
         "status": "running",
         "engine": "alive" if engine_task_running() else "not_started_or_stopped",
         "engine_loaded": main_loop is not None,
+        "engine_import_error": ENGINE_IMPORT_ERROR,
     }
 
 
@@ -167,12 +179,20 @@ async def debug():
 
 
 # =========================
-# METRICS
+# METRICS（memory版）
 # =========================
 @app.get("/metrics")
 async def metrics():
-    data = safe_read_metrics()
-    return JSONResponse(content=data)
+    try:
+        return JSONResponse(content=get_metrics())
+    except Exception as e:
+        return JSONResponse(
+            content={
+                "status": "metrics_error",
+                "error": str(e),
+            },
+            status_code=500,
+        )
 
 
 # =========================
@@ -181,6 +201,122 @@ async def metrics():
 @app.get("/engine")
 async def engine_info():
     return safe_engine_summary()
+
+
+# =========================
+# UI DASHBOARD
+# =========================
+@app.get("/ui", response_class=HTMLResponse)
+async def dashboard():
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pump Fund Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body style="background:#0b0f1a;color:#fff;font-family:sans-serif;padding:20px">
+<h2>🔥 Pump Fund Dashboard</h2>
+
+<div>
+    <b>Capital:</b> <span id="capital">-</span><br>
+    <b>Equity:</b> <span id="equity">-</span><br>
+    <b>Drawdown:</b> <span id="dd">-</span><br>
+    <b>Positions:</b> <span id="pos">-</span>
+</div>
+
+<br>
+<canvas id="chart" width="800" height="300"></canvas>
+
+<br>
+<h3>📊 Stats</h3>
+<pre id="stats">{}</pre>
+
+<script>
+let chart = null;
+
+function safeNum(v, d=0) {
+    return (typeof v === "number" && !Number.isNaN(v)) ? v : d;
+}
+
+async function load() {
+    try {
+        const res = await fetch("/metrics", { cache: "no-store" });
+        const data = await res.json();
+
+        if (!data || !data.summary) {
+            document.getElementById("stats").innerText = JSON.stringify(data, null, 2);
+            return;
+        }
+
+        const summary = data.summary || {};
+        const stats = data.stats || {};
+        const equityCurve = Array.isArray(data.equity_curve) ? data.equity_curve : [];
+
+        document.getElementById("capital").innerText = safeNum(summary.capital).toFixed(4);
+        document.getElementById("equity").innerText = safeNum(summary.equity).toFixed(4);
+        document.getElementById("dd").innerText = (safeNum(summary.drawdown) * 100).toFixed(2) + "%";
+        document.getElementById("pos").innerText = safeNum(summary.positions, 0);
+
+        document.getElementById("stats").innerText = JSON.stringify(stats, null, 2);
+
+        const labels = equityCurve.map(x => {
+            const t = safeNum(x.t, 0);
+            return t ? new Date(t * 1000).toLocaleTimeString() : "";
+        });
+
+        const values = equityCurve.map(x => safeNum(x.equity, 0));
+
+        if (!chart) {
+            const ctx = document.getElementById("chart").getContext("2d");
+            chart = new Chart(ctx, {
+                type: "line",
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: "Equity",
+                        data: values,
+                        borderColor: "#00ffcc",
+                        fill: false,
+                        tension: 0.15
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    animation: false,
+                    plugins: {
+                        legend: {
+                            labels: { color: "#ffffff" }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: "#ffffff" },
+                            grid: { color: "rgba(255,255,255,0.08)" }
+                        },
+                        y: {
+                            ticks: { color: "#ffffff" },
+                            grid: { color: "rgba(255,255,255,0.08)" }
+                        }
+                    }
+                }
+            });
+        } else {
+            chart.data.labels = labels;
+            chart.data.datasets[0].data = values;
+            chart.update();
+        }
+    } catch (err) {
+        document.getElementById("stats").innerText = "UI load error: " + err;
+    }
+}
+
+setInterval(load, 2000);
+load();
+</script>
+</body>
+</html>
+"""
 
 
 # =========================
@@ -203,81 +339,3 @@ async def shutdown():
 
         ENGINE_TASK = None
         print("🧹 ENGINE TASK CLEANED")
-
-@app.get("/ui", response_class=HTMLResponse)
-async def dashboard():
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Pump Fund Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head>
-
-<body style="background:#0b0f1a;color:#fff;font-family:sans-serif;padding:20px">
-
-<h2>🔥 Pump Fund Dashboard</h2>
-
-<div>
-    <b>Capital:</b> <span id="capital"></span><br>
-    <b>Equity:</b> <span id="equity"></span><br>
-    <b>Drawdown:</b> <span id="dd"></span><br>
-    <b>Positions:</b> <span id="pos"></span>
-</div>
-
-<br>
-
-<canvas id="chart" width="800" height="300"></canvas>
-
-<br>
-
-<h3>📊 Stats</h3>
-<pre id="stats"></pre>
-
-<script>
-let chart;
-
-async function load() {
-    const res = await fetch("/metrics");
-    const data = await res.json();
-
-    if (!data.summary) return;
-
-    document.getElementById("capital").innerText = data.summary.capital.toFixed(4);
-    document.getElementById("equity").innerText = data.summary.equity.toFixed(4);
-    document.getElementById("dd").innerText = (data.summary.drawdown * 100).toFixed(2) + "%";
-    document.getElementById("pos").innerText = data.summary.positions;
-
-    document.getElementById("stats").innerText = JSON.stringify(data.stats, null, 2);
-
-    const labels = data.equity_curve.map(x => new Date(x.t * 1000).toLocaleTimeString());
-    const values = data.equity_curve.map(x => x.equity);
-
-    if (!chart) {
-        const ctx = document.getElementById("chart").getContext("2d");
-        chart = new Chart(ctx, {
-            type: "line",
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: "Equity",
-                    data: values,
-                    borderColor: "#00ffcc",
-                    fill: false
-                }]
-            }
-        });
-    } else {
-        chart.data.labels = labels;
-        chart.data.datasets[0].data = values;
-        chart.update();
-    }
-}
-
-setInterval(load, 2000);
-load();
-</script>
-
-</body>
-</html>
-"""
