@@ -241,7 +241,7 @@ def open_positions_detail():
 
 def update_equity_curve(equity):
     EQUITY_HISTORY.append({
-        "t": time.time(),
+        "t": int(time.time()),  # ✅
         "equity": sf(equity, 0.0),
     })
 
