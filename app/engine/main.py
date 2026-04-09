@@ -2,15 +2,19 @@ import asyncio
 import time
 
 from app.state import engine
+from app.engine import runtime as rt
 
 # =========================
 # SAFE IMPORT（避免炸）
 # =========================
 try:
-    from app.engine.fund import update_fund_allocator
+    from app.engine.fund_brain import update_fund_allocator
 except Exception:
-    def update_fund_allocator(*args, **kwargs):
-        return None
+    try:
+        from app.engine.fund import update_fund_allocator
+    except Exception:
+        def update_fund_allocator(*args, **kwargs):
+            return None
 
 try:
     from app.engine.agent import agent_update, agent_adjust_params
@@ -34,10 +38,19 @@ except Exception:
         return []
 
 try:
-    from app.engine.risk import check_sell
+    from app.engine.features import process_candidates
 except Exception:
-    async def check_sell(_p):
-        return False
+    async def process_candidates(tokens):
+        return tokens if isinstance(tokens, list) else []
+
+try:
+    from app.engine.execution import check_sell
+except Exception:
+    try:
+        from app.engine.risk import check_sell
+    except Exception:
+        async def check_sell(_p):
+            return False
 
 try:
     from app.engine.state_runtime import update_runtime_stats
@@ -108,10 +121,33 @@ def _update_basic_runtime(traded: bool):
         pass
 
 
+async def _safe_execute_portfolio(tokens):
+    """
+    兼容兩種 execution.py 寫法：
+    1. execute_portfolio(tokens)
+    2. ranked = await process_candidates(tokens); execute_portfolio(ranked)
+    """
+    try:
+        ranked = await process_candidates(tokens)
+    except Exception as e:
+        _log(f"PROCESS CANDIDATES ERROR: {e}")
+        ranked = tokens if isinstance(tokens, list) else []
+
+    try:
+        return await execute_portfolio(ranked)
+    except TypeError:
+        return await execute_portfolio(tokens)
+
+
 # =========================
 # INIT
 # =========================
 async def start_once():
+    try:
+        rt.ensure_runtime()
+    except Exception as e:
+        _log(f"RUNTIME INIT ERROR: {e}")
+
     engine.running = True
 
     _ensure_attr("positions", [])
@@ -138,6 +174,7 @@ async def start_once():
         "errors": 0,
         "signals": 0,
         "open_positions": len(engine.positions),
+        "open_exposure": 0.0,
         "capital": engine.capital,
         "realized_pnl_sol": 0.0,
         "unrealized_pnl_sol": 0.0,
@@ -152,6 +189,11 @@ async def start_once():
 
     try:
         update_fund_allocator(force=True)
+    except TypeError:
+        try:
+            update_fund_allocator()
+        except Exception as e:
+            _log(f"FUND INIT ERROR: {e}")
     except Exception as e:
         _log(f"FUND INIT ERROR: {e}")
 
@@ -210,7 +252,7 @@ async def main_loop():
 
             # ================= BUY =================
             try:
-                traded = await execute_portfolio(tokens)
+                traded = await _safe_execute_portfolio(tokens)
             except Exception as e:
                 _log(f"EXEC ERROR: {e}")
                 traded = False
@@ -243,9 +285,11 @@ async def main_loop():
 
         except Exception as e:
             try:
+                if not hasattr(engine, "stats") or not isinstance(engine.stats, dict):
+                    engine.stats = {}
                 engine.stats["errors"] = _safe_int(engine.stats.get("errors", 0), 0) + 1
             except Exception:
                 pass
             _log(f"ENGINE LOOP ERROR: {e}")
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(_safe_float(getattr(rt, "LOOP_SLEEP_SEC", 2.0), 2.0))
