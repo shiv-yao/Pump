@@ -58,10 +58,11 @@ except Exception:
     def update_runtime_stats():
         return None
 
+# ✅ memory metrics 版
 try:
-    from app.engine.metrics import save_metrics
+    from app.engine.metrics_runtime import update_metrics
 except Exception:
-    def save_metrics():
+    def update_metrics():
         return None
 
 
@@ -197,8 +198,9 @@ async def start_once():
     except Exception as e:
         _log(f"FUND INIT ERROR: {e}")
 
+    # ✅ 初始化 metrics memory
     try:
-        save_metrics()
+        update_metrics()
     except Exception as e:
         _log(f"METRICS INIT ERROR: {e}")
 
@@ -269,9 +271,9 @@ async def main_loop():
             except Exception as e:
                 _log(f"STATS ERROR: {e}")
 
-            # ================= METRICS =================
+            # ================= METRICS（memory版） =================
             try:
-                save_metrics()
+                update_metrics()
             except Exception as e:
                 _log(f"METRICS ERROR: {e}")
 
