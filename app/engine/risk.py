@@ -1,83 +1,271 @@
+import time
+import asyncio
+
 from app.engine import runtime as rt
-from app.engine.utils import clamp, log, now, recent_closed_trades, sf
+from app.engine.utils import clamp, now, safe_div, sf
 
-def breathing_risk_mult():
-    return clamp(sf(rt.BREATHING_STATE.get("risk_mult", 1.0), 1.0), rt.BREATHING_MIN_RISK_MULT, rt.BREATHING_MAX_RISK_MULT)
 
-def update_breathing_state():
-    rows = recent_closed_trades(6)
-    if not rows:
-        rt.BREATHING_STATE["risk_mult"] = 1.0
-        return
-    last2 = rows[-2:] if len(rows) >= 2 else rows
-    streak = 0
-    for r in reversed(last2):
-        if sf(r.get("pnl"), 0.0) < 0:
-            streak += 1
-        else:
-            break
-    if streak >= rt.BREATHING_LOSS_STREAK:
-        rt.BREATHING_STATE["risk_mult"] = max(rt.BREATHING_MIN_RISK_MULT, rt.BREATHING_STATE["risk_mult"] * 0.70)
-        rt.BREATHING_STATE["cooldown_until"] = now() + rt.BREATHING_COOLDOWN_SEC
-        log(f"BREATHING_DE_RISK streak={streak} risk={rt.BREATHING_STATE['risk_mult']:.2f}")
-        return
-    recent = rows[-3:]
-    if recent and all(sf(x.get("pnl"), 0.0) > 0 for x in recent):
-        rt.BREATHING_STATE["risk_mult"] = min(rt.BREATHING_MAX_RISK_MULT, rt.BREATHING_STATE["risk_mult"] + 0.08)
-        return
-    if now() > sf(rt.BREATHING_STATE.get("cooldown_until", 0.0), 0.0):
-        rt.BREATHING_STATE["risk_mult"] = min(rt.BREATHING_MAX_RISK_MULT, rt.BREATHING_STATE["risk_mult"] + 0.03)
+def _ensure_runtime_state():
+    if not hasattr(rt, "BREATHING_STATE") or rt.BREATHING_STATE is None:
+        rt.BREATHING_STATE = {"risk_mult": 1.0, "cooldown_until": 0.0}
 
-def detect_regime():
-    if now() - sf(rt.REGIME_STATE.get("last_update", 0.0), 0.0) < 15:
-        return rt.REGIME_STATE["mode"]
-    rows = recent_closed_trades(8)
-    if len(rows) < 4:
-        rt.REGIME_STATE.update({"mode": "neutral", "last_update": now()})
-        return "neutral"
-    pnls = [sf(x.get("pnl"), 0.0) for x in rows]
-    wins = sum(1 for x in pnls if x > 0)
-    avg_pnl = sum(pnls) / max(len(pnls), 1)
-    winrate = wins / max(len(pnls), 1)
-    mode = "neutral"
-    if winrate >= 0.60 and avg_pnl > 0:
-        mode = "bull"
-    elif winrate <= 0.30 and avg_pnl < 0:
-        mode = "bear"
-    rt.REGIME_STATE.update({"mode": mode, "last_update": now()})
-    return mode
+    if not hasattr(rt, "REGIME_STATE") or rt.REGIME_STATE is None:
+        rt.REGIME_STATE = {"mode": "neutral", "last_update": 0.0}
 
-def buy_window_count():
-    cutoff = now() - rt.BUY_WINDOW_SEC
-    while rt.BUY_TIMES and rt.BUY_TIMES[0] < cutoff:
-        rt.BUY_TIMES.pop(0)
-    return len(rt.BUY_TIMES)
+    if not hasattr(rt, "INSTITUTIONAL_STATE") or rt.INSTITUTIONAL_STATE is None:
+        rt.INSTITUTIONAL_STATE = {
+            "pause_until": 0.0,
+            "daily_realized_pnl_sol": 0.0,
+            "day_bucket": int(time.time() // 86400),
+            "last_reason": "boot",
+        }
 
-def institutional_day_reset():
-    import time
+    if not hasattr(rt, "LAST_PRICE") or rt.LAST_PRICE is None:
+        rt.LAST_PRICE = {}
+
+    if not hasattr(rt, "LAST_MOMENTUM") or rt.LAST_MOMENTUM is None:
+        rt.LAST_MOMENTUM = {}
+
+
+def _log(msg: str):
+    try:
+        if not hasattr(rt.engine, "logs") or rt.engine.logs is None:
+            rt.engine.logs = []
+        rt.engine.logs.append(str(msg))
+        rt.engine.logs = rt.engine.logs[-1200:]
+    except Exception:
+        pass
+    print(msg)
+
+
+def _roll_day_if_needed():
+    _ensure_runtime_state()
     bucket = int(time.time() // 86400)
-    if bucket != rt.INSTITUTIONAL_STATE["day_bucket"]:
+    if bucket != rt.INSTITUTIONAL_STATE.get("day_bucket"):
         rt.INSTITUTIONAL_STATE["day_bucket"] = bucket
         rt.INSTITUTIONAL_STATE["daily_realized_pnl_sol"] = 0.0
         rt.INSTITUTIONAL_STATE["last_reason"] = "new_day"
 
-def institutional_paused():
-    institutional_day_reset()
-    return now() < sf(rt.INSTITUTIONAL_STATE.get("pause_until", 0.0), 0.0)
 
-def institutional_loss_pause_if_needed():
-    rows = recent_closed_trades(10)
+def detect_regime():
+    _ensure_runtime_state()
+
+    if not getattr(rt.engine, "trade_history", None):
+        rt.REGIME_STATE["mode"] = "neutral"
+        return "neutral"
+
+    recent = list(rt.engine.trade_history)[-10:]
+    if not recent:
+        rt.REGIME_STATE["mode"] = "neutral"
+        return "neutral"
+
+    pnls = [sf(t.get("pnl", 0.0), 0.0) for t in recent if isinstance(t, dict)]
+    if not pnls:
+        rt.REGIME_STATE["mode"] = "neutral"
+        return "neutral"
+
+    avg = sum(pnls) / max(len(pnls), 1)
+
+    if avg > 0.02:
+        rt.REGIME_STATE["mode"] = "bull"
+    elif avg < -0.01:
+        rt.REGIME_STATE["mode"] = "bear"
+    else:
+        rt.REGIME_STATE["mode"] = "neutral"
+
+    rt.REGIME_STATE["last_update"] = now()
+    return rt.REGIME_STATE["mode"]
+
+
+def update_breathing_state():
+    _ensure_runtime_state()
+
+    recent = list(getattr(rt.engine, "trade_history", []) or [])[-max(8, getattr(rt, "BREATHING_LOSS_STREAK", 2) + 2):]
     streak = 0
-    for r in reversed(rows):
-        if sf(r.get("pnl"), 0.0) < 0:
+
+    for t in reversed(recent):
+        pnl = sf(t.get("pnl", 0.0), 0.0)
+        if pnl <= 0:
             streak += 1
         else:
             break
-    if streak >= rt.INSTITUTIONAL_LOSS_PAUSE_STREAK:
-        rt.INSTITUTIONAL_STATE["pause_until"] = now() + rt.INSTITUTIONAL_LOSS_PAUSE_SEC
-        rt.INSTITUTIONAL_STATE["last_reason"] = f"loss_streak_{streak}"
-        log(f"INSTITUTIONAL_PAUSE streak={streak} sec={rt.INSTITUTIONAL_LOSS_PAUSE_SEC}")
 
-def institutional_daily_loss_hit():
-    institutional_day_reset()
-    return rt.INSTITUTIONAL_STATE["daily_realized_pnl_sol"] <= -abs(rt.DAILY_LOSS_LIMIT_SOL)
+    if streak >= getattr(rt, "BREATHING_LOSS_STREAK", 2):
+        rt.BREATHING_STATE["risk_mult"] = max(
+            getattr(rt, "BREATHING_MIN_RISK_MULT", 0.45),
+            sf(rt.BREATHING_STATE.get("risk_mult", 1.0), 1.0) * 0.85,
+        )
+        rt.BREATHING_STATE["cooldown_until"] = now() + getattr(rt, "BREATHING_COOLDOWN_SEC", 180)
+        _log(f"BREATHING cooldown streak={streak} risk_mult={rt.BREATHING_STATE['risk_mult']:.2f}")
+    else:
+        if now() >= sf(rt.BREATHING_STATE.get("cooldown_until", 0.0), 0.0):
+            rt.BREATHING_STATE["risk_mult"] = min(
+                getattr(rt, "BREATHING_MAX_RISK_MULT", 1.20),
+                sf(rt.BREATHING_STATE.get("risk_mult", 1.0), 1.0) + 0.02,
+            )
+
+
+def institutional_loss_pause_if_needed():
+    _roll_day_if_needed()
+
+    daily_loss_limit = abs(sf(getattr(rt, "DAILY_LOSS_LIMIT_SOL", 0.60), 0.60))
+    daily_realized = sf(rt.INSTITUTIONAL_STATE.get("daily_realized_pnl_sol", 0.0), 0.0)
+
+    if daily_realized <= -daily_loss_limit:
+        rt.INSTITUTIONAL_STATE["pause_until"] = now() + getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_SEC", 600)
+        rt.INSTITUTIONAL_STATE["last_reason"] = "daily_loss_limit"
+        _log("INSTITUTIONAL pause triggered by daily loss limit")
+        return True
+
+    recent = list(getattr(rt.engine, "trade_history", []) or [])[-max(10, getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_STREAK", 5) + 2):]
+    streak = 0
+    for t in reversed(recent):
+        pnl = sf(t.get("pnl", 0.0), 0.0)
+        if pnl <= 0:
+            streak += 1
+        else:
+            break
+
+    if streak >= getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_STREAK", 5):
+        rt.INSTITUTIONAL_STATE["pause_until"] = now() + getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_SEC", 600)
+        rt.INSTITUTIONAL_STATE["last_reason"] = "loss_streak"
+        _log(f"INSTITUTIONAL pause triggered by streak={streak}")
+        return True
+
+    return False
+
+
+async def check_sell(p):
+    """
+    Fallback-compatible sell checker.
+    Expects app.engine.execution.sell to exist.
+    """
+    _ensure_runtime_state()
+
+    try:
+        from app.engine.sources import get_price
+    except Exception:
+        async def get_price(_mint):
+            return None
+
+    try:
+        from app.engine.agent import agent_effective_sl, agent_effective_tp
+    except Exception:
+        def agent_effective_sl():
+            return getattr(rt, "STOP_LOSS", -0.012)
+
+        def agent_effective_tp():
+            return getattr(rt, "TAKE_PROFIT", 0.022)
+
+    try:
+        from app.engine.execution import sell
+    except Exception:
+        async def sell(*args, **kwargs):
+            return False
+
+    m = p.get("mint")
+    if not m:
+        return False
+
+    price = await get_price(m)
+    entry = sf(p.get("entry_price", p.get("entry")), 0.0)
+    if price is None or entry <= 0:
+        return False
+
+    hold_sec = now() - sf(p.get("time", now()), now())
+    if price < 1e-12 or hold_sec < 5:
+        return False
+
+    last = rt.LAST_PRICE.get(m)
+    if last and last > 0:
+        jump = abs(price - last) / last
+        if jump > 0.25 and hold_sec < 20:
+            return False
+
+    token_amount = sf(p.get("token_amount", 0.0), 0.0)
+    entry_value = sf(p.get("entry_value", p.get("size", 0.0)), 0.0)
+    if token_amount <= 0 or entry_value <= 0:
+        return False
+
+    market_value = token_amount * price
+    pnl = clamp(
+        safe_div(market_value - entry_value, entry_value, 0.0),
+        -getattr(rt, "MAX_PNL_ABS", 0.20),
+        getattr(rt, "MAX_PNL_ABS", 0.20),
+    )
+
+    p["high"] = max(sf(p.get("high", entry), entry), price)
+
+    tier = p.get("tier") or (p.get("meta", {}) or {}).get("tier", "C")
+    momentum_now = sf(rt.LAST_MOMENTUM.get(m, 0.0), 0.0)
+    regime = detect_regime()
+
+    hard_stop = getattr(rt, "HARD_STOP_LOSS", -0.020)
+    if pnl <= hard_stop:
+        return await sell(p, "HARD_STOP", price, 1.0)
+
+    if hold_sec > getattr(rt, "FORCE_EXIT_SEC", 90):
+        return await sell(p, "FORCE_EXIT", price, 1.0)
+
+    fast_cut_line = -0.02 if regime != "bear" else -0.015
+    if pnl < fast_cut_line and hold_sec > 20:
+        return await sell(p, "FAST_CUT", price, 1.0)
+
+    if pnl > 0 and momentum_now > 0.0035:
+        return False
+
+    if -0.02 < pnl < 0 and momentum_now > 0.0045:
+        return False
+
+    if pnl >= 0.008 and not p.get("tp1_done"):
+        p["tp1_done"] = True
+        return await sell(p, "PARTIAL_TP", price, 0.50)
+
+    tp = agent_effective_tp()
+    if tier == "A+":
+        tp *= 2.2
+    elif tier == "A":
+        tp *= 1.8
+
+    if regime == "bull":
+        tp *= 1.15
+    elif regime == "bear":
+        tp *= 0.85
+
+    if pnl >= tp:
+        return await sell(p, "TP", price, 1.0)
+
+    effective_sl = agent_effective_sl()
+    if pnl <= effective_sl:
+        await asyncio.sleep(0.4)
+        price2 = await get_price(m)
+        if price2:
+            market_value2 = token_amount * price2
+            pnl2 = clamp(
+                safe_div(market_value2 - entry_value, entry_value, 0.0),
+                -getattr(rt, "MAX_PNL_ABS", 0.20),
+                getattr(rt, "MAX_PNL_ABS", 0.20),
+            )
+            if pnl2 <= effective_sl:
+                return await sell(p, "SL", price2, 1.0)
+        return False
+
+    dynamic_trailing_gap = getattr(rt, "TRAILING_GAP", 0.01)
+    dynamic_trailing_gap *= 1.15 if tier == "A+" else 1.0
+    dynamic_trailing_gap *= 0.85 if regime == "bear" else 1.0
+
+    if price < p["high"] * (1 - dynamic_trailing_gap):
+        return await sell(p, "TRAIL", price, 1.0)
+
+    dynamic_hold = int(
+        getattr(rt, "MAX_HOLD_SEC", 120)
+        * (1.25 if regime == "bull" else 0.70 if regime == "bear" else 1.0)
+    )
+
+    if hold_sec > dynamic_hold:
+        if tier in {"A", "A+"} and momentum_now > 0.0025 and pnl > 0:
+            return False
+        if pnl < 0.003:
+            return await sell(p, "TIME", price, 1.0)
+
+    return False
