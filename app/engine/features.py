@@ -10,6 +10,7 @@ from app.engine.strategy_router import apply_strategy_boost
 from app.engine.risk import detect_regime
 from app.engine.sources import get_price, get_price_info
 from app.engine.utils import clamp, now, score_stat_add, sf
+from app.state import engine
 
 
 # =========================================================
@@ -253,14 +254,22 @@ def mode(f):
 
 
 def breakout_strength(b):
-    b = clamp(sf(b), -getattr(rt, "MAX_BREAKOUT_ABS", 0.20), getattr(rt, "MAX_BREAKOUT_ABS", 0.20))
+    b = clamp(
+        sf(b),
+        -getattr(rt, "MAX_BREAKOUT_ABS", 0.20),
+        getattr(rt, "MAX_BREAKOUT_ABS", 0.20),
+    )
     if b <= 0:
         return 0.0
     return min(b / 0.05, 1.0) * 0.35
 
 
 def momentum_strength(m):
-    m = clamp(sf(m), -getattr(rt, "MAX_BREAKOUT_ABS", 0.20), getattr(rt, "MAX_BREAKOUT_ABS", 0.20))
+    m = clamp(
+        sf(m),
+        -getattr(rt, "MAX_BREAKOUT_ABS", 0.20),
+        getattr(rt, "MAX_BREAKOUT_ABS", 0.20),
+    )
     if m <= 0:
         return 0.0
     return min(m / 0.05, 1.0) * 0.30
@@ -359,12 +368,23 @@ def score_alpha(f):
         score *= 0.85
 
     mtype = mode(f)
+
     if mtype == "sniper":
-        score *= getattr(rt, "SNIPER_MULTIPLIER", 1.30)
+        score *= getattr(rt, "SNIPER_MULTIPLIER", 1.35)
+        if f.get("mempool_bonus", 0) > 0:
+            score *= 1.08
+        if f.get("early_bonus", 0) > 0:
+            score *= 1.05
+
     elif mtype == "smart":
-        score *= getattr(rt, "SMART_MULTIPLIER", 1.20)
+        score *= getattr(rt, "SMART_MULTIPLIER", 1.18)
+        if f.get("liq", 0) > 50000:
+            score *= 1.05
+
     else:
-        score *= getattr(rt, "MOMENTUM_MULTIPLIER", 1.00)
+        score *= getattr(rt, "MOMENTUM_MULTIPLIER", 1.05)
+        if f.get("breakout", 0) > 0.01 and f.get("momentum", 0) > 0:
+            score *= 1.05
 
     return clamp(score, 0.0, getattr(rt, "MAX_SCORE", 1.5)), {
         "bscore": bscore,
@@ -415,7 +435,6 @@ def source_weight(src):
     return mem * source_quality(src)
 
 
-
 def score_with_allocator(f):
     _ensure_runtime_state()
 
@@ -434,22 +453,33 @@ def score_with_allocator(f):
     base, mtype = apply_strategy_boost(base, f)
     base *= fund_multiplier(mtype)
 
-    # Per-strategy entry shaping for long-run behaviour
     min_by_strategy = {
         "stable": getattr(rt, "STABLE_ENTRY_THRESHOLD", 0.078),
         "sniper": getattr(rt, "SNIPER_ENTRY_THRESHOLD", 0.070),
         "momentum": getattr(rt, "MOMENTUM_ENTRY_THRESHOLD", 0.082),
     }
-    if base < min_by_strategy.get(mtype, getattr(rt, "ENTRY_THRESHOLD", 0.085)):
-        base *= 0.96  # keep ranked, but slightly penalize low-quality entries
+
+    threshold = min_by_strategy.get(mtype, getattr(rt, "ENTRY_THRESHOLD", 0.085))
+
+    no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0) or 0)
+
+    if no_trade_cycles > 20:
+        threshold *= 0.70
+    elif no_trade_cycles > 10:
+        threshold *= 0.85
+
+    if no_trade_cycles > getattr(rt, "FORCE_TRADE_AFTER", 180):
+        base = max(base, getattr(rt, "ENTRY_THRESHOLD", 0.085) * 0.95)
+
+    if base < threshold:
+        base *= 0.92
 
     return max(base, 0.0), mtype, detail
 
-import asyncio
-import random
 
-from app.engine import runtime as rt
-
+# =========================================================
+# CANDIDATE FETCH COMPAT
+# =========================================================
 try:
     from app.engine.sources import fetch_alpha_candidates as _sources_fetch_alpha_candidates
 except Exception:
@@ -470,7 +500,6 @@ async def fetch_alpha_candidates():
         except Exception:
             pass
 
-    # fallback: if runtime already has some buffered universe, use it
     try:
         if hasattr(rt, "MEMPOOL_BUFFER") and isinstance(rt.MEMPOOL_BUFFER, list):
             tokens = list(rt.MEMPOOL_BUFFER)[-50:]
@@ -479,5 +508,35 @@ async def fetch_alpha_candidates():
     except Exception:
         pass
 
-    # final safe fallback: empty list
     return []
+
+
+# =========================================================
+# PROCESS CANDIDATES
+# =========================================================
+async def process_candidates(tokens):
+    _ensure_runtime_state()
+
+    ranked = []
+
+    for t in tokens or []:
+        try:
+            f = await features(t)
+            if not f:
+                continue
+
+            sc, mtype, detail = score_with_allocator(f)
+
+            f["_score"] = sc
+            f["_mode"] = mtype
+            f["_tier"] = "A+" if sc >= 0.145 else "A" if sc >= getattr(rt, "STRICT_A_TIER_THRESHOLD", 0.095) else "B"
+            f["_detail"] = detail
+
+            ranked.append(f)
+        except Exception:
+            continue
+
+    ranked.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+
+    top_k = int(getattr(rt, "TOP_K_PRESELECT", 3))
+    return ranked[: max(top_k, 3)]
