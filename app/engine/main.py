@@ -119,10 +119,13 @@ EXPLORATION_ENABLE = os.getenv("EXPLORATION_ENABLE", "true").lower() == "true"
 EXPLORATION_MIN_SCORE = float(os.getenv("EXPLORATION_MIN_SCORE", "0.05"))
 EXPLORATION_SIZE_FRAC = float(os.getenv("EXPLORATION_SIZE_FRAC", "0.02"))
 
-# V66
 DEFAULT_TOKEN_DECIMALS = int(os.getenv("DEFAULT_TOKEN_DECIMALS", "6"))
 ESTIMATED_TX_FEE_SOL = float(os.getenv("ESTIMATED_TX_FEE_SOL", "0.000005"))
 ENABLE_EQUITY_MARK = os.getenv("ENABLE_EQUITY_MARK", "true").lower() == "true"
+
+WALLET_TRACKER_TIMEOUT_SEC = float(os.getenv("WALLET_TRACKER_TIMEOUT_SEC", "1.2"))
+QUOTE_TIMEOUT_RETRY = int(os.getenv("QUOTE_TIMEOUT_RETRY", "3"))
+HTTP_GET_RETRY = int(os.getenv("HTTP_GET_RETRY", "2"))
 
 SEARCH_TERMS = [
     "SOL", "USDC", "BONK", "MEME", "PEPE", "DOG", "AI", "PUMP", "NEW", "MOON", "100x"
@@ -130,6 +133,11 @@ SEARCH_TERMS = [
 MEME_SEARCH_TERMS = [
     "pumpfun", "pepe", "doge", "meme", "cat", "frog", "moonshot", "100x"
 ]
+
+JUPITER_PROGRAM_ID = os.getenv(
+    "JUPITER_PROGRAM_ID",
+    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+)
 
 
 # =========================================================
@@ -209,6 +217,13 @@ def sf(x, default=0.0):
         return default
 
 
+def safe_int(x, default=0):
+    try:
+        return int(float(x))
+    except Exception:
+        return default
+
+
 def now():
     return time.time()
 
@@ -226,8 +241,9 @@ def update_open_stats():
     engine.stats["open_exposure"] = exposure()
 
 
-def update_peak_capital():
-    engine.peak_capital = max(sf(engine.peak_capital), sf(engine.capital))
+async def update_peak_capital():
+    eq = await calc_equity() if ENABLE_EQUITY_MARK else sf(engine.capital, 0.0)
+    engine.peak_capital = max(sf(engine.peak_capital), sf(eq))
 
 
 def push_trade(row):
@@ -314,6 +330,84 @@ def safe_div(a, b, default=0.0):
         return a / b
     except Exception:
         return default
+
+
+def valid_mint_like(word: str) -> bool:
+    return isinstance(word, str) and 32 <= len(word) <= 44 and word.isalnum()
+
+
+def parse_out_amount(obj):
+    if not isinstance(obj, dict):
+        return 0
+    candidates = [
+        obj.get("outAmount"),
+        (obj.get("quote") or {}).get("outAmount"),
+        (obj.get("order") or {}).get("outAmount"),
+        ((obj.get("routePlan") or [{}])[0] or {}).get("swapInfo", {}).get("outAmount"),
+    ]
+    for x in candidates:
+        v = safe_int(x, 0)
+        if v > 0:
+            return v
+    return 0
+
+
+def parse_signature(obj):
+    if not isinstance(obj, dict):
+        return None
+    candidates = [
+        obj.get("signature"),
+        obj.get("result"),
+        (obj.get("result") or {}).get("signature") if isinstance(obj.get("result"), dict) else None,
+    ]
+    for x in candidates:
+        if isinstance(x, str) and x:
+            return x
+    return None
+
+
+# =========================================================
+# SAFE WRAPPERS
+# =========================================================
+
+async def safe_update_token_wallets(mint: str):
+    try:
+        return await asyncio.wait_for(update_token_wallets(mint), timeout=WALLET_TRACKER_TIMEOUT_SEC)
+    except Exception:
+        return []
+
+
+def safe_adaptive_filter(feature_row, _context=None, _no_trade_cycles=0):
+    try:
+        ok, meta = adaptive_filter(feature_row, _context, _no_trade_cycles)
+        return bool(ok), meta if isinstance(meta, dict) else {}
+    except Exception:
+        score = sf(feature_row.get("_score", feature_row.get("score", 0.0)), 0.0)
+        liq = sf(feature_row.get("liq", 0.0), 0.0)
+        breakout = sf(feature_row.get("breakout", 0.0), 0.0)
+        ok = score >= 0.08 and liq >= 3_000 and breakout > -0.03
+        return ok, {"fallback": True}
+
+
+async def safe_execute_swap(input_mint: str, output_mint: str, amount: int):
+    try:
+        res = await execute_swap(input_mint, output_mint, amount)
+    except Exception as e:
+        return {"error": f"execute_swap_exception: {e}"}
+
+    if not isinstance(res, dict):
+        return {"error": "execute_swap_invalid_response"}
+
+    if res.get("paper"):
+        q = await safe_quote(input_mint, output_mint, amount)
+        out_amount = parse_out_amount(q)
+        if out_amount <= 0:
+            out_amount = 1
+        res["quote"] = dict(res.get("quote") or {})
+        res["quote"]["outAmount"] = str(out_amount)
+        return res
+
+    return res
 
 
 # =========================================================
@@ -593,13 +687,15 @@ def momentum_strength(m):
 # =========================================================
 
 async def http_get(url, params=None, headers=None):
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            r = await client.get(url, params=params, headers=headers)
-            r.raise_for_status()
-            return r.json()
-    except Exception:
-        return None
+    for _ in range(max(1, HTTP_GET_RETRY)):
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+                r = await client.get(url, params=params, headers=headers)
+                r.raise_for_status()
+                return r.json()
+        except Exception:
+            await asyncio.sleep(0.15)
+    return None
 
 
 async def mempool_stream():
@@ -611,7 +707,7 @@ async def mempool_stream():
                     "id": 1,
                     "method": "logsSubscribe",
                     "params": [
-                        {"mentions": ["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5W6s8nH9c"]},
+                        {"mentions": [JUPITER_PROGRAM_ID]},
                         {"commitment": "processed"},
                     ],
                 }
@@ -622,7 +718,7 @@ async def mempool_stream():
                     data = json.loads(msg)
                     text = json.dumps(data)
                     for word in text.replace('"', " ").replace(",", " ").split():
-                        if 32 <= len(word) <= 48 and word.isalnum():
+                        if valid_mint_like(word):
                             MEMPOOL_BUFFER.append({
                                 "mint": word,
                                 "source": "mempool",
@@ -654,7 +750,7 @@ async def fetch_pumpfun_candidates(limit=30):
 
     for row in data[:limit]:
         mint = row.get("mint")
-        if mint:
+        if mint and valid_mint_like(mint):
             meta = {
                 "symbol": row.get("symbol"),
                 "name": row.get("name"),
@@ -689,7 +785,7 @@ async def fetch_jupiter_candidates(limit=80):
         else:
             mint, meta = row.get("address") or row.get("mint"), row
 
-        if mint and mint != SOL:
+        if mint and mint != SOL and valid_mint_like(mint):
             out.append({
                 "mint": mint,
                 "source": "jupiter",
@@ -714,7 +810,7 @@ async def fetch_dexscreener_candidates(query="SOL", limit=30):
     for row in (data.get("pairs", []) or [])[:limit]:
         base = row.get("baseToken", {}) or {}
         mint = base.get("address")
-        if mint and mint != SOL:
+        if mint and mint != SOL and valid_mint_like(mint):
             out.append({
                 "mint": mint,
                 "source": "dexscreener",
@@ -780,7 +876,7 @@ def source_quality(source):
 
 
 async def safe_quote(input_mint, output_mint, amount):
-    for _ in range(3):
+    for _ in range(max(1, QUOTE_TIMEOUT_RETRY)):
         try:
             q = await get_quote(input_mint, output_mint, amount)
             if q:
@@ -796,8 +892,8 @@ async def jupiter_price(m):
     if not q:
         return None
 
-    in_amt = sf(q.get("inAmount", 0))
-    out_amt = sf(q.get("outAmount", 0))
+    in_amt = sf(q.get("inAmount", AMOUNT))
+    out_amt = sf(parse_out_amount(q))
 
     if in_amt <= 0 or out_amt <= 0 or out_amt < MIN_OUT_AMOUNT:
         return None
@@ -952,11 +1048,7 @@ async def features(t):
     LAST_PRICE[m] = price
     LAST_PRICE_SOURCE[m] = pinfo.get("source", "unknown")
 
-    try:
-        wallets = await update_token_wallets(m)
-    except Exception:
-        wallets = []
-
+    wallets = await safe_update_token_wallets(m)
     wallet_count = len(wallets)
     smart = min(wallet_count / 3.0, 1.0)
 
@@ -1132,7 +1224,7 @@ def allocate_size(score, n_candidates):
 
 
 # =========================================================
-# V66 ACCOUNTING HELPERS
+# ACCOUNTING HELPERS
 # =========================================================
 
 def extract_fee_sol_from_res(res):
@@ -1198,7 +1290,7 @@ async def buy(m, f, position_size, mtype, forced=False):
     order_sol = max(position_size, MIN_ORDER_SOL)
     amt_atomic = int(order_sol * SOL_DECIMALS)
 
-    res = await execute_swap(SOL, m, amt_atomic)
+    res = await safe_execute_swap(SOL, m, amt_atomic)
 
     if not res:
         engine.stats["errors"] += 1
@@ -1210,7 +1302,10 @@ async def buy(m, f, position_size, mtype, forced=False):
         log(f"BUY_FAIL {m[:6]} {res.get('error')}")
         return False
 
-    out_amount = int((res.get("quote", {}) or {}).get("outAmount") or 0)
+    out_amount = parse_out_amount(res)
+    if out_amount <= 0:
+        q = await safe_quote(SOL, m, amt_atomic)
+        out_amount = parse_out_amount(q)
     if out_amount <= 0:
         engine.stats["errors"] += 1
         log(f"BUY_NO_OUT {m[:6]}")
@@ -1224,11 +1319,9 @@ async def buy(m, f, position_size, mtype, forced=False):
         log(f"BUY_BAD_TOKEN_AMOUNT {m[:6]}")
         return False
 
-    tx_sig = res.get("result") if isinstance(res.get("result"), str) else res.get("signature")
+    tx_sig = parse_signature(res)
     fee_sol = extract_fee_sol_from_res(res)
 
-    # V66: 真實帳本
-    # BUY 發生時，cash 扣 entry_value + fee
     engine.capital = max(engine.capital - order_sol - fee_sol, 0.0)
     engine.stats["fees_paid_sol"] += fee_sol
 
@@ -1252,11 +1345,11 @@ async def buy(m, f, position_size, mtype, forced=False):
 
     position = {
         "mint": m,
-        "entry": f["price"],                     # backward compatible
-        "entry_price": f["price"],              # V66 canonical
-        "size": order_sol,                      # backward compatible
-        "size_sol": order_sol,                  # V66 canonical
-        "entry_value": order_sol,               # value in SOL
+        "entry": f["price"],
+        "entry_price": f["price"],
+        "size": order_sol,
+        "size_sol": order_sol,
+        "entry_value": order_sol,
         "token_amount_atomic": out_amount,
         "token_amount": token_amount,
         "token_decimals": token_decimals,
@@ -1323,7 +1416,7 @@ async def sell(p, reason, price, sell_fraction=1.0):
         res = {"paper": True}
         fee_sol = ESTIMATED_TX_FEE_SOL
     else:
-        res = await execute_swap(m, SOL, atomic_sell)
+        res = await safe_execute_swap(m, SOL, atomic_sell)
         fee_sol = extract_fee_sol_from_res(res)
 
     if not res or res.get("error"):
@@ -1333,7 +1426,6 @@ async def sell(p, reason, price, sell_fraction=1.0):
 
     engine.stats["fees_paid_sol"] += fee_sol
 
-    # V66: 真實 exit value
     exit_value = token_amount_to_sell * price
 
     entry_value_sold = entry_value_total * sell_fraction
@@ -1343,7 +1435,6 @@ async def sell(p, reason, price, sell_fraction=1.0):
     pnl = safe_div(pnl_sol, entry_value_sold, 0.0)
     pnl = clamp(pnl, -MAX_PNL_ABS, MAX_PNL_ABS)
 
-    # cash 回補真實賣出價值，扣 fee 已經反映在 pnl，但 cash 要先加 exit 再扣 fee
     engine.capital += max(0.0, exit_value - fee_sol)
     engine.stats["realized_pnl_sol"] += pnl_sol
 
@@ -1356,7 +1447,6 @@ async def sell(p, reason, price, sell_fraction=1.0):
         if p in engine.positions:
             engine.positions.remove(p)
     else:
-        # 更新剩餘部位
         p["token_amount"] = token_amount_remain
         p["token_amount_atomic"] = int(token_amount_remain * (10 ** token_decimals))
         p["entry_value"] = entry_value_total * (1.0 - sell_fraction)
@@ -1431,7 +1521,6 @@ async def check_sell(p):
         if jump > 0.25 and hold_sec < 20:
             return False
 
-    # V66: 用未平倉市值算 pnl 比例
     token_amount = sf(p.get("token_amount", 0.0), 0.0)
     entry_value = sf(p.get("entry_value", 0.0), 0.0)
     if token_amount <= 0 or entry_value <= 0:
@@ -1463,7 +1552,6 @@ async def check_sell(p):
     if -0.02 < pnl < 0 and momentum_now > 0.0045:
         return False
 
-    # V66: partial TP 正確用 sell_fraction
     if pnl >= 0.008 and not p.get("tp1_done"):
         p["tp1_done"] = True
         return await sell(p, "PARTIAL_TP", price, 0.50)
@@ -1546,7 +1634,6 @@ async def process_candidates(tokens):
         f["_mode"] = mtype
         f["_tier"] = "A+" if sc >= 0.145 else "A" if sc >= STRICT_A_TIER_THRESHOLD else "B"
 
-        # optional detailed log
         log(
             f"SCORE {m[:6]} sc={sc:.4f} tier={f['_tier']} "
             f"b={detail['bscore']:.4f} m={detail['mscore']:.4f} "
@@ -1644,10 +1731,7 @@ async def execute_portfolio(ranked):
 
         ok = True
         if not SOFT_DISABLE_FILTER:
-            try:
-                ok, _meta = adaptive_filter(f, None, engine.no_trade_cycles)
-            except Exception:
-                ok = False
+            ok, _meta = safe_adaptive_filter(f, None, engine.no_trade_cycles)
             if not ok and f["_score"] >= FILTER_SCORE_BYPASS:
                 ok = True
 
@@ -1843,7 +1927,6 @@ async def get_metrics_async():
 
 
 def get_metrics():
-    # sync fallback
     start_capital = sf(engine.start_capital, 5.0)
     cash = sf(engine.capital, start_capital)
     capital = cash
@@ -1968,7 +2051,7 @@ async def main_loop():
     global MEMPOOL_TASK
 
     await start_once()
-    log("V66 COMPLETE LIVE ENGINE START")
+    log("V66.1 COMPLETE LIVE ENGINE START")
 
     while engine.running:
         try:
@@ -1988,11 +2071,9 @@ async def main_loop():
                 await asyncio.sleep(LOOP_SLEEP_SEC)
                 continue
 
-            # 先處理平倉
             for p in list(engine.positions):
                 await check_sell(p)
 
-            # 再處理開倉
             ranked = await process_candidates(tokens)
             traded = await execute_portfolio(ranked)
 
@@ -2001,7 +2082,6 @@ async def main_loop():
             else:
                 engine.no_trade_cycles = 0
 
-            # Force trade
             if (
                 agent_force_trade_allowed()
                 and engine.no_trade_cycles > FORCE_TRADE_AFTER
@@ -2030,7 +2110,7 @@ async def main_loop():
                         break
 
             update_open_stats()
-            update_peak_capital()
+            await update_peak_capital()
 
             if ENABLE_EQUITY_MARK:
                 engine.stats["unrealized_pnl_sol"] = await calc_unrealized_pnl_sol()
