@@ -26,6 +26,9 @@ def _ensure_runtime_state():
     if not hasattr(rt, "LAST_MOMENTUM") or rt.LAST_MOMENTUM is None:
         rt.LAST_MOMENTUM = {}
 
+    if not hasattr(rt, "engine"):
+        raise RuntimeError("runtime.engine missing")
+
 
 def _log(msg: str):
     try:
@@ -50,39 +53,41 @@ def _roll_day_if_needed():
 def detect_regime():
     _ensure_runtime_state()
 
-    if not getattr(rt.engine, "trade_history", None):
+    trades = list(getattr(rt.engine, "trade_history", []) or [])
+    if not trades:
         rt.REGIME_STATE["mode"] = "neutral"
+        rt.REGIME_STATE["last_update"] = now()
         return "neutral"
 
-    recent = list(rt.engine.trade_history)[-10:]
-    if not recent:
-        rt.REGIME_STATE["mode"] = "neutral"
-        return "neutral"
-
+    recent = trades[-10:]
     pnls = [sf(t.get("pnl", 0.0), 0.0) for t in recent if isinstance(t, dict)]
     if not pnls:
         rt.REGIME_STATE["mode"] = "neutral"
+        rt.REGIME_STATE["last_update"] = now()
         return "neutral"
 
     avg = sum(pnls) / max(len(pnls), 1)
 
     if avg > 0.02:
-        rt.REGIME_STATE["mode"] = "bull"
+        mode = "bull"
     elif avg < -0.01:
-        rt.REGIME_STATE["mode"] = "bear"
+        mode = "bear"
     else:
-        rt.REGIME_STATE["mode"] = "neutral"
+        mode = "neutral"
 
+    rt.REGIME_STATE["mode"] = mode
     rt.REGIME_STATE["last_update"] = now()
-    return rt.REGIME_STATE["mode"]
+    return mode
 
 
 def update_breathing_state():
     _ensure_runtime_state()
 
-    recent = list(getattr(rt.engine, "trade_history", []) or [])[-max(8, getattr(rt, "BREATHING_LOSS_STREAK", 2) + 2):]
-    streak = 0
+    recent = list(getattr(rt.engine, "trade_history", []) or [])
+    lookback = max(8, int(getattr(rt, "BREATHING_LOSS_STREAK", 2)) + 2)
+    recent = recent[-lookback:]
 
+    streak = 0
     for t in reversed(recent):
         pnl = sf(t.get("pnl", 0.0), 0.0)
         if pnl <= 0:
@@ -96,7 +101,10 @@ def update_breathing_state():
             sf(rt.BREATHING_STATE.get("risk_mult", 1.0), 1.0) * 0.85,
         )
         rt.BREATHING_STATE["cooldown_until"] = now() + getattr(rt, "BREATHING_COOLDOWN_SEC", 180)
-        _log(f"BREATHING cooldown streak={streak} risk_mult={rt.BREATHING_STATE['risk_mult']:.2f}")
+        _log(
+            f"BREATHING cooldown streak={streak} "
+            f"risk_mult={rt.BREATHING_STATE['risk_mult']:.2f}"
+        )
     else:
         if now() >= sf(rt.BREATHING_STATE.get("cooldown_until", 0.0), 0.0):
             rt.BREATHING_STATE["risk_mult"] = min(
@@ -105,19 +113,33 @@ def update_breathing_state():
             )
 
 
-def institutional_loss_pause_if_needed():
+def institutional_daily_loss_hit():
     _roll_day_if_needed()
 
     daily_loss_limit = abs(sf(getattr(rt, "DAILY_LOSS_LIMIT_SOL", 0.60), 0.60))
     daily_realized = sf(rt.INSTITUTIONAL_STATE.get("daily_realized_pnl_sol", 0.0), 0.0)
 
-    if daily_realized <= -daily_loss_limit:
+    return daily_realized <= -daily_loss_limit
+
+
+def institutional_pause_active():
+    _ensure_runtime_state()
+    return now() < sf(rt.INSTITUTIONAL_STATE.get("pause_until", 0.0), 0.0)
+
+
+def institutional_loss_pause_if_needed():
+    _roll_day_if_needed()
+
+    if institutional_daily_loss_hit():
         rt.INSTITUTIONAL_STATE["pause_until"] = now() + getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_SEC", 600)
         rt.INSTITUTIONAL_STATE["last_reason"] = "daily_loss_limit"
         _log("INSTITUTIONAL pause triggered by daily loss limit")
         return True
 
-    recent = list(getattr(rt.engine, "trade_history", []) or [])[-max(10, getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_STREAK", 5) + 2):]
+    recent = list(getattr(rt.engine, "trade_history", []) or [])
+    lookback = max(10, int(getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_STREAK", 5)) + 2)
+    recent = recent[-lookback:]
+
     streak = 0
     for t in reversed(recent):
         pnl = sf(t.get("pnl", 0.0), 0.0)
@@ -137,8 +159,8 @@ def institutional_loss_pause_if_needed():
 
 async def check_sell(p):
     """
-    Fallback-compatible sell checker.
-    Expects app.engine.execution.sell to exist.
+    Compatible risk-layer sell checker.
+    Requires app.engine.execution.sell to exist.
     """
     _ensure_runtime_state()
 
