@@ -215,108 +215,170 @@ async def dashboard():
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Pump Fund Dashboard</title>
+    <title>Pump Fund PRO</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body style="background:#0b0f1a;color:#fff;font-family:sans-serif;padding:20px">
-<h2>🔥 Pump Fund Dashboard</h2>
 
-<div>
-    <b>Capital:</b> <span id="capital">-</span><br>
-    <b>Equity:</b> <span id="equity">-</span><br>
-    <b>Drawdown:</b> <span id="dd">-</span><br>
-    <b>Positions:</b> <span id="pos">-</span>
+<body style="background:#0b0f1a;color:#fff;font-family:sans-serif;padding:20px">
+
+<h2>🔥 Pump Fund PRO Dashboard</h2>
+
+<!-- ================= SUMMARY ================= -->
+<div style="display:flex;gap:30px">
+    <div>💰 Capital: <b id="capital">-</b></div>
+    <div>📈 Equity: <b id="equity">-</b></div>
+    <div>📉 Drawdown: <b id="dd">-</b></div>
+    <div>📊 Positions: <b id="pos">-</b></div>
+    <div>🔁 Trades: <b id="trades">-</b></div>
 </div>
 
 <br>
-<canvas id="chart" width="800" height="300"></canvas>
+
+<!-- ================= CHART ================= -->
+<canvas id="chart" height="120"></canvas>
 
 <br>
-<h3>📊 Stats</h3>
-<pre id="stats">{}</pre>
+
+<!-- ================= STRATEGY ================= -->
+<h3>🧠 Strategy Allocation</h3>
+<canvas id="strategyChart" height="120"></canvas>
+
+<br>
+
+<!-- ================= POSITIONS ================= -->
+<h3>📦 Positions</h3>
+<table border="1" cellpadding="6" style="border-collapse:collapse;width:100%">
+<thead>
+<tr>
+    <th>Mint</th>
+    <th>Mode</th>
+    <th>Entry</th>
+    <th>Price</th>
+    <th>PnL%</th>
+    <th>Value</th>
+</tr>
+</thead>
+<tbody id="positions"></tbody>
+</table>
+
+<br>
+
+<!-- ================= TRADES ================= -->
+<h3>🧾 Recent Trades</h3>
+<pre id="trades_log" style="max-height:200px;overflow:auto;background:#111;padding:10px"></pre>
+
+<br>
+
+<!-- ================= LOG ================= -->
+<h3>📡 Logs</h3>
+<pre id="logs" style="max-height:200px;overflow:auto;background:#111;padding:10px"></pre>
 
 <script>
-let chart = null;
+let equityChart, stratChart;
 
-function safeNum(v, d=0) {
-    return (typeof v === "number" && !Number.isNaN(v)) ? v : d;
-}
+function safe(v,d=0){ return (typeof v==="number"&&!isNaN(v))?v:d }
 
-async function load() {
-    try {
-        const res = await fetch("/metrics", { cache: "no-store" });
-        const data = await res.json();
+async function load(){
 
-        if (!data || !data.summary) {
-            document.getElementById("stats").innerText = JSON.stringify(data, null, 2);
-            return;
-        }
+    const res = await fetch("/metrics?ts="+Date.now())
+    const data = await res.json()
 
-        const summary = data.summary || {};
-        const stats = data.stats || {};
-        const equityCurve = Array.isArray(data.equity_curve) ? data.equity_curve : [];
-
-        document.getElementById("capital").innerText = safeNum(summary.capital).toFixed(4);
-        document.getElementById("equity").innerText = safeNum(summary.equity).toFixed(4);
-        document.getElementById("dd").innerText = (safeNum(summary.drawdown) * 100).toFixed(2) + "%";
-        document.getElementById("pos").innerText = safeNum(summary.positions, 0);
-
-        document.getElementById("stats").innerText = JSON.stringify(stats, null, 2);
-
-        const labels = equityCurve.map(x => {
-            const t = safeNum(x.t, 0);
-            return t ? new Date(t * 1000).toLocaleTimeString() : "";
-        });
-
-        const values = equityCurve.map(x => safeNum(x.equity, 0));
-
-        if (!chart) {
-            const ctx = document.getElementById("chart").getContext("2d");
-            chart = new Chart(ctx, {
-                type: "line",
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: "Equity",
-                        data: values,
-                        borderColor: "#00ffcc",
-                        fill: false,
-                        tension: 0.15
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    animation: false,
-                    plugins: {
-                        legend: {
-                            labels: { color: "#ffffff" }
-                        }
-                    },
-                    scales: {
-                        x: {
-                            ticks: { color: "#ffffff" },
-                            grid: { color: "rgba(255,255,255,0.08)" }
-                        },
-                        y: {
-                            ticks: { color: "#ffffff" },
-                            grid: { color: "rgba(255,255,255,0.08)" }
-                        }
-                    }
-                }
-            });
-        } else {
-            chart.data.labels = labels;
-            chart.data.datasets[0].data = values;
-            chart.update();
-        }
-    } catch (err) {
-        document.getElementById("stats").innerText = "UI load error: " + err;
+    if(!data.summary){
+        document.body.innerText = JSON.stringify(data,null,2)
+        return
     }
+
+    const s = data.summary
+    const stats = data.trading || {}
+    const curve = data.equity_curve || []
+
+    // ===== summary =====
+    capital.innerText = safe(s.capital).toFixed(4)
+    equity.innerText = safe(s.equity).toFixed(4)
+    dd.innerText = (safe(s.drawdown)*100).toFixed(2)+"%"
+    pos.innerText = safe(s.positions)
+    trades.innerText = safe(stats.trades)
+
+    // ===== equity chart =====
+    const labels = curve.map(x=>new Date(x.t*1000).toLocaleTimeString())
+    const values = curve.map(x=>safe(x.equity))
+
+    if(!equityChart){
+        const ctx = document.getElementById("chart").getContext("2d")
+        equityChart = new Chart(ctx,{
+            type:"line",
+            data:{
+                labels,
+                datasets:[{
+                    label:"Equity",
+                    data:values,
+                    borderColor:"#00ffcc",
+                    tension:0.2
+                }]
+            },
+            options:{animation:false}
+        })
+    }else{
+        equityChart.data.labels = labels
+        equityChart.data.datasets[0].data = values
+        equityChart.update()
+    }
+
+    // ===== strategy chart =====
+    const strat = data.alpha || {}
+    const stratLabels = Object.keys(strat)
+    const stratValues = stratLabels.map(k=>safe(strat[k].pnl_sol))
+
+    if(!stratChart){
+        const ctx = document.getElementById("strategyChart").getContext("2d")
+        stratChart = new Chart(ctx,{
+            type:"bar",
+            data:{
+                labels:stratLabels,
+                datasets:[{
+                    label:"PnL SOL",
+                    data:stratValues
+                }]
+            }
+        })
+    }else{
+        stratChart.data.labels = stratLabels
+        stratChart.data.datasets[0].data = stratValues
+        stratChart.update()
+    }
+
+    // ===== positions =====
+    const rows = data.positions_detail || []
+    const tbody = document.getElementById("positions")
+    tbody.innerHTML = ""
+
+    rows.forEach(p=>{
+        const tr = document.createElement("tr")
+        tr.innerHTML = `
+        <td>${p.mint?.slice(0,6)}</td>
+        <td>${p.mode}</td>
+        <td>${safe(p.entry_price).toFixed(6)}</td>
+        <td>${safe(p.mark_price).toFixed(6)}</td>
+        <td style="color:${p.unrealized_pnl_pct>0?'#0f0':'#f55'}">
+            ${(safe(p.unrealized_pnl_pct)*100).toFixed(2)}%
+        </td>
+        <td>${safe(p.market_value).toFixed(4)}</td>
+        `
+        tbody.appendChild(tr)
+    })
+
+    // ===== trades =====
+    trades_log.innerText = JSON.stringify(data.recent_trades||[],null,2)
+
+    // ===== logs =====
+    logs.innerText = (data.logs||[]).slice(-50).join("\\n")
 }
 
-setInterval(load, 2000);
-load();
+setInterval(load,2000)
+load()
+
 </script>
+
 </body>
 </html>
 """
