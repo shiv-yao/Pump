@@ -3,7 +3,7 @@ import asyncio
 import time
 import random
 import json
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, deque
 
 import httpx
 import websockets
@@ -14,6 +14,36 @@ from app.execution.jupiter_exec import execute_swap
 from app.data.market import get_quote
 from app.alpha.helius_wallet_tracker import update_token_wallets
 from app.config import SOL_MINT as SOL, SOL_DECIMALS, HTTP_TIMEOUT, BIRDEYE_API_KEY, REAL_TRADING
+
+# =========================================================
+# OPTIONAL MODULES (V69 / V70 / V71)
+# =========================================================
+
+try:
+    from app.execution.jito_exec import send_jito_bundle
+except Exception:
+    async def send_jito_bundle(*args, **kwargs):
+        return {"error": "jito_exec_not_available"}
+
+try:
+    from app.alpha.wallet_graph import get_wallet_graph_score, get_wallet_cluster_stats
+except Exception:
+    async def get_wallet_graph_score(_mint: str, _wallets=None):
+        return {
+            "score": 0.0,
+            "cluster_size": 0,
+            "smart_ratio": 0.0,
+            "concentration": 0.0,
+            "fresh_wallet_ratio": 0.0,
+        }
+
+    async def get_wallet_cluster_stats(_mint: str, _wallets=None):
+        return {
+            "cluster_size": 0,
+            "smart_ratio": 0.0,
+            "concentration": 0.0,
+            "fresh_wallet_ratio": 0.0,
+        }
 
 
 # =========================================================
@@ -139,6 +169,8 @@ JUPITER_PROGRAM_ID = os.getenv(
     "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 )
 
+# ================= V67 FUND BRAIN =================
+
 FUND_BRAIN_UPDATE_SEC = int(os.getenv("FUND_BRAIN_UPDATE_SEC", "20"))
 FUND_MIN_TRADES = int(os.getenv("FUND_MIN_TRADES", "3"))
 FUND_SNIPER_BASE = float(os.getenv("FUND_SNIPER_BASE", "0.30"))
@@ -146,13 +178,38 @@ FUND_SMART_BASE = float(os.getenv("FUND_SMART_BASE", "0.35"))
 FUND_MOMENTUM_BASE = float(os.getenv("FUND_MOMENTUM_BASE", "0.35"))
 FUND_EXPLORE_BASE = float(os.getenv("FUND_EXPLORE_BASE", "0.08"))
 
-FUND_ALLOC_MIN = float(os.getenv("FUND_ALLOC_MIN", "0.05"))
-FUND_ALLOC_MAX = float(os.getenv("FUND_ALLOC_MAX", "0.60"))
-FUND_EXPLORE_MAX = float(os.getenv("FUND_EXPLORE_MAX", "0.15"))
+# ================= V69 JITO / SNIPER / WALLET GRAPH =================
 
-MAX_POSITION_HARD_CAP_SOL = float(os.getenv("MAX_POSITION_HARD_CAP_SOL", "0.20"))
-SELL_VALUE_CAP_MULT = float(os.getenv("SELL_VALUE_CAP_MULT", "3.0"))
-PNL_SOL_HARD_CAP_MULT = float(os.getenv("PNL_SOL_HARD_CAP_MULT", "2.0"))
+USE_JITO = os.getenv("USE_JITO", "false").lower() == "true"
+JITO_TIP_SOL = float(os.getenv("JITO_TIP_SOL", "0.0005"))
+JITO_MIN_SCORE = float(os.getenv("JITO_MIN_SCORE", "0.125"))
+JITO_ONLY_A_PLUS = os.getenv("JITO_ONLY_A_PLUS", "true").lower() == "true"
+
+SNIPER_RECENT_WINDOW_SEC = int(os.getenv("SNIPER_RECENT_WINDOW_SEC", "18"))
+EARLY_ENTRY_BONUS = float(os.getenv("EARLY_ENTRY_BONUS", "0.018"))
+MEMPOOL_RECENCY_BONUS = float(os.getenv("MEMPOOL_RECENCY_BONUS", "0.028"))
+MEMPOOL_MAX_AGE_SEC = int(os.getenv("MEMPOOL_MAX_AGE_SEC", "25"))
+
+WALLET_GRAPH_WEIGHT = float(os.getenv("WALLET_GRAPH_WEIGHT", "0.12"))
+WALLET_GRAPH_MIN_SCORE = float(os.getenv("WALLET_GRAPH_MIN_SCORE", "0.00"))
+WALLET_GRAPH_TIMEOUT_SEC = float(os.getenv("WALLET_GRAPH_TIMEOUT_SEC", "1.0"))
+WALLET_GRAPH_BONUS_CAP = float(os.getenv("WALLET_GRAPH_BONUS_CAP", "0.18"))
+MAX_WALLET_CLUSTER_CONCENTRATION = float(os.getenv("MAX_WALLET_CLUSTER_CONCENTRATION", "0.65"))
+MIN_SMART_RATIO = float(os.getenv("MIN_SMART_RATIO", "0.00"))
+MIN_FRESH_WALLET_RATIO = float(os.getenv("MIN_FRESH_WALLET_RATIO", "0.00"))
+
+# ================= V70 / V71 HARDENING =================
+
+RPC_CONFIRM_RETRY = int(os.getenv("RPC_CONFIRM_RETRY", "3"))
+SNIPER_A_PLUS_ONLY = os.getenv("SNIPER_A_PLUS_ONLY", "false").lower() == "true"
+HARD_REJECT_NON_JUPITER_PRICE = os.getenv("HARD_REJECT_NON_JUPITER_PRICE", "false").lower() == "true"
+
+INSTITUTIONAL_MIN_TRADES = int(os.getenv("INSTITUTIONAL_MIN_TRADES", "8"))
+INSTITUTIONAL_LOSS_PAUSE_STREAK = int(os.getenv("INSTITUTIONAL_LOSS_PAUSE_STREAK", "5"))
+INSTITUTIONAL_LOSS_PAUSE_SEC = int(os.getenv("INSTITUTIONAL_LOSS_PAUSE_SEC", "600"))
+DAILY_LOSS_LIMIT_SOL = float(os.getenv("DAILY_LOSS_LIMIT_SOL", "0.60"))
+MAX_STRATEGY_EXPOSURE = float(os.getenv("MAX_STRATEGY_EXPOSURE", "0.18"))
+MAX_SNIPER_EXPOSURE = float(os.getenv("MAX_SNIPER_EXPOSURE", "0.14"))
 
 
 # =========================================================
@@ -233,6 +290,22 @@ FUND_STATE = {
     "last_reason": "boot",
 }
 
+MEMPOOL_SEEN_TS = {}
+MEMPOOL_HITS = defaultdict(int)
+WALLET_GRAPH_CACHE = {}
+JITO_STATS = {
+    "sent": 0,
+    "ok": 0,
+    "fail": 0,
+    "last_error": "",
+}
+INSTITUTIONAL_STATE = {
+    "pause_until": 0.0,
+    "daily_realized_pnl_sol": 0.0,
+    "day_bucket": int(time.time() // 86400),
+    "last_reason": "boot",
+}
+
 
 # =========================================================
 # BASIC HELPERS
@@ -270,9 +343,13 @@ def exposure():
     return sum(sf(p.get("entry_value", p.get("size", 0.0))) for p in engine.positions)
 
 
-def remaining_exposure_capacity():
-    cap = sf(engine.capital, 0.0) * MAX_EXPOSURE - exposure()
-    return max(0.0, cap)
+def exposure_by_strategy(strategy_name: str):
+    strategy_name = strategy_bucket_from_mode(strategy_name)
+    return sum(
+        sf(p.get("entry_value", p.get("size", 0.0)))
+        for p in engine.positions
+        if strategy_bucket_from_mode(p.get("mode")) == strategy_name
+    )
 
 
 def update_open_stats():
@@ -405,22 +482,46 @@ def parse_signature(obj):
     return None
 
 
+def is_a_plus_feature(f):
+    return str(f.get("_tier", "C")) == "A+"
+
+
+def institutional_day_reset():
+    bucket = int(time.time() // 86400)
+    if bucket != INSTITUTIONAL_STATE["day_bucket"]:
+        INSTITUTIONAL_STATE["day_bucket"] = bucket
+        INSTITUTIONAL_STATE["daily_realized_pnl_sol"] = 0.0
+        INSTITUTIONAL_STATE["last_reason"] = "new_day"
+
+
+def institutional_paused():
+    institutional_day_reset()
+    return now() < sf(INSTITUTIONAL_STATE.get("pause_until", 0.0), 0.0)
+
+
+def institutional_loss_pause_if_needed():
+    rows = recent_closed_trades(10)
+    streak = 0
+    for r in reversed(rows):
+        if sf(r.get("pnl"), 0.0) < 0:
+            streak += 1
+        else:
+            break
+
+    if streak >= INSTITUTIONAL_LOSS_PAUSE_STREAK:
+        INSTITUTIONAL_STATE["pause_until"] = now() + INSTITUTIONAL_LOSS_PAUSE_SEC
+        INSTITUTIONAL_STATE["last_reason"] = f"loss_streak_{streak}"
+        log(f"INSTITUTIONAL_PAUSE streak={streak} sec={INSTITUTIONAL_LOSS_PAUSE_SEC}")
+
+
+def institutional_daily_loss_hit():
+    institutional_day_reset()
+    return INSTITUTIONAL_STATE["daily_realized_pnl_sol"] <= -abs(DAILY_LOSS_LIMIT_SOL)
+
+
 # =========================================================
 # FUND BRAIN
 # =========================================================
-
-def _normalize_allocator():
-    total = sum(max(0.0, sf(v, 0.0)) for v in FUND_ALLOCATOR.values())
-    if total <= 0:
-        FUND_ALLOCATOR["sniper"] = FUND_SNIPER_BASE
-        FUND_ALLOCATOR["smart"] = FUND_SMART_BASE
-        FUND_ALLOCATOR["momentum"] = FUND_MOMENTUM_BASE
-        FUND_ALLOCATOR["explore"] = FUND_EXPLORE_BASE
-        total = sum(FUND_ALLOCATOR.values())
-
-    for k in list(FUND_ALLOCATOR.keys()):
-        FUND_ALLOCATOR[k] = max(0.0, sf(FUND_ALLOCATOR[k], 0.0)) / total
-
 
 def ensure_fund_state():
     for key, default_val in {
@@ -431,7 +532,6 @@ def ensure_fund_state():
     }.items():
         FUND_ALLOCATOR.setdefault(key, default_val)
         _ = FUND_PERF[key]
-    _normalize_allocator()
 
 
 def strategy_bucket_from_mode(mode_name: str) -> str:
@@ -499,12 +599,16 @@ def update_fund_allocator(force=False):
     for strat, score in raw_scores.items():
         FUND_ALLOCATOR[strat] = score / total_score
 
-    FUND_ALLOCATOR["sniper"] = clamp(FUND_ALLOCATOR["sniper"], FUND_ALLOC_MIN, FUND_ALLOC_MAX)
-    FUND_ALLOCATOR["smart"] = clamp(FUND_ALLOCATOR["smart"], FUND_ALLOC_MIN, FUND_ALLOC_MAX)
-    FUND_ALLOCATOR["momentum"] = clamp(FUND_ALLOCATOR["momentum"], FUND_ALLOC_MIN, FUND_ALLOC_MAX)
-    FUND_ALLOCATOR["explore"] = clamp(FUND_ALLOCATOR["explore"], 0.02, FUND_EXPLORE_MAX)
+    FUND_ALLOCATOR["sniper"] = clamp(FUND_ALLOCATOR["sniper"], 0.08, 0.55)
+    FUND_ALLOCATOR["smart"] = clamp(FUND_ALLOCATOR["smart"], 0.10, 0.55)
+    FUND_ALLOCATOR["momentum"] = clamp(FUND_ALLOCATOR["momentum"], 0.10, 0.55)
+    FUND_ALLOCATOR["explore"] = clamp(FUND_ALLOCATOR["explore"], 0.02, 0.15)
 
-    _normalize_allocator()
+    s = sum(FUND_ALLOCATOR.values())
+    if s <= 0:
+        s = 1.0
+    for k in list(FUND_ALLOCATOR.keys()):
+        FUND_ALLOCATOR[k] = FUND_ALLOCATOR[k] / s
 
     FUND_STATE["last_update"] = now()
     FUND_STATE["last_reason"] = "perf_rebalance"
@@ -530,6 +634,80 @@ def fund_multiplier(strategy: str) -> float:
 
 
 # =========================================================
+# WALLET GRAPH / JITO HELPERS
+# =========================================================
+
+async def safe_wallet_graph_score(mint: str, wallets=None):
+    cached = WALLET_GRAPH_CACHE.get(mint)
+    if cached and now() - cached.get("_ts", 0.0) < 20:
+        return cached
+
+    try:
+        res = await asyncio.wait_for(get_wallet_graph_score(mint, wallets=wallets), timeout=WALLET_GRAPH_TIMEOUT_SEC)
+        if not isinstance(res, dict):
+            res = {"score": 0.0}
+    except Exception:
+        res = {"score": 0.0}
+
+    score = clamp(sf(res.get("score", 0.0), 0.0), 0.0, 1.0)
+    cluster_size = safe_int(res.get("cluster_size", 0), 0)
+    smart_ratio = clamp(sf(res.get("smart_ratio", 0.0), 0.0), 0.0, 1.0)
+    concentration = clamp(sf(res.get("concentration", 0.0), 0.0), 0.0, 1.0)
+    fresh_wallet_ratio = clamp(sf(res.get("fresh_wallet_ratio", 0.0), 0.0), 0.0, 1.0)
+
+    out = {
+        "score": score,
+        "cluster_size": cluster_size,
+        "smart_ratio": smart_ratio,
+        "concentration": concentration,
+        "fresh_wallet_ratio": fresh_wallet_ratio,
+        "_ts": now(),
+    }
+    WALLET_GRAPH_CACHE[mint] = out
+    return out
+
+
+def mempool_age_sec(mint: str):
+    ts = MEMPOOL_SEEN_TS.get(mint)
+    if not ts:
+        return None
+    return max(0.0, now() - ts)
+
+
+def mempool_recent_bonus(mint: str):
+    age = mempool_age_sec(mint)
+    if age is None:
+        return 0.0
+    if age <= SNIPER_RECENT_WINDOW_SEC:
+        return MEMPOOL_RECENCY_BONUS
+    if age <= MEMPOOL_MAX_AGE_SEC:
+        return MEMPOOL_RECENCY_BONUS * 0.45
+    return 0.0
+
+
+def should_use_jito_for_feature(f):
+    if not REAL_TRADING:
+        return False
+    if not USE_JITO:
+        return False
+
+    score = sf(f.get("_score", 0.0), 0.0)
+    tier = str(f.get("_tier", "C"))
+    mode_name = strategy_bucket_from_mode(f.get("_mode", "momentum"))
+
+    if JITO_ONLY_A_PLUS and tier != "A+":
+        return False
+
+    if score < JITO_MIN_SCORE:
+        return False
+
+    if mode_name != "sniper":
+        return False
+
+    return True
+
+
+# =========================================================
 # SAFE WRAPPERS
 # =========================================================
 
@@ -552,7 +730,28 @@ def safe_adaptive_filter(feature_row, _context=None, _no_trade_cycles=0):
         return ok, {"fallback": True}
 
 
-async def safe_execute_swap(input_mint: str, output_mint: str, amount: int):
+async def safe_execute_swap(input_mint: str, output_mint: str, amount: int, prefer_jito=False, jito_context=None):
+    if prefer_jito and REAL_TRADING and USE_JITO:
+        try:
+            JITO_STATS["sent"] += 1
+            jito_res = await send_jito_bundle(
+                input_mint=input_mint,
+                output_mint=output_mint,
+                amount=amount,
+                tip_sol=JITO_TIP_SOL,
+                context=jito_context or {},
+            )
+            if isinstance(jito_res, dict) and not jito_res.get("error"):
+                JITO_STATS["ok"] += 1
+                jito_res["via"] = "jito"
+                return jito_res
+            if isinstance(jito_res, dict):
+                JITO_STATS["fail"] += 1
+                JITO_STATS["last_error"] = str(jito_res.get("error", "unknown"))
+        except Exception as e:
+            JITO_STATS["fail"] += 1
+            JITO_STATS["last_error"] = str(e)
+
     try:
         res = await execute_swap(input_mint, output_mint, amount)
     except Exception as e:
@@ -570,6 +769,7 @@ async def safe_execute_swap(input_mint: str, output_mint: str, amount: int):
         res["quote"]["outAmount"] = str(out_amount)
         return res
 
+    res["via"] = res.get("via", "jupiter")
     return res
 
 
@@ -607,6 +807,9 @@ def ensure_engine():
         "fees_paid_sol": 0.0,
         "realized_pnl_sol": 0.0,
         "unrealized_pnl_sol": 0.0,
+        "jito_sent": 0,
+        "jito_ok": 0,
+        "jito_fail": 0,
     }
     for k, v in defaults.items():
         engine.stats.setdefault(k, v)
@@ -804,6 +1007,8 @@ def agent_force_trade_allowed():
         AGENT_FORCE_TRADE_ENABLE
         and (not agent_in_cooldown())
         and AGENT_STATE.get("mode") != "defensive"
+        and (not institutional_paused())
+        and (not institutional_daily_loss_hit())
     )
 
 
@@ -825,6 +1030,9 @@ def current_dynamic_threshold():
         base *= 0.96
     elif AGENT_STATE.get("mode") == "defensive":
         base *= 1.05
+
+    if institutional_paused() or institutional_daily_loss_hit():
+        base *= 1.15
 
     return clamp(base, ADAPTIVE_THRESHOLD_MIN, 0.20)
 
@@ -888,7 +1096,10 @@ async def mempool_stream():
                                 "mint": word,
                                 "source": "mempool",
                                 "meta": {},
+                                "ts": now(),
                             })
+                            MEMPOOL_SEEN_TS[word] = now()
+                            MEMPOOL_HITS[word] += 1
                             if len(MEMPOOL_BUFFER) > 300:
                                 del MEMPOOL_BUFFER[:-300]
         except Exception as e:
@@ -1184,6 +1395,9 @@ async def features(t):
     if not pinfo or pinfo.get("source") not in {"jupiter", "dexscreener"}:
         return None
 
+    if HARD_REJECT_NON_JUPITER_PRICE and pinfo.get("source") != "jupiter":
+        return None
+
     liq = sf(pinfo.get("liq", 0), 0.0)
     if liq < MIN_LIQUIDITY_TRADE:
         return None
@@ -1217,6 +1431,13 @@ async def features(t):
     wallet_count = len(wallets)
     smart = min(wallet_count / 3.0, 1.0)
 
+    graph = await safe_wallet_graph_score(m, wallets=wallets)
+    wallet_graph_score = clamp(sf(graph.get("score", 0.0), 0.0), 0.0, 1.0)
+    cluster_size = safe_int(graph.get("cluster_size", 0), 0)
+    smart_ratio = clamp(sf(graph.get("smart_ratio", 0.0), 0.0), 0.0, 1.0)
+    concentration = clamp(sf(graph.get("concentration", 0.0), 0.0), 0.0, 1.0)
+    fresh_wallet_ratio = clamp(sf(graph.get("fresh_wallet_ratio", 0.0), 0.0), 0.0, 1.0)
+
     sniper_boost = 0.0
     if t.get("source") == "pumpfun":
         sniper_boost += 0.05
@@ -1225,6 +1446,9 @@ async def features(t):
     if pinfo.get("source") == "jupiter":
         sniper_boost += 0.02
 
+    mp_bonus = mempool_recent_bonus(m)
+    early_bonus = EARLY_ENTRY_BONUS if (t.get("source") == "mempool" and (mempool_age_sec(m) or 999) <= SNIPER_RECENT_WINDOW_SEC) else 0.0
+
     return {
         "mint": m,
         "price": price,
@@ -1232,19 +1456,28 @@ async def features(t):
         "momentum": momentum,
         "smart": smart,
         "sniper_boost": sniper_boost,
+        "mempool_bonus": mp_bonus,
+        "early_bonus": early_bonus,
         "is_new": prev is None,
         "wallet_count": wallet_count,
+        "wallet_graph_score": wallet_graph_score,
+        "cluster_size": cluster_size,
+        "smart_ratio": smart_ratio,
+        "concentration": concentration,
+        "fresh_wallet_ratio": fresh_wallet_ratio,
         "source": t.get("source", "unknown"),
         "meta": t.get("meta", {}),
         "price_source": pinfo.get("source", "unknown"),
         "liq": liq,
+        "mempool_hits": MEMPOOL_HITS.get(m, 0),
+        "mempool_age_sec": mempool_age_sec(m),
     }
 
 
 def mode(f):
     if f["is_new"]:
         return "sniper"
-    if f["smart"] > 0.6:
+    if f["smart"] > 0.6 or sf(f.get("wallet_graph_score", 0.0), 0.0) > 0.55:
         return "smart"
     return "momentum"
 
@@ -1257,6 +1490,8 @@ def zero_detail():
         "lscore": 0.0,
         "wscore": 0.0,
         "nscore": 0.0,
+        "gscore": 0.0,
+        "erscore": 0.0,
     }
 
 
@@ -1266,8 +1501,21 @@ def score_alpha(f):
     smart = sf(f.get("smart", 0.0), 0.0)
     liq = sf(f.get("liq", 0.0), 0.0)
     price_source = f.get("price_source", "unknown")
+    wallet_graph_score = clamp(sf(f.get("wallet_graph_score", 0.0), 0.0), 0.0, 1.0)
+    concentration = clamp(sf(f.get("concentration", 0.0), 0.0), 0.0, 1.0)
+    smart_ratio = clamp(sf(f.get("smart_ratio", 0.0), 0.0), 0.0, 1.0)
+    fresh_wallet_ratio = clamp(sf(f.get("fresh_wallet_ratio", 0.0), 0.0), 0.0, 1.0)
 
     if liq < MIN_LIQUIDITY_OBSERVE:
+        return 0.0, zero_detail()
+
+    if concentration > MAX_WALLET_CLUSTER_CONCENTRATION:
+        return 0.0, zero_detail()
+
+    if smart_ratio < MIN_SMART_RATIO:
+        return 0.0, zero_detail()
+
+    if fresh_wallet_ratio < MIN_FRESH_WALLET_RATIO:
         return 0.0, zero_detail()
 
     source_penalty = 1.0 if price_source == "jupiter" else 0.70
@@ -1290,6 +1538,8 @@ def score_alpha(f):
     wc = f.get("wallet_count", 0)
     wscore = 0.08 if wc >= 3 else 0.05 if wc >= 2 else 0.02 if wc >= 1 else 0.0
     nscore = clamp(sf(f.get("sniper_boost", 0)), 0.0, 0.12)
+    gscore = clamp(wallet_graph_score * WALLET_GRAPH_WEIGHT, 0.0, WALLET_GRAPH_BONUS_CAP)
+    erscore = clamp(sf(f.get("mempool_bonus", 0.0), 0.0) + sf(f.get("early_bonus", 0.0), 0.0), 0.0, 0.06)
 
     for name, val in [
         ("breakout", breakout),
@@ -1298,6 +1548,7 @@ def score_alpha(f):
         ("liquidity", liq),
         ("wallet_count", wc),
         ("price", f.get("price", 0)),
+        ("wallet_graph_score", wallet_graph_score),
     ]:
         score_stat_add(name, val)
 
@@ -1308,7 +1559,12 @@ def score_alpha(f):
         + lscore * ALPHA_LIQ_WEIGHT
         + wscore * ALPHA_WALLET_WEIGHT
         + nscore * 0.05
+        + gscore
+        + erscore
     ) * source_penalty
+
+    if wallet_graph_score < WALLET_GRAPH_MIN_SCORE:
+        score *= 0.85
 
     mtype = mode(f)
     if mtype == "sniper":
@@ -1325,6 +1581,8 @@ def score_alpha(f):
         "lscore": lscore,
         "wscore": wscore,
         "nscore": nscore,
+        "gscore": gscore,
+        "erscore": erscore,
     }
 
 
@@ -1356,6 +1614,9 @@ def score_with_allocator(f):
 
     mtype = mode(f)
     base *= fund_multiplier(mtype)
+
+    if strategy_bucket_from_mode(mtype) == "sniper" and SNIPER_A_PLUS_ONLY:
+        pass
 
     return max(base, 0.0), mtype, detail
 
@@ -1390,20 +1651,18 @@ def allocate_size(score, n_candidates, strategy="momentum"):
     if agent_in_cooldown():
         base *= 0.60
 
-    alloc_cap = clamp(FUND_ALLOCATOR.get(strategy, 0.25), FUND_ALLOC_MIN, FUND_ALLOC_MAX)
-    if strategy == "explore":
-        alloc_cap = clamp(alloc_cap, 0.02, FUND_EXPLORE_MAX)
+    if institutional_paused() or institutional_daily_loss_hit():
+        base *= 0.55
 
+    alloc_cap = clamp(FUND_ALLOCATOR.get(strategy, 0.25), 0.05, 0.60)
     hard_cap = engine.capital * alloc_cap
-    exposure_cap = remaining_exposure_capacity()
-    base = min(base, MAX_POSITION_HARD_CAP_SOL)
 
-    return min(
-        base,
-        engine.capital * MAX_POSITION_SIZE,
-        hard_cap,
-        exposure_cap if exposure_cap > 0 else 0.0,
-    )
+    strat_cap = engine.capital * MAX_STRATEGY_EXPOSURE
+    if strategy == "sniper":
+        strat_cap = min(strat_cap, engine.capital * MAX_SNIPER_EXPOSURE)
+
+    base = min(base, 0.20)
+    return min(base, engine.capital * MAX_POSITION_SIZE, hard_cap, strat_cap)
 
 
 # =========================================================
@@ -1433,17 +1692,6 @@ def atomic_to_token_amount(out_amount, decimals):
         return 0.0
     scale = 10 ** decimals
     return out_amount / scale
-
-
-def atomic_to_sol(atomic_amount):
-    return sf(atomic_amount, 0.0) / float(SOL_DECIMALS)
-
-
-def extract_exit_value_sol_from_sell_res(res):
-    out_amount = parse_out_amount(res)
-    if out_amount <= 0:
-        return None
-    return atomic_to_sol(out_amount)
 
 
 async def calc_position_market_value(p):
@@ -1483,18 +1731,22 @@ async def calc_equity():
 async def buy(m, f, position_size, mtype, forced=False):
     mtype = strategy_bucket_from_mode(mtype)
 
-    position_size = min(position_size, remaining_exposure_capacity())
-    if position_size <= 0:
-        return False
-
     order_sol = max(position_size, MIN_ORDER_SOL)
-
-    if order_sol > remaining_exposure_capacity() + 1e-9:
-        return False
-
     amt_atomic = int(order_sol * SOL_DECIMALS)
 
-    res = await safe_execute_swap(SOL, m, amt_atomic)
+    prefer_jito = should_use_jito_for_feature(f)
+    res = await safe_execute_swap(
+        SOL,
+        m,
+        amt_atomic,
+        prefer_jito=prefer_jito,
+        jito_context={
+            "score": f.get("_score"),
+            "tier": f.get("_tier"),
+            "mode": mtype,
+            "mint": m,
+        },
+    )
 
     if not res:
         engine.stats["errors"] += 1
@@ -1525,9 +1777,17 @@ async def buy(m, f, position_size, mtype, forced=False):
 
     tx_sig = parse_signature(res)
     fee_sol = extract_fee_sol_from_res(res)
+    via = res.get("via", "jupiter")
 
     engine.capital = max(engine.capital - order_sol - fee_sol, 0.0)
     engine.stats["fees_paid_sol"] += fee_sol
+
+    if via == "jito":
+        engine.stats["jito_sent"] += 1
+        if tx_sig:
+            engine.stats["jito_ok"] += 1
+        else:
+            engine.stats["jito_fail"] += 1
 
     meta = dict(f.get("meta", {}) or {})
     meta.update({
@@ -1537,6 +1797,11 @@ async def buy(m, f, position_size, mtype, forced=False):
         "breakout": f.get("breakout"),
         "momentum": f.get("momentum"),
         "smart_money": f.get("smart"),
+        "wallet_graph_score": f.get("wallet_graph_score"),
+        "cluster_size": f.get("cluster_size"),
+        "smart_ratio": f.get("smart_ratio"),
+        "concentration": f.get("concentration"),
+        "fresh_wallet_ratio": f.get("fresh_wallet_ratio"),
         "liquidity": f.get("liq"),
         "wallet_count": f.get("wallet_count"),
         "price": f.get("price"),
@@ -1546,6 +1811,9 @@ async def buy(m, f, position_size, mtype, forced=False):
         "agent_mode": AGENT_STATE.get("mode"),
         "token_decimals": token_decimals,
         "fund_alloc": dict(FUND_ALLOCATOR),
+        "mempool_age_sec": f.get("mempool_age_sec"),
+        "mempool_hits": f.get("mempool_hits"),
+        "via": via,
     })
 
     position = {
@@ -1573,6 +1841,8 @@ async def buy(m, f, position_size, mtype, forced=False):
         "score": f.get("_score", 0.0),
         "tier": f.get("_tier", "C"),
         "realized_partial_sol": 0.0,
+        "via": via,
+        "wallet_graph_score": f.get("wallet_graph_score", 0.0),
     }
 
     engine.positions.append(position)
@@ -1585,7 +1855,7 @@ async def buy(m, f, position_size, mtype, forced=False):
         engine.stats["forced_trades"] += 1
 
     update_open_stats()
-    engine.last_signal = f"BUY {m[:6]} {mtype} tier={f.get('_tier','C')} score={f.get('_score',0):.4f}"
+    engine.last_signal = f"BUY {m[:6]} {mtype} tier={f.get('_tier','C')} via={via} score={f.get('_score',0):.4f}"
     engine.last_trade = engine.last_signal
     log(engine.last_signal)
     return True
@@ -1617,44 +1887,45 @@ async def sell(p, reason, price, sell_fraction=1.0):
         log(f"SELL_NO_AMOUNT {m[:6]}")
         return False
 
+    prefer_jito = bool(USE_JITO and strategy_bucket_from_mode(p.get("mode")) == "sniper" and p.get("tier") == "A+")
     if p.get("paper"):
         res = {"paper": True}
         fee_sol = ESTIMATED_TX_FEE_SOL
-        exit_value = token_amount_to_sell * price
-        max_reasonable_exit = entry_value_total * sell_fraction * SELL_VALUE_CAP_MULT
-        exit_value = clamp(exit_value, 0.0, max_reasonable_exit)
     else:
-        res = await safe_execute_swap(m, SOL, atomic_sell)
+        res = await safe_execute_swap(
+            m,
+            SOL,
+            atomic_sell,
+            prefer_jito=prefer_jito,
+            jito_context={
+                "reason": reason,
+                "mode": p.get("mode"),
+                "tier": p.get("tier"),
+                "mint": m,
+            },
+        )
         fee_sol = extract_fee_sol_from_res(res)
 
-        if not res or res.get("error"):
-            engine.stats["errors"] += 1
-            log(f"SELL_FAIL {m[:6]} {res.get('error') if res else 'empty'}")
-            return False
+    if not res or res.get("error"):
+        engine.stats["errors"] += 1
+        log(f"SELL_FAIL {m[:6]} {res.get('error') if res else 'empty'}")
+        return False
 
-        actual_exit_value = extract_exit_value_sol_from_sell_res(res)
-        if actual_exit_value is not None and actual_exit_value > 0:
-            exit_value = actual_exit_value
-        else:
-            fallback_exit = token_amount_to_sell * price
-            max_reasonable_exit = entry_value_total * sell_fraction * SELL_VALUE_CAP_MULT
-            exit_value = clamp(fallback_exit, 0.0, max_reasonable_exit)
-
+    via = res.get("via", "jupiter")
     engine.stats["fees_paid_sol"] += fee_sol
+
+    exit_value = token_amount_to_sell * price
 
     entry_value_sold = entry_value_total * sell_fraction
     fees_allocated = fees_paid_total * sell_fraction + fee_sol
 
     pnl_sol = exit_value - entry_value_sold - fees_allocated
-
-    pnl_sol_cap = entry_value_sold * PNL_SOL_HARD_CAP_MULT
-    pnl_sol = clamp(pnl_sol, -pnl_sol_cap, pnl_sol_cap)
-
     pnl = safe_div(pnl_sol, entry_value_sold, 0.0)
     pnl = clamp(pnl, -MAX_PNL_ABS, MAX_PNL_ABS)
 
     engine.capital += max(0.0, exit_value - fee_sol)
     engine.stats["realized_pnl_sol"] += pnl_sol
+    INSTITUTIONAL_STATE["daily_realized_pnl_sol"] += pnl_sol
 
     src = p.get("source", "unknown")
     strategy = strategy_bucket_from_mode(p.get("mode", "unknown"))
@@ -1703,16 +1974,18 @@ async def sell(p, reason, price, sell_fraction=1.0):
         "entry_value": entry_value_sold,
         "fees_paid_sol": fees_allocated,
         "token_amount_sold": token_amount_to_sell,
+        "via": via,
     })
 
     update_breathing_state()
+    institutional_loss_pause_if_needed()
     update_open_stats()
 
     if is_full_exit:
         BLACKLIST[m] = now()
-        engine.last_trade = f"SELL {m[:6]} {reason} pnl={pnl:.4f} pnl_sol={pnl_sol:.6f}"
+        engine.last_trade = f"SELL {m[:6]} {reason} via={via} pnl={pnl:.4f} pnl_sol={pnl_sol:.6f}"
     else:
-        engine.last_trade = f"PARTIAL {m[:6]} {reason} pnl={pnl:.4f} pnl_sol={pnl_sol:.6f}"
+        engine.last_trade = f"PARTIAL {m[:6]} {reason} via={via} pnl={pnl:.4f} pnl_sol={pnl_sol:.6f}"
 
     log(engine.last_trade)
     return True
@@ -1853,11 +2126,15 @@ async def process_candidates(tokens):
         f["_mode"] = mtype
         f["_tier"] = "A+" if sc >= 0.145 else "A" if sc >= STRICT_A_TIER_THRESHOLD else "B"
 
+        if SNIPER_A_PLUS_ONLY and mtype == "sniper" and f["_tier"] != "A+":
+            continue
+
         log(
             f"SCORE {m[:6]} sc={sc:.4f} tier={f['_tier']} mode={mtype} "
-            f"fund={FUND_ALLOCATOR.get(mtype, 0):.2f} "
+            f"fund={FUND_ALLOCATOR.get(mtype, 0):.2f} wg={sf(f.get('wallet_graph_score',0),0):.3f} "
             f"b={detail['bscore']:.4f} m={detail['mscore']:.4f} "
-            f"s={detail['sscore']:.4f} l={detail['lscore']:.4f}"
+            f"s={detail['sscore']:.4f} l={detail['lscore']:.4f} "
+            f"g={detail['gscore']:.4f} e={detail['erscore']:.4f}"
         )
 
         ranked.append(f)
@@ -1882,6 +2159,8 @@ async def process_candidates(tokens):
 async def exploration_trade():
     if not EXPLORATION_ENABLE:
         return False
+    if institutional_paused() or institutional_daily_loss_hit():
+        return False
 
     tokens = await fetch_alpha_candidates()
     if not isinstance(tokens, list):
@@ -1901,8 +2180,7 @@ async def exploration_trade():
             size = min(
                 engine.capital * EXPLORATION_SIZE_FRAC,
                 engine.capital * MAX_POSITION_SIZE,
-                engine.capital * clamp(FUND_ALLOCATOR.get("explore", 0.08), 0.02, FUND_EXPLORE_MAX),
-                remaining_exposure_capacity(),
+                engine.capital * clamp(FUND_ALLOCATOR.get("explore", 0.08), 0.02, 0.15),
             )
             return bool(await buy(t["mint"], f, size, "explore", forced=True))
 
@@ -1922,14 +2200,21 @@ async def execute_portfolio(ranked):
     if buy_window_count() >= MAX_BUYS_PER_10MIN:
         return False
 
+    if institutional_paused() or institutional_daily_loss_hit():
+        return False
+
     for f in ranked:
         m = f["mint"]
+        mode_name = strategy_bucket_from_mode(f.get("_mode"))
 
         if engine.stats.get("executed", 0) > 10 and engine.stats.get("wins", 0) == 0:
             return False
 
         allowed_tiers = {"A+"} if AGENT_STATE.get("mode") == "defensive" else {"A", "A+"}
         if f.get("_mode") != "explore" and f.get("_tier") not in allowed_tiers:
+            continue
+
+        if f.get("_mode") == "sniper" and SNIPER_A_PLUS_ONLY and f.get("_tier") != "A+":
             continue
 
         if any(p["mint"] == m for p in engine.positions):
@@ -1942,6 +2227,9 @@ async def execute_portfolio(ranked):
             continue
 
         if sf(f.get("liq", 0), 0.0) < MIN_LIQUIDITY_TRADE and f.get("_mode") != "explore":
+            continue
+
+        if exposure_by_strategy(mode_name) >= engine.capital * (MAX_SNIPER_EXPOSURE if mode_name == "sniper" else MAX_STRATEGY_EXPOSURE):
             continue
 
         if (
@@ -1965,8 +2253,6 @@ async def execute_portfolio(ranked):
             pos_size = min(pos_size, engine.capital * EXPLORATION_SIZE_FRAC)
         if in_breathing_cooldown:
             pos_size *= 0.70
-
-        pos_size = min(pos_size, remaining_exposure_capacity())
 
         if pos_size <= 0 or engine.capital < pos_size + ESTIMATED_TX_FEE_SOL:
             continue
@@ -2091,6 +2377,8 @@ async def get_metrics_async():
             "high": p.get("high"),
             "price_source": p.get("price_source"),
             "last_momentum": sf(LAST_MOMENTUM.get(p.get("mint"), 0.0), 0.0),
+            "wallet_graph_score": sf(p.get("wallet_graph_score", 0.0), 0.0),
+            "via": p.get("via"),
         })
 
     return {
@@ -2153,6 +2441,20 @@ async def get_metrics_async():
             "last_update": FUND_STATE.get("last_update"),
             "last_reason": FUND_STATE.get("last_reason"),
         },
+        "jito": {
+            "enabled": USE_JITO,
+            "sent": JITO_STATS["sent"],
+            "ok": JITO_STATS["ok"],
+            "fail": JITO_STATS["fail"],
+            "last_error": JITO_STATS["last_error"],
+        },
+        "institutional": {
+            "paused": institutional_paused(),
+            "pause_left": max(0, int(sf(INSTITUTIONAL_STATE.get("pause_until", 0.0), 0.0) - now())),
+            "daily_realized_pnl_sol": sf(INSTITUTIONAL_STATE.get("daily_realized_pnl_sol", 0.0), 0.0),
+            "daily_loss_limit_sol": DAILY_LOSS_LIMIT_SOL,
+            "last_reason": INSTITUTIONAL_STATE.get("last_reason"),
+        },
         "positions": engine.positions,
         "recent_trades": engine.trade_history[-20:],
         "logs": engine.logs[-120:],
@@ -2160,12 +2462,16 @@ async def get_metrics_async():
         "strategy_stats": strategy_perf,
         "score_component_stats": {
             k: _avg_stat(k)
-            for k in ["breakout", "smart_money", "liquidity", "momentum", "wallet_count", "price"]
+            for k in ["breakout", "smart_money", "liquidity", "momentum", "wallet_count", "price", "wallet_graph_score"]
         },
         "portfolio": {
             "positions_by_source": dict(Counter([p.get("source", "unknown") for p in engine.positions])),
             "positions_by_strategy": dict(Counter([p.get("mode", "unknown") for p in engine.positions])),
             "total_exposure_ratio": exposure() / capital if capital > 0 else 0.0,
+            "strategy_exposure": {
+                k: exposure_by_strategy(k)
+                for k in ["sniper", "smart", "momentum", "explore"]
+            },
         },
         "open_positions_detail": open_positions_detail,
     }
@@ -2255,6 +2561,20 @@ def get_metrics():
             "last_update": FUND_STATE.get("last_update"),
             "last_reason": FUND_STATE.get("last_reason"),
         },
+        "jito": {
+            "enabled": USE_JITO,
+            "sent": JITO_STATS["sent"],
+            "ok": JITO_STATS["ok"],
+            "fail": JITO_STATS["fail"],
+            "last_error": JITO_STATS["last_error"],
+        },
+        "institutional": {
+            "paused": institutional_paused(),
+            "pause_left": max(0, int(sf(INSTITUTIONAL_STATE.get("pause_until", 0.0), 0.0) - now())),
+            "daily_realized_pnl_sol": sf(INSTITUTIONAL_STATE.get("daily_realized_pnl_sol", 0.0), 0.0),
+            "daily_loss_limit_sol": DAILY_LOSS_LIMIT_SOL,
+            "last_reason": INSTITUTIONAL_STATE.get("last_reason"),
+        },
         "positions": engine.positions,
         "recent_trades": engine.trade_history[-20:],
         "logs": engine.logs[-120:],
@@ -2262,12 +2582,16 @@ def get_metrics():
         "strategy_stats": strategy_perf,
         "score_component_stats": {
             k: _avg_stat(k)
-            for k in ["breakout", "smart_money", "liquidity", "momentum", "wallet_count", "price"]
+            for k in ["breakout", "smart_money", "liquidity", "momentum", "wallet_count", "price", "wallet_graph_score"]
         },
         "portfolio": {
             "positions_by_source": dict(Counter([p.get("source", "unknown") for p in engine.positions])),
             "positions_by_strategy": dict(Counter([p.get("mode", "unknown") for p in engine.positions])),
             "total_exposure_ratio": exposure() / capital if capital > 0 else 0.0,
+            "strategy_exposure": {
+                k: exposure_by_strategy(k)
+                for k in ["sniper", "smart", "momentum", "explore"]
+            },
         },
         "open_positions_detail": [
             {
@@ -2282,6 +2606,8 @@ def get_metrics():
                 "high": p.get("high"),
                 "price_source": p.get("price_source"),
                 "last_momentum": sf(LAST_MOMENTUM.get(p.get("mint"), 0.0), 0.0),
+                "wallet_graph_score": sf(p.get("wallet_graph_score", 0.0), 0.0),
+                "via": p.get("via"),
             }
             for p in (engine.positions or [])
         ],
@@ -2296,6 +2622,7 @@ async def start_once():
     global MEMPOOL_TASK
     ensure_engine()
     update_fund_allocator(force=True)
+    institutional_day_reset()
     if MEMPOOL_TASK is None or MEMPOOL_TASK.done():
         MEMPOOL_TASK = asyncio.create_task(mempool_stream())
 
@@ -2304,10 +2631,11 @@ async def main_loop():
     global MEMPOOL_TASK
 
     await start_once()
-    log("V68.5 FINAL FUND BRAIN HARDENED START")
+    log("V71 INSTITUTIONAL FUND BRAIN + V69 JITO SNIPER WALLET GRAPH START")
 
     while engine.running:
         try:
+            institutional_day_reset()
             agent_update()
             agent_adjust_params()
             update_fund_allocator()
@@ -2351,16 +2679,13 @@ async def main_loop():
                     if f.get("_tier") not in {"A", "A+"}:
                         continue
 
-                    buy_size = allocate_size(
-                        max(f["_score"], STRICT_A_TIER_THRESHOLD),
-                        1,
-                        f["_mode"],
-                    )
+                    if exposure_by_strategy(f["_mode"]) >= engine.capital * (MAX_SNIPER_EXPOSURE if f["_mode"] == "sniper" else MAX_STRATEGY_EXPOSURE):
+                        continue
 
                     ok = await buy(
                         f["mint"],
                         f,
-                        buy_size,
+                        allocate_size(max(f["_score"], STRICT_A_TIER_THRESHOLD), 1, f["_mode"]),
                         f["_mode"],
                         forced=True,
                     )
@@ -2374,6 +2699,10 @@ async def main_loop():
 
             if ENABLE_EQUITY_MARK:
                 engine.stats["unrealized_pnl_sol"] = await calc_unrealized_pnl_sol()
+
+            engine.stats["jito_sent"] = JITO_STATS["sent"]
+            engine.stats["jito_ok"] = JITO_STATS["ok"]
+            engine.stats["jito_fail"] = JITO_STATS["fail"]
 
         except Exception as e:
             engine.stats["errors"] += 1
