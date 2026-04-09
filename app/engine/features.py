@@ -444,3 +444,40 @@ def score_with_allocator(f):
         base *= 0.96  # keep ranked, but slightly penalize low-quality entries
 
     return max(base, 0.0), mtype, detail
+
+import asyncio
+import random
+
+from app.engine import runtime as rt
+
+try:
+    from app.engine.sources import fetch_alpha_candidates as _sources_fetch_alpha_candidates
+except Exception:
+    _sources_fetch_alpha_candidates = None
+
+
+async def fetch_alpha_candidates():
+    """
+    Compatibility shim:
+    main.py / metrics_runtime.py / older modules may import this from features.py.
+    Prefer sources.fetch_alpha_candidates() if available.
+    """
+    if _sources_fetch_alpha_candidates is not None:
+        try:
+            tokens = await _sources_fetch_alpha_candidates()
+            if isinstance(tokens, list):
+                return tokens
+        except Exception:
+            pass
+
+    # fallback: if runtime already has some buffered universe, use it
+    try:
+        if hasattr(rt, "MEMPOOL_BUFFER") and isinstance(rt.MEMPOOL_BUFFER, list):
+            tokens = list(rt.MEMPOOL_BUFFER)[-50:]
+            if tokens:
+                return tokens
+    except Exception:
+        pass
+
+    # final safe fallback: empty list
+    return []
