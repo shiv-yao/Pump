@@ -139,6 +139,13 @@ JUPITER_PROGRAM_ID = os.getenv(
     "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 )
 
+FUND_BRAIN_UPDATE_SEC = int(os.getenv("FUND_BRAIN_UPDATE_SEC", "20"))
+FUND_MIN_TRADES = int(os.getenv("FUND_MIN_TRADES", "3"))
+FUND_SNIPER_BASE = float(os.getenv("FUND_SNIPER_BASE", "0.30"))
+FUND_SMART_BASE = float(os.getenv("FUND_SMART_BASE", "0.35"))
+FUND_MOMENTUM_BASE = float(os.getenv("FUND_MOMENTUM_BASE", "0.35"))
+FUND_EXPLORE_BASE = float(os.getenv("FUND_EXPLORE_BASE", "0.08"))
+
 
 # =========================================================
 # RUNTIME MEMORY
@@ -197,6 +204,25 @@ AUTO_PARAMS = {
     "entry_threshold": ENTRY_THRESHOLD,
     "take_profit": TAKE_PROFIT,
     "stop_loss": STOP_LOSS,
+}
+
+FUND_ALLOCATOR = {
+    "sniper": FUND_SNIPER_BASE,
+    "smart": FUND_SMART_BASE,
+    "momentum": FUND_MOMENTUM_BASE,
+    "explore": FUND_EXPLORE_BASE,
+}
+
+FUND_PERF = defaultdict(lambda: {
+    "pnl": 0.0,
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+})
+
+FUND_STATE = {
+    "last_update": 0.0,
+    "last_reason": "boot",
 }
 
 
@@ -367,6 +393,120 @@ def parse_signature(obj):
 
 
 # =========================================================
+# FUND BRAIN
+# =========================================================
+
+def ensure_fund_state():
+    for key, default_val in {
+        "sniper": FUND_SNIPER_BASE,
+        "smart": FUND_SMART_BASE,
+        "momentum": FUND_MOMENTUM_BASE,
+        "explore": FUND_EXPLORE_BASE,
+    }.items():
+        FUND_ALLOCATOR.setdefault(key, default_val)
+        _ = FUND_PERF[key]
+
+
+def strategy_bucket_from_mode(mode_name: str) -> str:
+    mode_name = str(mode_name or "momentum").lower()
+    if mode_name in {"sniper", "smart", "momentum", "explore"}:
+        return mode_name
+    if "snipe" in mode_name:
+        return "sniper"
+    if "smart" in mode_name:
+        return "smart"
+    if "explore" in mode_name:
+        return "explore"
+    return "momentum"
+
+
+def update_fund_perf(strategy: str, pnl: float):
+    strategy = strategy_bucket_from_mode(strategy)
+    row = FUND_PERF[strategy]
+    row["trades"] += 1
+    row["pnl"] += sf(pnl, 0.0)
+    if pnl > 0:
+        row["wins"] += 1
+    else:
+        row["losses"] += 1
+
+
+def update_fund_allocator(force=False):
+    ensure_fund_state()
+
+    if not force and (now() - sf(FUND_STATE.get("last_update", 0.0), 0.0) < FUND_BRAIN_UPDATE_SEC):
+        return
+
+    raw_scores = {}
+    total_score = 0.0
+
+    for strat in ["sniper", "smart", "momentum", "explore"]:
+        perf = FUND_PERF[strat]
+        trades = int(perf.get("trades", 0))
+        pnl = sf(perf.get("pnl", 0.0), 0.0)
+        wins = int(perf.get("wins", 0))
+        losses = int(perf.get("losses", 0))
+        total_done = max(trades, wins + losses)
+        winrate = wins / total_done if total_done > 0 else 0.5
+
+        if trades < FUND_MIN_TRADES:
+            base_prior = {
+                "sniper": 1.00,
+                "smart": 1.05,
+                "momentum": 1.05,
+                "explore": 0.55,
+            }.get(strat, 1.0)
+            score = base_prior
+        else:
+            pnl_score = clamp(1.0 + pnl, 0.10, 2.50)
+            wr_score = clamp(0.40 + winrate, 0.10, 1.60)
+            stability_penalty = 0.88 if (losses >= wins + 2 and pnl < 0) else 1.0
+            score = clamp((pnl_score * 0.55 + wr_score * 0.45) * stability_penalty, 0.10, 3.00)
+
+        raw_scores[strat] = score
+        total_score += score
+
+    if total_score <= 0:
+        total_score = 1.0
+
+    for strat, score in raw_scores.items():
+        FUND_ALLOCATOR[strat] = score / total_score
+
+    FUND_ALLOCATOR["sniper"] = clamp(FUND_ALLOCATOR["sniper"], 0.10, 0.55)
+    FUND_ALLOCATOR["smart"] = clamp(FUND_ALLOCATOR["smart"], 0.10, 0.55)
+    FUND_ALLOCATOR["momentum"] = clamp(FUND_ALLOCATOR["momentum"], 0.10, 0.55)
+    FUND_ALLOCATOR["explore"] = clamp(FUND_ALLOCATOR["explore"], 0.02, 0.15)
+
+    s = sum(FUND_ALLOCATOR.values())
+    if s <= 0:
+        s = 1.0
+    for k in list(FUND_ALLOCATOR.keys()):
+        FUND_ALLOCATOR[k] = FUND_ALLOCATOR[k] / s
+
+    FUND_STATE["last_update"] = now()
+    FUND_STATE["last_reason"] = "perf_rebalance"
+    log(
+        "FUND_ALLOC "
+        + " ".join(f"{k}={FUND_ALLOCATOR[k]:.2f}" for k in ["sniper", "smart", "momentum", "explore"])
+    )
+
+
+def fund_multiplier(strategy: str) -> float:
+    strategy = strategy_bucket_from_mode(strategy)
+    alloc = sf(FUND_ALLOCATOR.get(strategy, 0.25), 0.25)
+
+    if alloc >= 0.45:
+        return 1.35
+    if alloc >= 0.35:
+        return 1.18
+    if alloc >= 0.25:
+        return 1.00
+    if alloc >= 0.15:
+        return 0.82
+    return 0.65
+
+
+# =========================================================
 # SAFE WRAPPERS
 # =========================================================
 
@@ -447,6 +587,8 @@ def ensure_engine():
     }
     for k, v in defaults.items():
         engine.stats.setdefault(k, v)
+
+    ensure_fund_state()
 
 
 # =========================================================
@@ -1189,10 +1331,15 @@ def score_with_allocator(f):
     elif regime == "bear":
         base *= 0.88
 
-    return max(base, 0.0), mode(f), detail
+    mtype = mode(f)
+    base *= fund_multiplier(mtype)
+
+    return max(base, 0.0), mtype, detail
 
 
-def allocate_size(score, n_candidates):
+def allocate_size(score, n_candidates, strategy="momentum"):
+    strategy = strategy_bucket_from_mode(strategy)
+
     if n_candidates <= 0:
         return 0.0
 
@@ -1215,12 +1362,15 @@ def allocate_size(score, n_candidates):
 
     base *= breathing_risk_mult()
     base *= clamp(sf(AGENT_STATE.get("risk_mult", 1.0), 1.0), AGENT_RISK_MIN, AGENT_RISK_MAX)
+    base *= fund_multiplier(strategy)
 
     if agent_in_cooldown():
         base *= 0.60
 
+    alloc_cap = clamp(FUND_ALLOCATOR.get(strategy, 0.25), 0.05, 0.60)
+    hard_cap = engine.capital * alloc_cap
     base = min(base, 0.20)
-    return min(base, engine.capital * MAX_POSITION_SIZE)
+    return min(base, engine.capital * MAX_POSITION_SIZE, hard_cap)
 
 
 # =========================================================
@@ -1287,6 +1437,8 @@ async def calc_equity():
 # =========================================================
 
 async def buy(m, f, position_size, mtype, forced=False):
+    mtype = strategy_bucket_from_mode(mtype)
+
     order_sol = max(position_size, MIN_ORDER_SOL)
     amt_atomic = int(order_sol * SOL_DECIMALS)
 
@@ -1341,6 +1493,7 @@ async def buy(m, f, position_size, mtype, forced=False):
         "regime": detect_regime(),
         "agent_mode": AGENT_STATE.get("mode"),
         "token_decimals": token_decimals,
+        "fund_alloc": dict(FUND_ALLOCATOR),
     })
 
     position = {
@@ -1439,7 +1592,7 @@ async def sell(p, reason, price, sell_fraction=1.0):
     engine.stats["realized_pnl_sol"] += pnl_sol
 
     src = p.get("source", "unknown")
-    strategy = p.get("mode", "unknown")
+    strategy = strategy_bucket_from_mode(p.get("mode", "unknown"))
 
     is_full_exit = token_amount_remain <= 0.000000000001 or sell_fraction >= 0.999999
 
@@ -1463,6 +1616,7 @@ async def sell(p, reason, price, sell_fraction=1.0):
         source_stat_loss(src, pnl)
 
     strategy_stat_update(strategy, pnl)
+    update_fund_perf(strategy, pnl)
 
     push_trade({
         "mint": m,
@@ -1635,7 +1789,8 @@ async def process_candidates(tokens):
         f["_tier"] = "A+" if sc >= 0.145 else "A" if sc >= STRICT_A_TIER_THRESHOLD else "B"
 
         log(
-            f"SCORE {m[:6]} sc={sc:.4f} tier={f['_tier']} "
+            f"SCORE {m[:6]} sc={sc:.4f} tier={f['_tier']} mode={mtype} "
+            f"fund={FUND_ALLOCATOR.get(mtype, 0):.2f} "
             f"b={detail['bscore']:.4f} m={detail['mscore']:.4f} "
             f"s={detail['sscore']:.4f} l={detail['lscore']:.4f}"
         )
@@ -1680,7 +1835,8 @@ async def exploration_trade():
 
             size = min(
                 engine.capital * EXPLORATION_SIZE_FRAC,
-                engine.capital * MAX_POSITION_SIZE
+                engine.capital * MAX_POSITION_SIZE,
+                engine.capital * clamp(FUND_ALLOCATOR.get("explore", 0.08), 0.02, 0.15),
             )
             return bool(await buy(t["mint"], f, size, "explore", forced=True))
 
@@ -1738,7 +1894,7 @@ async def execute_portfolio(ranked):
         if not ok:
             continue
 
-        pos_size = allocate_size(f["_score"], len(ranked))
+        pos_size = allocate_size(f["_score"], len(ranked), f.get("_mode", "momentum"))
         if f.get("_mode") == "explore":
             pos_size = min(pos_size, engine.capital * EXPLORATION_SIZE_FRAC)
         if in_breathing_cooldown:
@@ -1795,6 +1951,20 @@ def _strategy_perf(name):
     }
 
 
+def _fund_perf(name):
+    s = FUND_PERF.get(name, {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0})
+    t = s["trades"]
+    return {
+        "trades": t,
+        "wins": s["wins"],
+        "losses": s["losses"],
+        "pnl": s["pnl"],
+        "win_rate": (s["wins"] / t) if t else 0.0,
+        "allocator_weight": sf(FUND_ALLOCATOR.get(name, 0.0), 0.0),
+        "capital_multiplier": fund_multiplier(name),
+    }
+
+
 async def get_metrics_async():
     start_capital = sf(engine.start_capital, 5.0)
     cash = sf(engine.capital, start_capital)
@@ -1825,6 +1995,7 @@ async def get_metrics_async():
 
     source_perf = {k: _source_perf(k) for k in SOURCE_STATS.keys()}
     strategy_perf = {k: _strategy_perf(k) for k in STRATEGY_STATS.keys()}
+    fund_perf = {k: _fund_perf(k) for k in ["sniper", "smart", "momentum", "explore"]}
 
     open_positions_detail = []
     for p in (engine.positions or []):
@@ -1908,6 +2079,12 @@ async def get_metrics_async():
             "auto_take_profit": agent_effective_tp(),
             "auto_stop_loss": agent_effective_sl(),
         },
+        "fund_brain": {
+            "allocator": dict(FUND_ALLOCATOR),
+            "strategy_perf": fund_perf,
+            "last_update": FUND_STATE.get("last_update"),
+            "last_reason": FUND_STATE.get("last_reason"),
+        },
         "positions": engine.positions,
         "recent_trades": engine.trade_history[-20:],
         "logs": engine.logs[-120:],
@@ -1952,6 +2129,7 @@ def get_metrics():
 
     source_perf = {k: _source_perf(k) for k in SOURCE_STATS.keys()}
     strategy_perf = {k: _strategy_perf(k) for k in STRATEGY_STATS.keys()}
+    fund_perf = {k: _fund_perf(k) for k in ["sniper", "smart", "momentum", "explore"]}
 
     return {
         "summary": {
@@ -2003,6 +2181,12 @@ def get_metrics():
             "auto_take_profit": agent_effective_tp(),
             "auto_stop_loss": agent_effective_sl(),
         },
+        "fund_brain": {
+            "allocator": dict(FUND_ALLOCATOR),
+            "strategy_perf": fund_perf,
+            "last_update": FUND_STATE.get("last_update"),
+            "last_reason": FUND_STATE.get("last_reason"),
+        },
         "positions": engine.positions,
         "recent_trades": engine.trade_history[-20:],
         "logs": engine.logs[-120:],
@@ -2043,6 +2227,7 @@ def get_metrics():
 async def start_once():
     global MEMPOOL_TASK
     ensure_engine()
+    update_fund_allocator(force=True)
     if MEMPOOL_TASK is None or MEMPOOL_TASK.done():
         MEMPOOL_TASK = asyncio.create_task(mempool_stream())
 
@@ -2051,12 +2236,13 @@ async def main_loop():
     global MEMPOOL_TASK
 
     await start_once()
-    log("V66.1 COMPLETE LIVE ENGINE START")
+    log("V67 FUND BRAIN COMPLETE LIVE ENGINE START")
 
     while engine.running:
         try:
             agent_update()
             agent_adjust_params()
+            update_fund_allocator()
 
             tokens = await fetch_alpha_candidates()
             if not isinstance(tokens, list):
@@ -2100,7 +2286,7 @@ async def main_loop():
                     ok = await buy(
                         f["mint"],
                         f,
-                        allocate_size(max(f["_score"], STRICT_A_TIER_THRESHOLD), 1),
+                        allocate_size(max(f["_score"], STRICT_A_TIER_THRESHOLD), 1, f["_mode"]),
                         f["_mode"],
                         forced=True,
                     )
