@@ -3,9 +3,6 @@ import time
 
 from app.state import engine
 from app.engine import runtime as rt
-from app.engine.stable_engine import run_stable_engine
-from app.engine.sniper_engine import run_sniper_engine
-from app.engine.ml_fund_brain import ml_adjust_allocator
 
 # =========================
 # SAFE IMPORT（避免炸）
@@ -34,6 +31,9 @@ except Exception:
     async def execute_portfolio(*args, **kwargs):
         return False
 
+    async def execute_ranked_portfolio(*args, **kwargs):
+        return False
+
 try:
     from app.engine.features import fetch_alpha_candidates
 except Exception:
@@ -45,6 +45,18 @@ try:
 except Exception:
     async def process_candidates(tokens):
         return tokens if isinstance(tokens, list) else []
+
+try:
+    from app.engine.stable_engine import run_stable_engine
+except Exception:
+    async def run_stable_engine(tokens):
+        return []
+
+try:
+    from app.engine.sniper_engine import run_sniper_engine
+except Exception:
+    async def run_sniper_engine(tokens):
+        return []
 
 try:
     from app.engine.execution import check_sell
@@ -61,11 +73,16 @@ except Exception:
     def update_runtime_stats():
         return None
 
-# ✅ memory metrics 版
 try:
     from app.engine.metrics_runtime import update_metrics
 except Exception:
     def update_metrics():
+        return None
+
+try:
+    from app.engine.ml_fund_brain import ml_adjust_allocator
+except Exception:
+    def ml_adjust_allocator():
         return None
 
 
@@ -201,7 +218,6 @@ async def start_once():
     except Exception as e:
         _log(f"FUND INIT ERROR: {e}")
 
-    # ✅ 初始化 metrics memory
     try:
         update_metrics()
     except Exception as e:
@@ -209,6 +225,7 @@ async def start_once():
 
     engine._boot_ts = time.time()
     engine._heartbeat = time.time()
+
     _log("✅ ENGINE START_ONCE OK")
 
 
@@ -218,7 +235,7 @@ async def start_once():
 async def main_loop():
     await start_once()
 
-    _log("🔥 V74 TRUE FUSION GOD MODE START")
+    _log("🔥 V78 TRUE FUSION LONG-RUN MODE START")
 
     while engine.running:
         traded = False
@@ -259,7 +276,26 @@ async def main_loop():
 
             # ================= BUY =================
             try:
-                traded = await _safe_execute_portfolio(tokens)
+                stable_ranked = await run_stable_engine(tokens)
+                sniper_ranked = await run_sniper_engine(tokens)
+
+                traded_stable = await execute_ranked_portfolio(
+                    stable_ranked,
+                    strategy_name="stable",
+                    max_new=1,
+                )
+
+                traded_sniper = await execute_ranked_portfolio(
+                    sniper_ranked,
+                    strategy_name="sniper",
+                    max_new=1,
+                )
+
+                if traded_stable or traded_sniper:
+                    traded = traded_stable or traded_sniper
+                else:
+                    traded = await _safe_execute_portfolio(tokens)
+
             except Exception as e:
                 _log(f"EXEC ERROR: {e}")
                 traded = False
@@ -301,7 +337,7 @@ async def main_loop():
                 pass
             _log(f"ENGINE LOOP ERROR: {e}")
 
-sleep_sec = _safe_float(getattr(rt, "LOOP_SLEEP_SEC", 2.0), 2.0)
+        sleep_sec = _safe_float(getattr(rt, "LOOP_SLEEP_SEC", 2.0), 2.0)
         try:
             await asyncio.sleep(sleep_sec)
         except Exception:
