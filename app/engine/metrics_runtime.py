@@ -76,12 +76,21 @@ def ensure_engine_defaults():
         engine.stats.setdefault(k, v)
 
 
+def _safe_meta(p):
+    meta = p.get("meta", {})
+    return meta if isinstance(meta, dict) else {}
+
+
 def _safe_entry_value(p):
     return sf(p.get("entry_value", p.get("size", p.get("size_sol", 0.0))), 0.0)
 
 
+def _safe_entry_price(p):
+    return sf(p.get("entry_price", p.get("entry", 0.0)), 0.0)
+
+
 def _safe_mark_price(p):
-    entry_price = sf(p.get("entry_price", p.get("entry", 0.0)), 0.0)
+    entry_price = _safe_entry_price(p)
 
     mark_price = sf(
         p.get("price", p.get("mark_price", p.get("entry_price", p.get("entry", 0.0)))),
@@ -102,17 +111,14 @@ def _safe_token_amount(p):
 
 
 def calc_position_value(p):
-    entry_price = sf(p.get("entry_price", p.get("entry", 0.0)), 0.0)
+    entry_price = _safe_entry_price(p)
     mark_price = _safe_mark_price(p)
     token_amount = _safe_token_amount(p)
     entry_value = _safe_entry_value(p)
 
-    if token_amount > 0 and mark_price > 0:
-        market_value = token_amount * mark_price
-    else:
-        market_value = entry_value
+    market_value = token_amount * mark_price if token_amount > 0 and mark_price > 0 else entry_value
 
-    # 防止資料錯誤把 equity 衝爆
+    # 防止錯 decimals / 髒資料把 equity 撐爆
     if entry_value > 0 and market_value > entry_value * 50:
         market_value = entry_value * 50
 
@@ -161,7 +167,6 @@ def trade_stats():
     trades = [t for t in getattr(engine, "trade_history", []) if isinstance(t, dict)]
     wins = [t for t in trades if sf(t.get("pnl", 0.0), 0.0) > 0]
     losses = [t for t in trades if sf(t.get("pnl", 0.0), 0.0) <= 0]
-
     total = len(trades)
 
     avg_win = sum(sf(t.get("pnl", 0.0), 0.0) for t in wins) / len(wins) if wins else 0.0
@@ -216,10 +221,7 @@ def alpha_breakdown():
     final = {}
     for k, v in out.items():
         t = v["trades"]
-        final[k] = {
-            **v,
-            "win_rate": v["wins"] / t if t else 0.0,
-        }
+        final[k] = {**v, "win_rate": v["wins"] / t if t else 0.0}
     return final
 
 
@@ -267,8 +269,7 @@ def open_positions_detail():
         market_value = sf(pv["market_value"], 0.0)
         unrealized_pnl_sol = market_value - entry_value
         unrealized_pnl_pct = unrealized_pnl_sol / entry_value if entry_value > 0 else 0.0
-
-        meta = p.get("meta", {}) if isinstance(p.get("meta"), dict) else {}
+        meta = _safe_meta(p)
 
         rows.append({
             "mint": p.get("mint"),
@@ -286,9 +287,51 @@ def open_positions_detail():
             "via": p.get("via"),
             "hold_sec": max(0.0, time.time() - sf(p.get("time", time.time()), time.time())),
             "ai_win_prob": sf(p.get("ai_win_prob", meta.get("ai_win_prob", 0.0)), 0.0),
+            "quote_out_amount": sf(
+                p.get("quote_out_amount", meta.get("quote_out_amount", p.get("token_amount_atomic", 0))),
+                0.0,
+            ),
+            "token_decimals": si(
+                p.get("token_decimals", meta.get("token_decimals", 6)),
+                6,
+            ),
         })
 
     return rows
+
+
+def recent_closed_trades(limit=20):
+    ensure_engine_defaults()
+
+    trades = getattr(engine, "trade_history", []) or []
+    rows = []
+
+    for t in reversed(trades):
+        if not isinstance(t, dict):
+            continue
+
+        rows.append({
+            "mint": t.get("mint"),
+            "mode": t.get("mode"),
+            "entry": sf(t.get("entry", 0.0), 0.0),
+            "exit": sf(t.get("exit", 0.0), 0.0),
+            "pnl": sf(t.get("pnl", 0.0), 0.0),
+            "pnl_sol": sf(t.get("pnl_sol", 0.0), 0.0),
+            "reason": t.get("reason", ""),
+            "time_open": t.get("time_open"),
+            "time_close": t.get("time_close"),
+            "source": t.get("source", ""),
+            "via": t.get("via", ""),
+        })
+
+        if len(rows) >= int(limit):
+            break
+
+    return rows
+
+
+def get_recent_closed_trades(limit=20):
+    return recent_closed_trades(limit=limit)
 
 
 def update_equity_curve(equity):
@@ -336,6 +379,7 @@ def build_metrics():
         "risk": risk,
         "stats": stats,
         "recent_trades": (getattr(engine, "trade_history", []) or [])[-20:],
+        "recent_closed_trades": recent_closed_trades(20),
         "logs": (getattr(engine, "logs", []) or [])[-120:],
         "positions_detail": positions_detail,
         "equity_curve": list(EQUITY_HISTORY)[-300:],
@@ -360,6 +404,13 @@ def build_metrics():
         "signals": si(stats.get("signals", 0), 0),
         "open_positions": len(getattr(engine, "positions", []) or []),
         "open_exposure": sf(risk.get("total_exposure", 0.0), 0.0),
+        "realized_pnl_sol": sf(stats.get("realized_pnl_sol", perf.get("realized_pnl_sol", 0.0)), 0.0),
+        "unrealized_pnl_sol": sf(stats.get("unrealized_pnl_sol", 0.0), 0.0),
+        "fees_paid_sol": sf(stats.get("fees_paid_sol", 0.0), 0.0),
+        "forced_trades": si(stats.get("forced_trades", 0), 0),
+        "jito_sent": si(stats.get("jito_sent", 0), 0),
+        "jito_ok": si(stats.get("jito_ok", 0), 0),
+        "jito_fail": si(stats.get("jito_fail", 0), 0),
     }
 
     return metrics
@@ -402,8 +453,20 @@ def get_metrics():
             m["equity_curve"] = []
         if "recent_trades" not in m:
             m["recent_trades"] = []
+        if "recent_closed_trades" not in m:
+            m["recent_closed_trades"] = []
         if "logs" not in m:
             m["logs"] = []
+        if "positions_detail" not in m:
+            m["positions_detail"] = []
+        if "performance" not in m:
+            m["performance"] = {}
+        if "alpha" not in m:
+            m["alpha"] = {}
+        if "risk" not in m:
+            m["risk"] = {}
+        if "trading" not in m:
+            m["trading"] = {}
 
         return m
 
@@ -422,5 +485,11 @@ def get_metrics():
             "stats": {"error": str(e)},
             "equity_curve": [],
             "recent_trades": [],
+            "recent_closed_trades": [],
             "logs": [],
+            "positions_detail": [],
+            "performance": {},
+            "alpha": {},
+            "risk": {},
+            "trading": {},
         }
