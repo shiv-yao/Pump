@@ -8,10 +8,8 @@ from app.engine.utils import clamp, now, safe_div, sf
 def _ensure_runtime_state():
     if not hasattr(rt, "BREATHING_STATE") or rt.BREATHING_STATE is None:
         rt.BREATHING_STATE = {"risk_mult": 1.0, "cooldown_until": 0.0}
-
     if not hasattr(rt, "REGIME_STATE") or rt.REGIME_STATE is None:
         rt.REGIME_STATE = {"mode": "neutral", "last_update": 0.0}
-
     if not hasattr(rt, "INSTITUTIONAL_STATE") or rt.INSTITUTIONAL_STATE is None:
         rt.INSTITUTIONAL_STATE = {
             "pause_until": 0.0,
@@ -19,13 +17,10 @@ def _ensure_runtime_state():
             "day_bucket": int(time.time() // 86400),
             "last_reason": "boot",
         }
-
     if not hasattr(rt, "LAST_PRICE") or rt.LAST_PRICE is None:
         rt.LAST_PRICE = {}
-
     if not hasattr(rt, "LAST_MOMENTUM") or rt.LAST_MOMENTUM is None:
         rt.LAST_MOMENTUM = {}
-
     if not hasattr(rt, "engine"):
         raise RuntimeError("runtime.engine missing")
 
@@ -67,7 +62,6 @@ def detect_regime():
         return "neutral"
 
     avg = sum(pnls) / max(len(pnls), 1)
-
     if avg > 0.02:
         mode = "bull"
     elif avg < -0.01:
@@ -118,7 +112,6 @@ def institutional_daily_loss_hit():
 
     daily_loss_limit = abs(sf(getattr(rt, "DAILY_LOSS_LIMIT_SOL", 0.60), 0.60))
     daily_realized = sf(rt.INSTITUTIONAL_STATE.get("daily_realized_pnl_sol", 0.0), 0.0)
-
     return daily_realized <= -daily_loss_limit
 
 
@@ -128,10 +121,6 @@ def institutional_pause_active():
 
 
 def institutional_paused():
-    """
-    Backward-compatible alias.
-    Older modules may import institutional_paused().
-    """
     return institutional_pause_active()
 
 
@@ -166,10 +155,6 @@ def institutional_loss_pause_if_needed():
 
 
 async def check_sell(p):
-    """
-    Compatible risk-layer sell checker.
-    Requires app.engine.execution.sell to exist.
-    """
     _ensure_runtime_state()
 
     try:
@@ -201,6 +186,9 @@ async def check_sell(p):
     entry = sf(p.get("entry_price", p.get("entry")), 0.0)
     if price is None or entry <= 0:
         return False
+
+    p["price"] = price
+    p["mark_price"] = price
 
     hold_sec = now() - sf(p.get("time", now()), now())
     if price < 1e-12 or hold_sec < 5:
