@@ -130,6 +130,23 @@ XAI_API_KEY = os.getenv("XAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4").strip()
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4.5").strip()
 XAI_MODEL = os.getenv("XAI_MODEL", "grok-4").strip()
+PUMPFUN_LATEST_URL = os.getenv("PUMPFUN_LATEST_URL", "https://frontend-api.pump.fun/coins/latest").strip()
+DEXSCREENER_SEARCH_URL = os.getenv("DEXSCREENER_SEARCH_URL", "https://api.dexscreener.com/latest/dex/search").strip()
+JUP_TOKENS_URL = os.getenv("JUP_TOKENS_URL", "https://lite-api.jup.ag/tokens/v1/mints/tradable").strip()
+
+ENABLE_SOURCE_PUMPFUN = os.getenv("ENABLE_SOURCE_PUMPFUN", "true").lower() == "true"
+ENABLE_SOURCE_DEXSCREENER = os.getenv("ENABLE_SOURCE_DEXSCREENER", "true").lower() == "true"
+ENABLE_SOURCE_JUPITER = os.getenv("ENABLE_SOURCE_JUPITER", "true").lower() == "true"
+
+SOURCE_FETCH_TIMEOUT_SEC = float(os.getenv("SOURCE_FETCH_TIMEOUT_SEC", "6.0"))
+SOURCE_DEX_QUERIES = [
+    x.strip() for x in os.getenv("SOURCE_DEX_QUERIES", "SOL,USDC,BONK,PEPE,DOGE,AI,PUMP").split(",")
+    if x.strip()
+]
+
+MAX_PUMPFUN_FETCH = int(os.getenv("MAX_PUMPFUN_FETCH", "30"))
+MAX_DEX_FETCH_PER_QUERY = int(os.getenv("MAX_DEX_FETCH_PER_QUERY", "12"))
+MAX_JUP_FETCH = int(os.getenv("MAX_JUP_FETCH", "30"))
 
 # =========================================================
 # AI / AGENT
