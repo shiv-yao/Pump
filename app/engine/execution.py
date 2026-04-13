@@ -3,14 +3,13 @@ import asyncio
 from app.execution.jupiter_exec import execute_swap
 
 from app.engine import runtime as rt
-from app.engine.agent import agent_effective_sl, agent_effective_tp
 from app.engine.fund_brain import fund_multiplier, update_fund_perf
 from app.engine.risk import (
     detect_regime,
     institutional_loss_pause_if_needed,
     update_breathing_state,
 )
-from app.engine.sources import get_price, safe_quote
+from app.engine.sources import safe_quote
 from app.engine.utils import (
     clamp,
     extract_token_decimals,
@@ -29,6 +28,9 @@ from app.engine.utils import (
 
 
 def _ensure_stats():
+    if not hasattr(rt, "engine") or rt.engine is None:
+        raise RuntimeError("runtime.engine missing")
+
     if not hasattr(rt.engine, "stats") or not isinstance(rt.engine.stats, dict):
         rt.engine.stats = {}
 
@@ -459,6 +461,7 @@ async def buy(m, f, position_size, mtype, forced=False):
         "wallet_graph_score": f.get("wallet_graph_score", 0.0),
         "ai_win_prob": f.get("_ai_win_prob", 0.5),
         "ai_pnl": f.get("_ai_pnl", 0.0),
+        "quote_out_amount": out_amount,
     }
 
     rt.engine.positions.append(position)
