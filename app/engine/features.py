@@ -15,7 +15,7 @@ from app.state import engine
 try:
     from app.engine.ai_predictor import predict_trade_quality
 except Exception:
-    def predict_trade_quality(f):
+    def predict_trade_quality(_f):
         return {
             "win_prob": 0.5,
             "expected_pnl": 0.0,
@@ -156,7 +156,10 @@ async def features(t):
     if liq < getattr(rt, "MIN_LIQUIDITY_OBSERVE", 3000):
         return None
 
-    price = pinfo["price"]
+    price = sf(pinfo.get("price", 0.0), 0.0)
+    if price <= 0:
+        return None
+
     prev = rt.LAST_PRICE.get(m)
     max_breakout_abs = getattr(rt, "MAX_BREAKOUT_ABS", 0.20)
 
@@ -205,7 +208,7 @@ async def features(t):
         else 0.0
     )
 
-    return {
+    out = {
         "mint": m,
         "price": price,
         "breakout": breakout,
@@ -228,6 +231,13 @@ async def features(t):
         "mempool_hits": rt.MEMPOOL_HITS.get(m, 0),
         "mempool_age_sec": mempool_age_sec(m),
     }
+
+    ai = predict_trade_quality(out)
+    out["_ai_win_prob"] = clamp(sf(ai.get("win_prob", 0.5), 0.5), 0.0, 1.0)
+    out["_ai_pnl"] = sf(ai.get("expected_pnl", 0.0), 0.0)
+    out["_ai_score"] = sf(ai.get("score", 0.0), 0.0)
+
+    return out
 
 
 def mode(f):
@@ -432,10 +442,18 @@ def score_with_allocator(f):
     if no_trade_cycles > getattr(rt, "FORCE_TRADE_AFTER", 180):
         base = max(base, getattr(rt, "ENTRY_THRESHOLD", 0.085) * 0.95)
 
+    ai_prob = clamp(sf(f.get("_ai_win_prob", 0.5), 0.5), 0.0, 1.0)
+    ai_min = sf(getattr(rt, "AI_MIN_WIN_PROB", 0.45), 0.45)
+
+    if ai_prob < ai_min:
+        return 0.0, mtype, detail
+
+    base *= (0.7 + ai_prob * 0.6)
+
     if base < threshold:
         base *= 0.95
 
-    return max(base, 0.0), mtype, detail
+    return clamp(base, 0.0, getattr(rt, "MAX_SCORE", 1.5)), mtype, detail
 
 
 try:
@@ -475,28 +493,15 @@ async def process_candidates(tokens):
                 continue
 
             sc, mtype, detail = score_with_allocator(f)
-
-            # V82 AI predictor
-            ai = predict_trade_quality(f)
-            f["_ai_win_prob"] = sf(ai.get("win_prob", 0.5), 0.5)
-            f["_ai_pnl"] = sf(ai.get("expected_pnl", 0.0), 0.0)
-            f["_ai_score"] = sf(ai.get("score", 0.0), 0.0)
-
-            # AI filter
-            if f["_ai_win_prob"] < 0.45:
+            if sc <= 0:
                 continue
-
-            # AI reweight
-            sc *= (0.7 + f["_ai_win_prob"] * 0.6)
 
             f["_score"] = clamp(sc, 0.0, getattr(rt, "MAX_SCORE", 1.5))
             f["_mode"] = mtype
             f["_tier"] = (
-                "A+"
-                if f["_score"] >= 0.145 else
-                "A"
-                if f["_score"] >= getattr(rt, "STRICT_A_TIER_THRESHOLD", 0.095)
-                else "B"
+                "A+" if f["_score"] >= 0.145 else
+                "A" if f["_score"] >= getattr(rt, "STRICT_A_TIER_THRESHOLD", 0.095) else
+                "B"
             )
             f["_detail"] = detail
             ranked.append(f)
