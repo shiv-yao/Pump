@@ -28,9 +28,6 @@ from app.engine.utils import (
 )
 
 
-# =========================================================
-# INTERNAL HELPERS
-# =========================================================
 def _ensure_stats():
     if not hasattr(rt.engine, "stats") or not isinstance(rt.engine.stats, dict):
         rt.engine.stats = {}
@@ -86,37 +83,28 @@ def _ensure_runtime_dicts():
 
     if not hasattr(rt, "FUND_ALLOCATOR") or not isinstance(rt.FUND_ALLOCATOR, dict):
         rt.FUND_ALLOCATOR = {
-            "sniper": 0.30,
-            "smart": 0.35,
+            "stable": 0.40,
+            "sniper": 0.20,
             "momentum": 0.35,
-            "explore": 0.08,
+            "explore": 0.05,
         }
 
     if not hasattr(rt, "LAST_TRADE") or rt.LAST_TRADE is None:
         rt.LAST_TRADE = {}
-
     if not hasattr(rt, "LAST_PRICE") or rt.LAST_PRICE is None:
         rt.LAST_PRICE = {}
-
     if not hasattr(rt, "LAST_MOMENTUM") or rt.LAST_MOMENTUM is None:
         rt.LAST_MOMENTUM = {}
-
     if not hasattr(rt, "BLACKLIST") or rt.BLACKLIST is None:
         rt.BLACKLIST = {}
-
     if not hasattr(rt, "BUY_TIMES") or rt.BUY_TIMES is None:
         rt.BUY_TIMES = []
-
     if not hasattr(rt.engine, "positions") or rt.engine.positions is None:
         rt.engine.positions = []
-
     if not hasattr(rt.engine, "capital"):
         rt.engine.capital = 0.0
 
 
-# =========================================================
-# JITO DECISION
-# =========================================================
 def mempool_use_jito(f):
     _ensure_runtime_dicts()
 
@@ -137,9 +125,6 @@ def mempool_use_jito(f):
     return mode_name == "sniper"
 
 
-# =========================================================
-# SWAP
-# =========================================================
 async def safe_execute_swap(input_mint: str, output_mint: str, amount: int, prefer_jito=False, jito_context=None):
     _ensure_stats()
     _ensure_runtime_dicts()
@@ -213,9 +198,6 @@ def atomic_to_token_amount(out_amount, decimals):
     return out_amount / (10 ** decimals)
 
 
-# =========================================================
-# ALLOCATE SIZE
-# =========================================================
 def allocate_size(score, n_candidates, strategy="momentum"):
     _ensure_runtime_dicts()
 
@@ -277,9 +259,6 @@ def allocate_size(score, n_candidates, strategy="momentum"):
     )
 
 
-# =========================================================
-# BUY
-# =========================================================
 async def buy(m, f, position_size, mtype, forced=False):
     _ensure_stats()
     _ensure_runtime_dicts()
@@ -423,9 +402,6 @@ async def buy(m, f, position_size, mtype, forced=False):
     return True
 
 
-# =========================================================
-# SELL
-# =========================================================
 async def sell(p, reason, price, sell_fraction=1.0):
     _ensure_stats()
     _ensure_runtime_dicts()
@@ -565,120 +541,6 @@ async def sell(p, reason, price, sell_fraction=1.0):
     return True
 
 
-# =========================================================
-# CHECK SELL
-# =========================================================
-async def check_sell(p):
-    _ensure_stats()
-    _ensure_runtime_dicts()
-
-    m = p["mint"]
-    price = await get_price(m)
-    entry = sf(p.get("entry_price", p.get("entry")), 0.0)
-
-    if price is None or entry <= 0:
-        return False
-
-    p["price"] = price
-    p["mark_price"] = price
-
-    hold_sec = now() - sf(p.get("time"), now())
-    if price < 1e-8 or hold_sec < 8:
-        return False
-
-    last = rt.LAST_PRICE.get(m)
-    if last and last > 0:
-        jump = abs(price - last) / last
-        if jump > 0.25 and hold_sec < 20:
-            return False
-
-    token_amount = sf(p.get("token_amount", 0.0), 0.0)
-    entry_value = sf(p.get("entry_value", 0.0), 0.0)
-    if token_amount <= 0 or entry_value <= 0:
-        return False
-
-    market_value = token_amount * price
-    pnl = clamp(
-        safe_div(market_value - entry_value, entry_value, 0.0),
-        -getattr(rt, "MAX_PNL_ABS", 0.2),
-        getattr(rt, "MAX_PNL_ABS", 0.2),
-    )
-
-    p["high"] = max(sf(p.get("high"), entry), price)
-
-    tier = p.get("tier") or (p.get("meta", {}) or {}).get("tier", "C")
-    momentum_now = sf(rt.LAST_MOMENTUM.get(m, 0.0), 0.0)
-    regime = detect_regime()
-
-    if pnl <= getattr(rt, "HARD_STOP_LOSS", -0.02):
-        return await sell(p, "HARD_STOP", price, 1.0)
-
-    if hold_sec > getattr(rt, "FORCE_EXIT_SEC", 90):
-        return await sell(p, "FORCE_EXIT", price, 1.0)
-
-    fast_cut_line = -0.02 if regime != "bear" else -0.015
-    if pnl < fast_cut_line and hold_sec > 20:
-        return await sell(p, "FAST_CUT", price, 1.0)
-
-    if pnl > 0 and momentum_now > 0.0035:
-        return False
-
-    if -0.02 < pnl < 0 and momentum_now > 0.0045:
-        return False
-
-    if pnl >= 0.008 and not p.get("tp1_done"):
-        p["tp1_done"] = True
-        return await sell(p, "PARTIAL_TP", price, 0.50)
-
-    tp = agent_effective_tp()
-    if tier == "A+":
-        tp *= 2.2
-    elif tier == "A":
-        tp *= 1.8
-
-    if regime == "bull":
-        tp *= 1.15
-    elif regime == "bear":
-        tp *= 0.85
-
-    if pnl >= tp:
-        return await sell(p, "TP", price, 1.0)
-
-    effective_sl = agent_effective_sl()
-    if pnl <= effective_sl:
-        await asyncio.sleep(0.4)
-        price2 = await get_price(m)
-        if price2:
-            market_value2 = token_amount * price2
-            pnl2 = clamp(
-                safe_div(market_value2 - entry_value, entry_value, 0.0),
-                -getattr(rt, "MAX_PNL_ABS", 0.2),
-                getattr(rt, "MAX_PNL_ABS", 0.2),
-            )
-            if pnl2 <= effective_sl:
-                return await sell(p, "SL", price2, 1.0)
-        return False
-
-    dynamic_trailing_gap = getattr(rt, "TRAILING_GAP", 0.01) * (1.15 if tier == "A+" else 1.0) * (0.85 if regime == "bear" else 1.0)
-    if price < p["high"] * (1 - dynamic_trailing_gap):
-        return await sell(p, "TRAIL", price, 1.0)
-
-    dynamic_hold = int(
-        getattr(rt, "MAX_HOLD_SEC", 120)
-        * (1.25 if regime == "bull" else 0.70 if regime == "bear" else 1.0)
-    )
-    if hold_sec > dynamic_hold:
-        if tier in {"A", "A+"} and momentum_now > 0.0025 and pnl > 0:
-            return False
-        if pnl < 0.003:
-            return await sell(p, "TIME", price, 1.0)
-
-    return False
-
-
-# =========================================================
-# EXECUTE RANKED
-# =========================================================
 async def execute_ranked_portfolio(ranked, strategy_name="stable", weight=0.3, max_new=1):
     _ensure_stats()
     _ensure_runtime_dicts()
@@ -697,7 +559,6 @@ async def execute_ranked_portfolio(ranked, strategy_name="stable", weight=0.3, m
     for f in ranked:
         if buys >= max_new:
             break
-
         if not isinstance(f, dict):
             continue
 
@@ -738,18 +599,11 @@ async def execute_ranked_portfolio(ranked, strategy_name="stable", weight=0.3, m
 
         if pos_size <= 0:
             continue
-
         if capital < min_order:
             continue
 
         try:
-            ok = await buy(
-                m,
-                f,
-                pos_size,
-                strategy_name,
-                forced=False,
-            )
+            ok = await buy(m, f, pos_size, strategy_name, forced=False)
         except Exception as e:
             rt.engine.stats["errors"] = int(rt.engine.stats.get("errors", 0)) + 1
             _log(f"EXECUTE_RANKED BUY ERROR {m[:6]} {e}")
