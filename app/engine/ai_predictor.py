@@ -1,9 +1,6 @@
 import math
 from app.engine.utils import sf
 
-# =========================================================
-# SIMPLE ONLINE MODEL（輕量版）
-# =========================================================
 MODEL = {
     "w_breakout": 0.8,
     "w_momentum": 0.6,
@@ -17,13 +14,10 @@ MODEL = {
 def _sigmoid(x):
     try:
         return 1 / (1 + math.exp(-x))
-    except:
+    except Exception:
         return 0.5
 
 
-# =========================================================
-# FEATURE → PREDICTION
-# =========================================================
 def predict_trade_quality(f):
     breakout = sf(f.get("breakout", 0.0), 0.0)
     momentum = sf(f.get("momentum", 0.0), 0.0)
@@ -31,8 +25,7 @@ def predict_trade_quality(f):
     liq = sf(f.get("liq", 0.0), 0.0)
     wallet = sf(f.get("wallet_graph_score", 0.0), 0.0)
 
-    # normalize
-    liq_norm = min(liq / 100000, 1.0)
+    liq_norm = min(liq / 100000.0, 1.0)
 
     score = (
         breakout * MODEL["w_breakout"]
@@ -44,13 +37,7 @@ def predict_trade_quality(f):
     )
 
     win_prob = _sigmoid(score)
-
-    # 預測 pnl（簡化）
-    expected_pnl = (
-        breakout * 0.4
-        + momentum * 0.3
-        + smart * 0.3
-    )
+    expected_pnl = breakout * 0.4 + momentum * 0.3 + smart * 0.3
 
     return {
         "win_prob": win_prob,
