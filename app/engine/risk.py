@@ -8,8 +8,10 @@ from app.engine.utils import clamp, now, safe_div, sf
 def _ensure_runtime_state():
     if not hasattr(rt, "BREATHING_STATE") or rt.BREATHING_STATE is None:
         rt.BREATHING_STATE = {"risk_mult": 1.0, "cooldown_until": 0.0}
+
     if not hasattr(rt, "REGIME_STATE") or rt.REGIME_STATE is None:
         rt.REGIME_STATE = {"mode": "neutral", "last_update": 0.0}
+
     if not hasattr(rt, "INSTITUTIONAL_STATE") or rt.INSTITUTIONAL_STATE is None:
         rt.INSTITUTIONAL_STATE = {
             "pause_until": 0.0,
@@ -17,10 +19,13 @@ def _ensure_runtime_state():
             "day_bucket": int(time.time() // 86400),
             "last_reason": "boot",
         }
+
     if not hasattr(rt, "LAST_PRICE") or rt.LAST_PRICE is None:
         rt.LAST_PRICE = {}
+
     if not hasattr(rt, "LAST_MOMENTUM") or rt.LAST_MOMENTUM is None:
         rt.LAST_MOMENTUM = {}
+
     if not hasattr(rt, "engine"):
         raise RuntimeError("runtime.engine missing")
 
@@ -62,6 +67,7 @@ def detect_regime():
         return "neutral"
 
     avg = sum(pnls) / max(len(pnls), 1)
+
     if avg > 0.02:
         mode = "bull"
     elif avg < -0.01:
@@ -115,6 +121,52 @@ def institutional_daily_loss_hit():
     return daily_realized <= -daily_loss_limit
 
 
+def hourly_loss_hit():
+    _ensure_runtime_state()
+
+    trades = list(getattr(rt.engine, "trade_history", []) or [])
+    if not trades:
+        return False
+
+    cutoff = now() - 3600
+    pnl_sol_sum = 0.0
+
+    for t in trades:
+        if not isinstance(t, dict):
+            continue
+
+        close_ts = sf(t.get("time_close", t.get("time", 0.0)), 0.0)
+        if close_ts < cutoff:
+            continue
+
+        pnl_sol_sum += sf(t.get("pnl_sol", 0.0), 0.0)
+
+    max_loss_per_hour = abs(sf(getattr(rt, "MAX_LOSS_PER_HOUR_SOL", 0.12), 0.12))
+    return pnl_sol_sum <= -max_loss_per_hour
+
+
+def max_trades_per_day_hit():
+    _roll_day_if_needed()
+
+    trades = list(getattr(rt.engine, "trade_history", []) or [])
+    if not trades:
+        return False
+
+    current_bucket = int(time.time() // 86400)
+    count = 0
+
+    for t in trades:
+        if not isinstance(t, dict):
+            continue
+
+        ts = sf(t.get("time_close", t.get("time", 0.0)), 0.0)
+        if int(ts // 86400) == current_bucket:
+            count += 1
+
+    max_trades = int(getattr(rt, "MAX_TRADES_PER_DAY", 999999) or 999999)
+    return count >= max_trades
+
+
 def institutional_pause_active():
     _ensure_runtime_state()
     return now() < sf(rt.INSTITUTIONAL_STATE.get("pause_until", 0.0), 0.0)
@@ -131,6 +183,18 @@ def institutional_loss_pause_if_needed():
         rt.INSTITUTIONAL_STATE["pause_until"] = now() + getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_SEC", 600)
         rt.INSTITUTIONAL_STATE["last_reason"] = "daily_loss_limit"
         _log("INSTITUTIONAL pause triggered by daily loss limit")
+        return True
+
+    if hourly_loss_hit():
+        rt.INSTITUTIONAL_STATE["pause_until"] = now() + getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_SEC", 600)
+        rt.INSTITUTIONAL_STATE["last_reason"] = "hourly_loss_limit"
+        _log("INSTITUTIONAL pause triggered by hourly loss limit")
+        return True
+
+    if max_trades_per_day_hit():
+        rt.INSTITUTIONAL_STATE["pause_until"] = now() + getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_SEC", 600)
+        rt.INSTITUTIONAL_STATE["last_reason"] = "max_trades_per_day"
+        _log("INSTITUTIONAL pause triggered by max trades per day")
         return True
 
     recent = list(getattr(rt.engine, "trade_history", []) or [])
