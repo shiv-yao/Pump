@@ -1,74 +1,130 @@
 from app.engine import runtime as rt
-from app.engine.utils import clamp, sf
+from app.state import engine
+from app.engine.utils import sf
 
 
-def _ensure_allocator_state():
-    if not hasattr(rt, "FUND_PERF") or not isinstance(rt.FUND_PERF, dict):
-        rt.FUND_PERF = {}
-
-    for b in ["stable", "sniper", "momentum", "explore"]:
-        if b not in rt.FUND_PERF or not isinstance(rt.FUND_PERF.get(b), dict):
-            rt.FUND_PERF[b] = {
-                "pnl": 0.0,
-                "trades": 0,
-                "wins": 0,
-                "losses": 0,
-            }
-
-    if not hasattr(rt, "FUND_ALLOCATOR") or not isinstance(rt.FUND_ALLOCATOR, dict):
+def _ensure():
+    if not hasattr(rt, "FUND_ALLOCATOR"):
         rt.FUND_ALLOCATOR = {
-            "stable": 0.40,
-            "sniper": 0.20,
+            "stable": 0.4,
+            "sniper": 0.2,
             "momentum": 0.35,
             "explore": 0.05,
         }
 
-    if not hasattr(rt, "FUND_STATE") or not isinstance(rt.FUND_STATE, dict):
-        rt.FUND_STATE = {"last_reason": "boot"}
+    if not hasattr(rt, "FUND_PERF"):
+        rt.FUND_PERF = {}
+
+    if not hasattr(rt, "ADAPT_STATE"):
+        rt.ADAPT_STATE = {
+            "entry_mult": 1.0,
+            "tp_mult": 1.0,
+            "sl_mult": 1.0,
+        }
 
 
+# =========================================================
+# STRATEGY PERFORMANCE（哪個策略在賺）
+# =========================================================
+def _calc_strategy_perf():
+    trades = getattr(engine, "trade_history", []) or []
+
+    perf = {}
+
+    for t in trades[-30:]:
+        strat = str(t.get("mode", "unknown"))
+        pnl = sf(t.get("pnl", 0.0), 0.0)
+
+        if strat not in perf:
+            perf[strat] = {"pnl": 0.0, "trades": 0}
+
+        perf[strat]["pnl"] += pnl
+        perf[strat]["trades"] += 1
+
+    return perf
+
+
+# =========================================================
+# ALLOCATOR（資金配置會自己變）
+# =========================================================
+def _adjust_allocator(perf):
+    total = sum(abs(v["pnl"]) for v in perf.values()) or 1.0
+
+    for strat in ["stable", "sniper", "momentum"]:
+        p = perf.get(strat, {"pnl": 0.0})
+
+        score = p["pnl"] / total
+
+        if score > 0.2:
+            rt.FUND_ALLOCATOR[strat] = min(
+                rt.FUND_ALLOCATOR.get(strat, 0.3) * 1.15,
+                0.6,
+            )
+        elif score < -0.1:
+            rt.FUND_ALLOCATOR[strat] = max(
+                rt.FUND_ALLOCATOR.get(strat, 0.3) * 0.75,
+                0.05,
+            )
+
+    # normalize
+    s = sum(rt.FUND_ALLOCATOR.values())
+    for k in rt.FUND_ALLOCATOR:
+        rt.FUND_ALLOCATOR[k] /= s
+
+
+# =========================================================
+# ENTRY ADAPT（超關鍵）
+# =========================================================
+def _adjust_entry():
+    no_trade = int(getattr(engine, "no_trade_cycles", 0) or 0)
+    wins = int(engine.stats.get("wins", 0))
+    losses = int(engine.stats.get("losses", 0))
+
+    base = getattr(rt, "ENTRY_THRESHOLD", 0.07)
+
+    # 沒單 → 降門檻
+    if no_trade > 15:
+        rt.ENTRY_THRESHOLD = max(base * 0.85, 0.04)
+
+    # 連輸 → 提高門檻
+    elif losses > wins + 3:
+        rt.ENTRY_THRESHOLD = min(base * 1.2, 0.12)
+
+    else:
+        rt.ENTRY_THRESHOLD = base
+
+
+# =========================================================
+# TP / SL ADAPT
+# =========================================================
+def _adjust_tp_sl():
+    regime = getattr(rt, "REGIME_STATE", {}).get("mode", "neutral")
+
+    base_tp = getattr(rt, "TAKE_PROFIT", 0.02)
+    base_sl = getattr(rt, "STOP_LOSS", -0.01)
+
+    if regime == "bull":
+        rt.TAKE_PROFIT = base_tp * 1.4
+        rt.STOP_LOSS = base_sl * 0.8
+
+    elif regime == "bear":
+        rt.TAKE_PROFIT = base_tp * 0.7
+        rt.STOP_LOSS = base_sl * 1.2
+
+    else:
+        rt.TAKE_PROFIT = base_tp
+        rt.STOP_LOSS = base_sl
+
+
+# =========================================================
+# MAIN
+# =========================================================
 def ml_adjust_allocator():
-    _ensure_allocator_state()
+    _ensure()
 
-    # Lightweight adaptive allocator driven by realized pnl and win rate.
-    buckets = ["stable", "sniper", "momentum", "explore"]
-    scores = {}
-    total = 0.0
+    perf = _calc_strategy_perf()
+    rt.FUND_PERF = perf
 
-    for b in buckets:
-        perf = rt.FUND_PERF.get(b, {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0})
-        pnl = sf(perf.get("pnl", 0.0), 0.0)
-        trades = int(perf.get("trades", 0))
-        wins = int(perf.get("wins", 0))
-        losses = int(perf.get("losses", 0))
-        winrate = wins / max(wins + losses, 1)
-
-        if trades < 3:
-            prior = {
-                "stable": 1.15,
-                "sniper": 0.90,
-                "momentum": 1.00,
-                "explore": 0.40,
-            }.get(b, 1.0)
-            s = prior
-        else:
-            s = clamp(0.75 + max(pnl, -0.25) + winrate, 0.10, 3.00)
-
-        scores[b] = s
-        total += s
-
-    total = total or 1.0
-    new_alloc = {k: v / total for k, v in scores.items()}
-
-    # Clamp to long-run ranges
-    new_alloc["stable"] = clamp(new_alloc.get("stable", 0.40), 0.25, 0.70)
-    new_alloc["sniper"] = clamp(new_alloc.get("sniper", 0.20), 0.05, 0.35)
-    new_alloc["momentum"] = clamp(new_alloc.get("momentum", 0.25), 0.10, 0.40)
-    new_alloc["explore"] = clamp(new_alloc.get("explore", 0.08), 0.02, 0.12)
-
-    s = sum(new_alloc.values()) or 1.0
-    for k in list(new_alloc.keys()):
-        new_alloc[k] = new_alloc[k] / s
-
-    rt.FUND_ALLOCATOR.update(new_alloc)
-    rt.FUND_STATE["last_reason"] = "ml_adjust_allocator"
+    _adjust_allocator(perf)
+    _adjust_entry()
+    _adjust_tp_sl()
