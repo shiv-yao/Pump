@@ -1,6 +1,16 @@
 from app.engine import runtime as rt
 from app.engine.features import features, score_with_allocator
 
+try:
+    from app.engine.ai_predictor import predict_trade_quality
+except Exception:
+    def predict_trade_quality(_f):
+        return {
+            "win_prob": 0.5,
+            "expected_pnl": 0.0,
+            "score": 0.0,
+        }
+
 
 def sniper_guard(f):
     liq = float(f.get("liq", 0) or 0)
@@ -54,6 +64,18 @@ async def run_sniper_engine(tokens):
 
             score, _mode, detail = score_with_allocator(f)
 
+            # ===== V82 AI predictor =====
+            ai = predict_trade_quality(f)
+            f["_ai_win_prob"] = float(ai.get("win_prob", 0.5) or 0.5)
+            f["_ai_pnl"] = float(ai.get("expected_pnl", 0.0) or 0.0)
+            f["_ai_score"] = float(ai.get("score", 0.0) or 0.0)
+
+            # sniper 需要更高 AI 信心
+            if f["_ai_win_prob"] < 0.52:
+                continue
+
+            score *= (0.70 + f["_ai_win_prob"] * 0.65)
+
             if not _sniper_pass(f, score):
                 continue
 
@@ -82,9 +104,19 @@ async def run_sniper_engine(tokens):
 
                 score, _mode, detail = score_with_allocator(f)
 
+                ai = predict_trade_quality(f)
+                f["_ai_win_prob"] = float(ai.get("win_prob", 0.5) or 0.5)
+                f["_ai_pnl"] = float(ai.get("expected_pnl", 0.0) or 0.0)
+                f["_ai_score"] = float(ai.get("score", 0.0) or 0.0)
+
+                if f["_ai_win_prob"] < 0.48:
+                    continue
+
                 liq = float(f.get("liq", 0) or 0)
                 if liq < float(getattr(rt, "MIN_LIQUIDITY_OBSERVE", 3000) or 3000):
                     continue
+
+                score *= (0.70 + f["_ai_win_prob"] * 0.65)
 
                 f["_score"] = score
                 f["_mode"] = "sniper"
