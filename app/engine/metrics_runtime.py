@@ -67,6 +67,12 @@ def calc_position_value(p):
 
     market_value = token_amount * mark_price if token_amount > 0 and mark_price > 0 else entry_value
 
+    if entry_value > 0 and market_value > entry_value * 50:
+        market_value = entry_value * 50
+
+    if market_value < 0:
+        market_value = 0.0
+
     return {
         "entry_price": entry_price,
         "mark_price": mark_price,
@@ -213,6 +219,7 @@ def open_positions_detail():
             "wallet_graph_score": sf(p.get("wallet_graph_score", 0.0), 0.0),
             "via": p.get("via"),
             "hold_sec": max(0.0, time.time() - sf(p.get("time", time.time()), time.time())),
+            "ai_win_prob": sf(p.get("ai_win_prob", p.get("meta", {}).get("ai_win_prob", 0.0)), 0.0),
         })
 
     return rows
