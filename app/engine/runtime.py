@@ -115,6 +115,21 @@ SNIPER_MULTIPLIER = float(os.getenv("SNIPER_MULTIPLIER", "1.45"))
 SMART_MULTIPLIER = float(os.getenv("SMART_MULTIPLIER", "1.12"))
 MOMENTUM_MULTIPLIER = float(os.getenv("MOMENTUM_MULTIPLIER", "1.05"))
 STABLE_MULTIPLIER = float(os.getenv("STABLE_MULTIPLIER", "1.12"))
+ENABLE_LLM_BRAIN = os.getenv("ENABLE_LLM_BRAIN", "false").lower() == "true"
+LLM_REVIEW_TOP_K = int(os.getenv("LLM_REVIEW_TOP_K", "2"))
+LLM_MIN_SCORE = float(os.getenv("LLM_MIN_SCORE", "0.35"))
+
+LLM_ENABLE_OPENAI = os.getenv("LLM_ENABLE_OPENAI", "false").lower() == "true"
+LLM_ENABLE_CLAUDE = os.getenv("LLM_ENABLE_CLAUDE", "false").lower() == "true"
+LLM_ENABLE_GROK = os.getenv("LLM_ENABLE_GROK", "false").lower() == "true"
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+XAI_API_KEY = os.getenv("XAI_API_KEY", "").strip()
+
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4").strip()
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4.5").strip()
+XAI_MODEL = os.getenv("XAI_MODEL", "grok-4").strip()
 
 # =========================================================
 # AI / AGENT
