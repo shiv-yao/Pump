@@ -198,7 +198,7 @@ def atomic_to_token_amount(out_amount, decimals):
     return out_amount / (10 ** decimals)
 
 
-def allocate_size(score, n_candidates, strategy="momentum"):
+def allocate_size(score, n_candidates, strategy="momentum", ai_prob=0.5):
     _ensure_runtime_dicts()
 
     strategy = strategy_bucket_from_mode(strategy)
@@ -243,6 +243,10 @@ def allocate_size(score, n_candidates, strategy="momentum"):
     if now() < sf(getattr(rt, "AGENT_STATE", {}).get("cooldown_until", 0.0), 0.0):
         base *= 0.60
 
+    # V82 AI-weighted sizing
+    ai_prob = clamp(sf(ai_prob, 0.5), 0.0, 1.0)
+    base *= (0.6 + ai_prob * 0.8)
+
     alloc_cap = clamp(rt.FUND_ALLOCATOR.get(strategy, 0.25), 0.05, 0.60)
     hard_cap = capital * alloc_cap
 
@@ -263,6 +267,10 @@ async def buy(m, f, position_size, mtype, forced=False):
     _ensure_stats()
     _ensure_runtime_dicts()
 
+    # V82 final AI gate
+    if sf(f.get("_ai_win_prob", 0.5), 0.5) < 0.48:
+        return False
+
     mtype = strategy_bucket_from_mode(mtype)
     order_sol = max(position_size, getattr(rt, "MIN_ORDER_SOL", 0.01))
     amt_atomic = int(order_sol * getattr(rt, "SOL_DECIMALS", 1_000_000_000))
@@ -278,6 +286,7 @@ async def buy(m, f, position_size, mtype, forced=False):
             "tier": f.get("_tier"),
             "mode": mtype,
             "mint": m,
+            "ai_win_prob": f.get("_ai_win_prob"),
         },
     )
 
@@ -348,6 +357,9 @@ async def buy(m, f, position_size, mtype, forced=False):
         "mempool_age_sec": f.get("mempool_age_sec"),
         "mempool_hits": f.get("mempool_hits"),
         "via": via,
+        "ai_win_prob": f.get("_ai_win_prob"),
+        "ai_pnl": f.get("_ai_pnl"),
+        "ai_score": f.get("_ai_score"),
     })
 
     position = {
@@ -379,6 +391,8 @@ async def buy(m, f, position_size, mtype, forced=False):
         "realized_partial_sol": 0.0,
         "via": via,
         "wallet_graph_score": f.get("wallet_graph_score", 0.0),
+        "ai_win_prob": f.get("_ai_win_prob", 0.5),
+        "ai_pnl": f.get("_ai_pnl", 0.0),
     }
 
     rt.engine.positions.append(position)
@@ -395,7 +409,8 @@ async def buy(m, f, position_size, mtype, forced=False):
     update_open_stats()
 
     rt.engine.last_signal = (
-        f"BUY {m[:6]} {mtype} tier={f.get('_tier','C')} via={via} score={f.get('_score',0):.4f}"
+        f"BUY {m[:6]} {mtype} tier={f.get('_tier','C')} "
+        f"ai={f.get('_ai_win_prob',0.5):.2f} via={via} score={f.get('_score',0):.4f}"
     )
     rt.engine.last_trade = rt.engine.last_signal
     _log(rt.engine.last_signal)
@@ -570,12 +585,14 @@ async def execute_ranked_portfolio(ranked, strategy_name="stable", weight=0.3, m
             continue
 
         score = sf(f.get("_score", 0.0), 0.0)
+        ai_prob = sf(f.get("_ai_win_prob", 0.5), 0.5)
 
         try:
             base_size = allocate_size(
                 score,
                 max(len(ranked), 1),
                 strategy=strategy_name,
+                ai_prob=ai_prob,
             )
         except Exception:
             base_size = 0.0
