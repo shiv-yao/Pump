@@ -39,18 +39,46 @@ def _ensure_engine_defaults():
         engine.no_trade_cycles = 0
     if not hasattr(engine, "last_loop_ts"):
         engine.last_loop_ts = 0.0
+    if not hasattr(engine, "last_signal"):
+        engine.last_signal = ""
+    if not hasattr(engine, "last_trade"):
+        engine.last_trade = ""
 
     engine.stats.setdefault("errors", 0)
     engine.stats.setdefault("trades", 0)
     engine.stats.setdefault("signals", 0)
     engine.stats.setdefault("executed", 0)
+    engine.stats.setdefault("forced_trades", 0)
+
+
+def _ensure_runtime_defaults():
+    if not hasattr(rt, "FUND_ALLOCATOR") or not isinstance(rt.FUND_ALLOCATOR, dict):
+        rt.FUND_ALLOCATOR = {
+            "stable": 0.40,
+            "sniper": 0.20,
+            "momentum": 0.35,
+            "explore": 0.05,
+        }
+
+    if not hasattr(rt, "FUND_STATE") or not isinstance(rt.FUND_STATE, dict):
+        rt.FUND_STATE = {"last_reason": "boot"}
+
+    if not hasattr(rt, "FORCE_TRADE_AFTER"):
+        rt.FORCE_TRADE_AFTER = 30
+
+    if not hasattr(rt, "MIN_LIQUIDITY_OBSERVE"):
+        rt.MIN_LIQUIDITY_OBSERVE = 1500
+
+    if not hasattr(rt, "LOOP_SLEEP_SEC"):
+        rt.LOOP_SLEEP_SEC = 2.0
 
 
 async def main_loop():
     _ensure_engine_defaults()
-    engine.running = True
+    _ensure_runtime_defaults()
 
-    _log("🔥 V79 FINAL FUND SYSTEM START")
+    engine.running = True
+    _log("🔥 V80 FINAL FUND SYSTEM START")
 
     while engine.running:
         traded = False
@@ -68,17 +96,22 @@ async def main_loop():
                 except Exception as e:
                     _log(f"SELL ERROR: {e}")
 
-            # ================= 三策略 =================
+            # ================= STRATEGIES =================
             stable_ranked = await run_stable_engine(tokens)
             sniper_ranked = await run_sniper_engine(tokens)
             momentum_ranked = await process_candidates(tokens)
 
             # ================= FUND BRAIN =================
-            ml_adjust_allocator()
+            try:
+                ml_adjust_allocator()
+            except Exception as e:
+                _log(f"ALLOCATOR ERROR: {e}")
+
             alloc = getattr(rt, "FUND_ALLOCATOR", {
                 "stable": 0.4,
                 "sniper": 0.2,
-                "momentum": 0.4,
+                "momentum": 0.35,
+                "explore": 0.05,
             })
 
             # ================= NORMAL EXECUTION =================
@@ -86,18 +119,21 @@ async def main_loop():
                 stable_ranked,
                 strategy_name="stable",
                 weight=alloc.get("stable", 0.4),
+                max_new=1,
             )
 
             traded_sniper = await execute_ranked_portfolio(
                 sniper_ranked,
                 strategy_name="sniper",
                 weight=alloc.get("sniper", 0.2),
+                max_new=1,
             )
 
             traded_momentum = await execute_ranked_portfolio(
                 momentum_ranked,
                 strategy_name="momentum",
-                weight=alloc.get("momentum", 0.4),
+                weight=alloc.get("momentum", 0.35),
+                max_new=1,
             )
 
             traded = traded_stable or traded_sniper or traded_momentum
@@ -140,12 +176,26 @@ async def main_loop():
                         traded = await execute_ranked_portfolio(
                             fallback[:1],
                             strategy_name="momentum",
-                            weight=min(0.15, float(alloc.get("momentum", 0.3))),
+                            weight=min(0.15, float(alloc.get("momentum", 0.35))),
+                            max_new=1,
                         )
+
+                        if traded:
+                            engine.stats["forced_trades"] = int(engine.stats.get("forced_trades", 0)) + 1
 
             # ================= RUNTIME =================
             engine.last_loop_ts = time.time()
-            engine.no_trade_cycles = 0 if traded else engine.no_trade_cycles + 1
+            engine.no_trade_cycles = 0 if traded else int(getattr(engine, "no_trade_cycles", 0) or 0) + 1
+
+            # ================= DEFENSIVE MODE =================
+            wins = int(engine.stats.get("wins", 0) or 0)
+            losses = int(engine.stats.get("losses", 0) or 0)
+            if losses > wins + 3:
+                try:
+                    rt.MAX_POSITION_SIZE = max(float(getattr(rt, "MAX_POSITION_SIZE", 0.03)) * 0.7, 0.005)
+                    _log(f"⚠️ DEFENSIVE MODE MAX_POSITION_SIZE={rt.MAX_POSITION_SIZE:.4f}")
+                except Exception:
+                    pass
 
             # ================= STATS =================
             update_runtime_stats()
