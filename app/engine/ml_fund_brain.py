@@ -1,12 +1,40 @@
-
 from app.engine import runtime as rt
 from app.engine.utils import clamp, sf
 
+
+def _ensure_allocator_state():
+    if not hasattr(rt, "FUND_PERF") or not isinstance(rt.FUND_PERF, dict):
+        rt.FUND_PERF = {}
+
+    for b in ["stable", "sniper", "momentum", "explore"]:
+        if b not in rt.FUND_PERF or not isinstance(rt.FUND_PERF.get(b), dict):
+            rt.FUND_PERF[b] = {
+                "pnl": 0.0,
+                "trades": 0,
+                "wins": 0,
+                "losses": 0,
+            }
+
+    if not hasattr(rt, "FUND_ALLOCATOR") or not isinstance(rt.FUND_ALLOCATOR, dict):
+        rt.FUND_ALLOCATOR = {
+            "stable": 0.40,
+            "sniper": 0.20,
+            "momentum": 0.35,
+            "explore": 0.05,
+        }
+
+    if not hasattr(rt, "FUND_STATE") or not isinstance(rt.FUND_STATE, dict):
+        rt.FUND_STATE = {"last_reason": "boot"}
+
+
 def ml_adjust_allocator():
+    _ensure_allocator_state()
+
     # Lightweight adaptive allocator driven by realized pnl and win rate.
     buckets = ["stable", "sniper", "momentum", "explore"]
     scores = {}
     total = 0.0
+
     for b in buckets:
         perf = rt.FUND_PERF.get(b, {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0})
         pnl = sf(perf.get("pnl", 0.0), 0.0)
@@ -14,6 +42,7 @@ def ml_adjust_allocator():
         wins = int(perf.get("wins", 0))
         losses = int(perf.get("losses", 0))
         winrate = wins / max(wins + losses, 1)
+
         if trades < 3:
             prior = {
                 "stable": 1.15,
@@ -24,6 +53,7 @@ def ml_adjust_allocator():
             s = prior
         else:
             s = clamp(0.75 + max(pnl, -0.25) + winrate, 0.10, 3.00)
+
         scores[b] = s
         total += s
 
