@@ -55,18 +55,64 @@ def ensure_engine_defaults():
     if not hasattr(engine, "no_trade_cycles"):
         engine.no_trade_cycles = 0
 
+    defaults = {
+        "signals": 0,
+        "executed": 0,
+        "wins": 0,
+        "losses": 0,
+        "trades": 0,
+        "errors": 0,
+        "open_positions": 0,
+        "open_exposure": 0.0,
+        "realized_pnl_sol": 0.0,
+        "unrealized_pnl_sol": 0.0,
+        "fees_paid_sol": 0.0,
+        "forced_trades": 0,
+        "jito_sent": 0,
+        "jito_ok": 0,
+        "jito_fail": 0,
+    }
+    for k, v in defaults.items():
+        engine.stats.setdefault(k, v)
 
-def calc_position_value(p):
+
+def _safe_entry_value(p):
+    return sf(p.get("entry_value", p.get("size", p.get("size_sol", 0.0))), 0.0)
+
+
+def _safe_mark_price(p):
     entry_price = sf(p.get("entry_price", p.get("entry", 0.0)), 0.0)
+
     mark_price = sf(
         p.get("price", p.get("mark_price", p.get("entry_price", p.get("entry", 0.0)))),
         entry_price,
     )
-    token_amount = sf(p.get("token_amount", 0.0), 0.0)
-    entry_value = sf(p.get("entry_value", p.get("size", 0.0)), 0.0)
 
-    market_value = token_amount * mark_price if token_amount > 0 and mark_price > 0 else entry_value
+    if mark_price <= 0:
+        mark_price = entry_price
 
+    return mark_price
+
+
+def _safe_token_amount(p):
+    amt = sf(p.get("token_amount", 0.0), 0.0)
+    if amt < 0:
+        amt = 0.0
+    return amt
+
+
+def calc_position_value(p):
+    entry_price = sf(p.get("entry_price", p.get("entry", 0.0)), 0.0)
+    mark_price = _safe_mark_price(p)
+    token_amount = _safe_token_amount(p)
+    entry_value = _safe_entry_value(p)
+
+    if token_amount > 0 and mark_price > 0:
+        market_value = token_amount * mark_price
+    else:
+        market_value = entry_value
+
+    # 防止資料錯誤把 equity 衝爆
     if entry_value > 0 and market_value > entry_value * 50:
         market_value = entry_value * 50
 
@@ -84,20 +130,27 @@ def calc_position_value(p):
 
 def calc_equity():
     ensure_engine_defaults()
+
     cash = sf(engine.capital, 0.0)
     equity = cash
+
     for p in getattr(engine, "positions", []):
+        if not isinstance(p, dict):
+            continue
         pv = calc_position_value(p)
         equity += sf(pv["market_value"], 0.0)
+
     return equity
 
 
 def calc_drawdown(equity):
     ensure_engine_defaults()
+
     peak = sf(getattr(engine, "peak_capital", equity), equity)
     if equity > peak:
         engine.peak_capital = equity
         peak = equity
+
     dd = (peak - equity) / peak if peak > 0 else 0.0
     return dd
 
@@ -108,6 +161,7 @@ def trade_stats():
     trades = [t for t in getattr(engine, "trade_history", []) if isinstance(t, dict)]
     wins = [t for t in trades if sf(t.get("pnl", 0.0), 0.0) > 0]
     losses = [t for t in trades if sf(t.get("pnl", 0.0), 0.0) <= 0]
+
     total = len(trades)
 
     avg_win = sum(sf(t.get("pnl", 0.0), 0.0) for t in wins) / len(wins) if wins else 0.0
@@ -134,7 +188,13 @@ def trade_stats():
 def alpha_breakdown():
     ensure_engine_defaults()
 
-    out = defaultdict(lambda: {"pnl": 0.0, "pnl_sol": 0.0, "trades": 0, "wins": 0, "losses": 0})
+    out = defaultdict(lambda: {
+        "pnl": 0.0,
+        "pnl_sol": 0.0,
+        "trades": 0,
+        "wins": 0,
+        "losses": 0,
+    })
 
     for t in getattr(engine, "trade_history", []):
         if not isinstance(t, dict):
@@ -147,6 +207,7 @@ def alpha_breakdown():
         out[strat]["pnl"] += pnl
         out[strat]["pnl_sol"] += pnl_sol
         out[strat]["trades"] += 1
+
         if pnl > 0:
             out[strat]["wins"] += 1
         else:
@@ -155,7 +216,10 @@ def alpha_breakdown():
     final = {}
     for k, v in out.items():
         t = v["trades"]
-        final[k] = {**v, "win_rate": v["wins"] / t if t else 0.0}
+        final[k] = {
+            **v,
+            "win_rate": v["wins"] / t if t else 0.0,
+        }
     return final
 
 
@@ -173,7 +237,7 @@ def exposure_stats():
 
         mint = p.get("mint", "unknown")
         mode = p.get("mode", "unknown")
-        val = sf(p.get("entry_value", p.get("size", 0.0)), 0.0)
+        val = _safe_entry_value(p)
 
         exp += val
         by_token[mint] = by_token.get(mint, 0.0) + val
@@ -204,6 +268,8 @@ def open_positions_detail():
         unrealized_pnl_sol = market_value - entry_value
         unrealized_pnl_pct = unrealized_pnl_sol / entry_value if entry_value > 0 else 0.0
 
+        meta = p.get("meta", {}) if isinstance(p.get("meta"), dict) else {}
+
         rows.append({
             "mint": p.get("mint"),
             "mode": p.get("mode"),
@@ -219,7 +285,7 @@ def open_positions_detail():
             "wallet_graph_score": sf(p.get("wallet_graph_score", 0.0), 0.0),
             "via": p.get("via"),
             "hold_sec": max(0.0, time.time() - sf(p.get("time", time.time()), time.time())),
-            "ai_win_prob": sf(p.get("ai_win_prob", p.get("meta", {}).get("ai_win_prob", 0.0)), 0.0),
+            "ai_win_prob": sf(p.get("ai_win_prob", meta.get("ai_win_prob", 0.0)), 0.0),
         })
 
     return rows
