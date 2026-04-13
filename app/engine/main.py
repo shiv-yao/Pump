@@ -77,12 +77,6 @@ def _ensure_runtime_defaults():
     if not hasattr(rt, "MAX_POSITION_SIZE"):
         rt.MAX_POSITION_SIZE = 0.03
 
-    if not hasattr(rt, "AI_MIN_WIN_PROB"):
-        rt.AI_MIN_WIN_PROB = 0.45
-
-    if not hasattr(rt, "ENABLE_AI_GATE"):
-        rt.ENABLE_AI_GATE = False
-
 
 def _safe_alloc():
     raw = getattr(rt, "FUND_ALLOCATOR", {})
@@ -131,7 +125,7 @@ async def main_loop():
     _ensure_runtime_defaults()
 
     engine.running = True
-    _log("🔥 V82 AI FUND SYSTEM START")
+    _log("🔥 V82.1 AI FUND SYSTEM START")
 
     while engine.running:
         traded = False
@@ -153,10 +147,12 @@ async def main_loop():
             if not tokens:
                 engine.last_loop_ts = time.time()
                 engine.no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0) or 0) + 1
+
                 try:
                     update_runtime_stats()
                 except Exception as e:
                     _log(f"STATS ERROR: {e}")
+
                 try:
                     update_metrics()
                 except Exception as e:
@@ -242,7 +238,7 @@ async def main_loop():
                             continue
                         if wg < 0.15:
                             continue
-                        if ai_prob < float(getattr(rt, "AI_MIN_WIN_PROB", 0.45) or 0.45):
+                        if ai_prob < 0.48:
                             continue
                         if source == "dexscreener":
                             continue
