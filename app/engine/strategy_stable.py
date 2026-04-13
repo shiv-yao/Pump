@@ -1,6 +1,16 @@
 from app.engine import runtime as rt
 from app.engine.features import features, score_with_allocator, safe_adaptive_filter
 
+try:
+    from app.engine.ai_predictor import predict_trade_quality
+except Exception:
+    def predict_trade_quality(_f):
+        return {
+            "win_prob": 0.5,
+            "expected_pnl": 0.0,
+            "score": 0.0,
+        }
+
 
 def _stable_pass(f, score):
     liq = float(f.get("liq", 0) or 0)
@@ -58,11 +68,26 @@ async def run_stable_engine(tokens):
 
             score, _mode, detail = score_with_allocator(f)
 
+            # ===== V82 AI predictor =====
+            ai = predict_trade_quality(f)
+            f["_ai_win_prob"] = float(ai.get("win_prob", 0.5) or 0.5)
+            f["_ai_pnl"] = float(ai.get("expected_pnl", 0.0) or 0.0)
+            f["_ai_score"] = float(ai.get("score", 0.0) or 0.0)
+
+            # stable 對 AI 要求可略高一點
+            if f["_ai_win_prob"] < 0.50:
+                continue
+
+            score *= (0.75 + f["_ai_win_prob"] * 0.50)
+
             if not _stable_pass(f, score):
                 continue
 
             ok, _ = safe_adaptive_filter(
-                f,
+                {
+                    **f,
+                    "_score": score,
+                },
                 None,
                 getattr(getattr(rt, "engine", None), "no_trade_cycles", 0),
             )
@@ -90,9 +115,19 @@ async def run_stable_engine(tokens):
 
                 score, _mode, detail = score_with_allocator(f)
 
+                ai = predict_trade_quality(f)
+                f["_ai_win_prob"] = float(ai.get("win_prob", 0.5) or 0.5)
+                f["_ai_pnl"] = float(ai.get("expected_pnl", 0.0) or 0.0)
+                f["_ai_score"] = float(ai.get("score", 0.0) or 0.0)
+
+                if f["_ai_win_prob"] < 0.45:
+                    continue
+
                 liq = float(f.get("liq", 0) or 0)
                 if liq < float(getattr(rt, "MIN_LIQUIDITY_OBSERVE", 3000) or 3000):
                     continue
+
+                score *= (0.75 + f["_ai_win_prob"] * 0.50)
 
                 f["_score"] = score
                 f["_mode"] = "stable"
