@@ -13,31 +13,21 @@ from app.engine.utils import clamp, now, score_stat_add, sf
 from app.state import engine
 
 
-# =========================================================
-# INTERNAL HELPERS
-# =========================================================
 def _ensure_runtime_state():
     if not hasattr(rt, "WALLET_GRAPH_CACHE") or rt.WALLET_GRAPH_CACHE is None:
         rt.WALLET_GRAPH_CACHE = {}
-
     if not hasattr(rt, "MEMPOOL_SEEN_TS") or rt.MEMPOOL_SEEN_TS is None:
         rt.MEMPOOL_SEEN_TS = {}
-
     if not hasattr(rt, "MEMPOOL_HITS") or rt.MEMPOOL_HITS is None:
         rt.MEMPOOL_HITS = defaultdict(int)
-
     if not hasattr(rt, "LAST_PRICE") or rt.LAST_PRICE is None:
         rt.LAST_PRICE = {}
-
     if not hasattr(rt, "LAST_MOMENTUM") or rt.LAST_MOMENTUM is None:
         rt.LAST_MOMENTUM = {}
-
     if not hasattr(rt, "LAST_PRICE_SOURCE") or rt.LAST_PRICE_SOURCE is None:
         rt.LAST_PRICE_SOURCE = {}
-
     if not hasattr(rt, "TOKEN_TRADE_COUNT") or rt.TOKEN_TRADE_COUNT is None:
         rt.TOKEN_TRADE_COUNT = defaultdict(int)
-
     if not hasattr(rt, "SOURCE_STATS") or rt.SOURCE_STATS is None:
         rt.SOURCE_STATS = defaultdict(
             lambda: {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
@@ -61,9 +51,6 @@ def _get_wallet_graph_fn():
     return _fallback
 
 
-# =========================================================
-# SAFE WRAPPERS
-# =========================================================
 async def safe_update_token_wallets(mint: str):
     try:
         return await asyncio.wait_for(
@@ -117,12 +104,8 @@ async def safe_wallet_graph_score(mint: str, wallets=None):
     return out
 
 
-# =========================================================
-# MEMPOOL HELPERS
-# =========================================================
 def mempool_age_sec(mint: str):
     _ensure_runtime_state()
-
     ts = rt.MEMPOOL_SEEN_TS.get(mint)
     if not ts:
         return None
@@ -145,9 +128,6 @@ def mempool_recent_bonus(mint: str):
     return 0.0
 
 
-# =========================================================
-# FEATURE EXTRACTION
-# =========================================================
 async def features(t):
     _ensure_runtime_state()
 
@@ -163,12 +143,11 @@ async def features(t):
         return None
 
     liq = sf(pinfo.get("liq", 0), 0.0)
-    if liq < getattr(rt, "MIN_LIQUIDITY_TRADE", 20000):
+    if liq < getattr(rt, "MIN_LIQUIDITY_OBSERVE", 3000):
         return None
 
     price = pinfo["price"]
     prev = rt.LAST_PRICE.get(m)
-
     max_breakout_abs = getattr(rt, "MAX_BREAKOUT_ABS", 0.20)
 
     breakout = (price - prev) / prev if prev and prev > 0 else random.uniform(0.003, 0.015)
@@ -209,7 +188,6 @@ async def features(t):
 
     recent_window = getattr(rt, "SNIPER_RECENT_WINDOW_SEC", 18)
     early_entry_bonus = getattr(rt, "EARLY_ENTRY_BONUS", 0.018)
-
     mp_bonus = mempool_recent_bonus(m)
     early_bonus = (
         early_entry_bonus
@@ -242,9 +220,6 @@ async def features(t):
     }
 
 
-# =========================================================
-# MODE / SCORE COMPONENTS
-# =========================================================
 def mode(f):
     if f["is_new"]:
         return "sniper"
@@ -254,22 +229,14 @@ def mode(f):
 
 
 def breakout_strength(b):
-    b = clamp(
-        sf(b),
-        -getattr(rt, "MAX_BREAKOUT_ABS", 0.20),
-        getattr(rt, "MAX_BREAKOUT_ABS", 0.20),
-    )
+    b = clamp(sf(b), -getattr(rt, "MAX_BREAKOUT_ABS", 0.20), getattr(rt, "MAX_BREAKOUT_ABS", 0.20))
     if b <= 0:
         return 0.0
     return min(b / 0.05, 1.0) * 0.35
 
 
 def momentum_strength(m):
-    m = clamp(
-        sf(m),
-        -getattr(rt, "MAX_BREAKOUT_ABS", 0.20),
-        getattr(rt, "MAX_BREAKOUT_ABS", 0.20),
-    )
+    m = clamp(sf(m), -getattr(rt, "MAX_BREAKOUT_ABS", 0.20), getattr(rt, "MAX_BREAKOUT_ABS", 0.20))
     if m <= 0:
         return 0.0
     return min(m / 0.05, 1.0) * 0.30
@@ -301,13 +268,10 @@ def score_alpha(f):
 
     if liq < getattr(rt, "MIN_LIQUIDITY_OBSERVE", 3000):
         return 0.0, zero_detail()
-
     if concentration > getattr(rt, "MAX_WALLET_CLUSTER_CONCENTRATION", 0.65):
         return 0.0, zero_detail()
-
     if smart_ratio < getattr(rt, "MIN_SMART_RATIO", 0.0):
         return 0.0, zero_detail()
-
     if fresh_wallet_ratio < getattr(rt, "MIN_FRESH_WALLET_RATIO", 0.0):
         return 0.0, zero_detail()
 
@@ -319,7 +283,6 @@ def score_alpha(f):
         momentum *= 0.5
     if breakout < getattr(rt, "MIN_CONFIRM_BREAKOUT", 0.003):
         breakout *= 0.5
-
     if breakout > 0.012 and momentum < 0:
         return 0.0, zero_detail()
 
@@ -327,7 +290,6 @@ def score_alpha(f):
     mscore = momentum_strength(momentum)
     sscore = clamp(smart, 0.0, 1.0) * 0.40
     lscore = min(liq / 1_000_000, 1.0) * 0.12
-
     wc = f.get("wallet_count", 0)
     wscore = 0.08 if wc >= 3 else 0.05 if wc >= 2 else 0.02 if wc >= 1 else 0.0
     nscore = clamp(sf(f.get("sniper_boost", 0)), 0.0, 0.12)
@@ -336,11 +298,7 @@ def score_alpha(f):
         0.0,
         getattr(rt, "WALLET_GRAPH_BONUS_CAP", 0.18),
     )
-    erscore = clamp(
-        sf(f.get("mempool_bonus", 0.0), 0.0) + sf(f.get("early_bonus", 0.0), 0.0),
-        0.0,
-        0.06,
-    )
+    erscore = clamp(sf(f.get("mempool_bonus", 0.0), 0.0) + sf(f.get("early_bonus", 0.0), 0.0), 0.0, 0.06)
 
     for name, val in [
         ("breakout", breakout),
@@ -368,19 +326,16 @@ def score_alpha(f):
         score *= 0.85
 
     mtype = mode(f)
-
     if mtype == "sniper":
         score *= getattr(rt, "SNIPER_MULTIPLIER", 1.35)
         if f.get("mempool_bonus", 0) > 0:
             score *= 1.08
         if f.get("early_bonus", 0) > 0:
             score *= 1.05
-
     elif mtype == "smart":
         score *= getattr(rt, "SMART_MULTIPLIER", 1.18)
         if f.get("liq", 0) > 50000:
             score *= 1.05
-
     else:
         score *= getattr(rt, "MOMENTUM_MULTIPLIER", 1.05)
         if f.get("breakout", 0) > 0.01 and f.get("momentum", 0) > 0:
@@ -398,9 +353,6 @@ def score_alpha(f):
     }
 
 
-# =========================================================
-# SOURCE / FINAL SCORE
-# =========================================================
 def source_quality(source):
     return {
         "pumpfun": 1.18,
@@ -460,7 +412,6 @@ def score_with_allocator(f):
     }
 
     threshold = min_by_strategy.get(mtype, getattr(rt, "ENTRY_THRESHOLD", 0.085))
-
     no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0) or 0)
 
     if no_trade_cycles > 20:
@@ -472,14 +423,11 @@ def score_with_allocator(f):
         base = max(base, getattr(rt, "ENTRY_THRESHOLD", 0.085) * 0.95)
 
     if base < threshold:
-        base *= 0.92
+        base *= 0.95
 
     return max(base, 0.0), mtype, detail
 
 
-# =========================================================
-# CANDIDATE FETCH COMPAT
-# =========================================================
 try:
     from app.engine.sources import fetch_alpha_candidates as _sources_fetch_alpha_candidates
 except Exception:
@@ -487,11 +435,6 @@ except Exception:
 
 
 async def fetch_alpha_candidates():
-    """
-    Compatibility shim:
-    main.py / metrics_runtime.py / older modules may import this from features.py.
-    Prefer sources.fetch_alpha_candidates() if available.
-    """
     if _sources_fetch_alpha_candidates is not None:
         try:
             tokens = await _sources_fetch_alpha_candidates()
@@ -511,14 +454,10 @@ async def fetch_alpha_candidates():
     return []
 
 
-# =========================================================
-# PROCESS CANDIDATES
-# =========================================================
 async def process_candidates(tokens):
     _ensure_runtime_state()
 
     ranked = []
-
     for t in tokens or []:
         try:
             f = await features(t)
@@ -526,17 +465,14 @@ async def process_candidates(tokens):
                 continue
 
             sc, mtype, detail = score_with_allocator(f)
-
             f["_score"] = sc
             f["_mode"] = mtype
             f["_tier"] = "A+" if sc >= 0.145 else "A" if sc >= getattr(rt, "STRICT_A_TIER_THRESHOLD", 0.095) else "B"
             f["_detail"] = detail
-
             ranked.append(f)
         except Exception:
             continue
 
     ranked.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
-
     top_k = int(getattr(rt, "TOP_K_PRESELECT", 3))
-    return ranked[: max(top_k, 3)]
+    return ranked[:max(top_k, 3)]
