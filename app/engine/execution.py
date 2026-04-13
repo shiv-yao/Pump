@@ -105,17 +105,6 @@ def _ensure_runtime_dicts():
         rt.engine.capital = 0.0
 
 
-def _safe_ai_prob(f: dict) -> float:
-    return clamp(sf((f or {}).get("_ai_win_prob", 0.55), 0.55), 0.0, 1.0)
-
-
-def _ai_gate_pass(f: dict) -> bool:
-    enabled = str(getattr(rt, "ENABLE_AI_GATE", "false")).lower() == "true"
-    if not enabled:
-        return True
-    return _safe_ai_prob(f) >= sf(getattr(rt, "AI_MIN_WIN_PROB", 0.48), 0.48)
-
-
 def mempool_use_jito(f):
     _ensure_runtime_dicts()
 
@@ -136,13 +125,7 @@ def mempool_use_jito(f):
     return mode_name == "sniper"
 
 
-async def safe_execute_swap(
-    input_mint: str,
-    output_mint: str,
-    amount: int,
-    prefer_jito: bool = False,
-    jito_context=None,
-):
+async def safe_execute_swap(input_mint: str, output_mint: str, amount: int, prefer_jito=False, jito_context=None):
     _ensure_stats()
     _ensure_runtime_dicts()
 
@@ -209,14 +192,51 @@ def extract_fee_sol_from_res(res):
     return getattr(rt, "ESTIMATED_TX_FEE_SOL", 0.000005)
 
 
+def _extract_best_decimals(f, res):
+    candidates = []
+
+    meta = f.get("meta", {}) if isinstance(f, dict) else {}
+    if isinstance(meta, dict):
+        candidates.extend([
+            meta.get("decimals"),
+            meta.get("token_decimals"),
+            (meta.get("output_token") or {}).get("decimals") if isinstance(meta.get("output_token"), dict) else None,
+            (meta.get("baseToken") or {}).get("decimals") if isinstance(meta.get("baseToken"), dict) else None,
+            (meta.get("token") or {}).get("decimals") if isinstance(meta.get("token"), dict) else None,
+        ])
+
+    if isinstance(res, dict):
+        quote = res.get("quote") or {}
+        if isinstance(quote, dict):
+            candidates.extend([
+                quote.get("outputDecimals"),
+                quote.get("outDecimals"),
+                quote.get("decimals"),
+                (quote.get("outputToken") or {}).get("decimals") if isinstance(quote.get("outputToken"), dict) else None,
+                (quote.get("tokenMeta") or {}).get("decimals") if isinstance(quote.get("tokenMeta"), dict) else None,
+            ])
+
+    for v in candidates:
+        try:
+            iv = int(v)
+            if 0 <= iv <= 18:
+                return iv
+        except Exception:
+            pass
+
+    return extract_token_decimals(meta)
+
+
 def atomic_to_token_amount(out_amount, decimals):
     if out_amount <= 0:
         return 0.0
-    decimals = int(max(0, min(12, sf(decimals, getattr(rt, "DEFAULT_TOKEN_DECIMALS", 6)))))
-    return out_amount / (10 ** decimals)
+    try:
+        return float(out_amount) / float(10 ** int(decimals))
+    except Exception:
+        return 0.0
 
 
-def allocate_size(score, n_candidates, strategy="momentum", ai_prob=0.55):
+def allocate_size(score, n_candidates, strategy="momentum", ai_prob=0.5):
     _ensure_runtime_dicts()
 
     strategy = strategy_bucket_from_mode(strategy)
@@ -261,7 +281,7 @@ def allocate_size(score, n_candidates, strategy="momentum", ai_prob=0.55):
     if now() < sf(getattr(rt, "AGENT_STATE", {}).get("cooldown_until", 0.0), 0.0):
         base *= 0.60
 
-    ai_prob = clamp(sf(ai_prob, 0.55), 0.0, 1.0)
+    ai_prob = clamp(sf(ai_prob, 0.5), 0.0, 1.0)
     base *= (0.6 + ai_prob * 0.8)
 
     alloc_cap = clamp(rt.FUND_ALLOCATOR.get(strategy, 0.25), 0.05, 0.60)
@@ -284,7 +304,7 @@ async def buy(m, f, position_size, mtype, forced=False):
     _ensure_stats()
     _ensure_runtime_dicts()
 
-    if not _ai_gate_pass(f):
+    if sf(f.get("_ai_win_prob", 0.5), 0.5) < 0.48:
         return False
 
     mtype = strategy_bucket_from_mode(mtype)
@@ -320,18 +340,22 @@ async def buy(m, f, position_size, mtype, forced=False):
     if out_amount <= 0:
         q = await safe_quote(rt.SOL, m, amt_atomic)
         out_amount = parse_out_amount(q)
+        if isinstance(res, dict):
+            res["quote"] = dict(res.get("quote") or {})
+            if out_amount > 0:
+                res["quote"]["outAmount"] = str(out_amount)
 
     if out_amount <= 0:
         rt.engine.stats["errors"] += 1
         _log(f"BUY_NO_OUT {m[:6]}")
         return False
 
-    token_decimals = int(max(0, min(12, sf(extract_token_decimals(f.get("meta", {})), getattr(rt, "DEFAULT_TOKEN_DECIMALS", 6)))))
+    token_decimals = _extract_best_decimals(f, res)
     token_amount = atomic_to_token_amount(out_amount, token_decimals)
 
     if token_amount <= 0:
         rt.engine.stats["errors"] += 1
-        _log(f"BUY_BAD_TOKEN_AMOUNT {m[:6]}")
+        _log(f"BUY_BAD_TOKEN_AMOUNT {m[:6]} out={out_amount} dec={token_decimals}")
         return False
 
     tx_sig = parse_signature(res)
@@ -348,6 +372,13 @@ async def buy(m, f, position_size, mtype, forced=False):
         else:
             rt.engine.stats["jito_fail"] += 1
 
+    # 買入時 mark price 先等於 entry
+    entry_price = sf(f.get("price", 0.0), 0.0)
+    if entry_price <= 0:
+        entry_price = safe_div(order_sol, token_amount, 0.0)
+
+    mark_price = entry_price
+
     meta = dict(f.get("meta", {}) or {})
     meta.update({
         "source": f.get("source"),
@@ -363,12 +394,13 @@ async def buy(m, f, position_size, mtype, forced=False):
         "fresh_wallet_ratio": f.get("fresh_wallet_ratio"),
         "liquidity": f.get("liq"),
         "wallet_count": f.get("wallet_count"),
-        "price": f.get("price"),
+        "price": entry_price,
         "score": f.get("_score"),
         "tier": f.get("_tier"),
         "regime": detect_regime(),
         "agent_mode": getattr(rt, "AGENT_STATE", {}).get("mode"),
         "token_decimals": token_decimals,
+        "quote_out_amount": out_amount,
         "fund_alloc": dict(rt.FUND_ALLOCATOR),
         "mempool_age_sec": f.get("mempool_age_sec"),
         "mempool_hits": f.get("mempool_hits"),
@@ -380,10 +412,10 @@ async def buy(m, f, position_size, mtype, forced=False):
 
     position = {
         "mint": m,
-        "entry": f["price"],
-        "entry_price": f["price"],
-        "price": f["price"],
-        "mark_price": f["price"],
+        "entry": entry_price,
+        "entry_price": entry_price,
+        "price": mark_price,
+        "mark_price": mark_price,
         "size": order_sol,
         "size_sol": order_sol,
         "entry_value": order_sol,
@@ -397,7 +429,7 @@ async def buy(m, f, position_size, mtype, forced=False):
         "meta": meta,
         "price_source": f.get("price_source"),
         "liq": f.get("liq", 0),
-        "high": f["price"],
+        "high": mark_price,
         "wallet_count": f.get("wallet_count", 0),
         "tx_buy": tx_sig,
         "forced": forced,
@@ -407,7 +439,7 @@ async def buy(m, f, position_size, mtype, forced=False):
         "realized_partial_sol": 0.0,
         "via": via,
         "wallet_graph_score": f.get("wallet_graph_score", 0.0),
-        "ai_win_prob": f.get("_ai_win_prob", 0.55),
+        "ai_win_prob": f.get("_ai_win_prob", 0.5),
         "ai_pnl": f.get("_ai_pnl", 0.0),
     }
 
@@ -417,6 +449,7 @@ async def buy(m, f, position_size, mtype, forced=False):
     rt.BUY_TIMES.append(now())
     rt.engine.stats["executed"] += 1
     rt.engine.stats["signals"] += 1
+    rt.engine.stats["trades"] += 1
 
     if forced:
         rt.engine.stats["forced_trades"] += 1
@@ -425,7 +458,8 @@ async def buy(m, f, position_size, mtype, forced=False):
 
     rt.engine.last_signal = (
         f"BUY {m[:6]} {mtype} tier={f.get('_tier','C')} "
-        f"ai={f.get('_ai_win_prob',0.55):.2f} via={via} score={f.get('_score',0):.4f}"
+        f"ai={f.get('_ai_win_prob',0.5):.2f} via={via} "
+        f"score={f.get('_score',0):.4f} dec={token_decimals} out={out_amount}"
     )
     rt.engine.last_trade = rt.engine.last_signal
     _log(rt.engine.last_signal)
@@ -493,6 +527,7 @@ async def sell(p, reason, price, sell_fraction=1.0):
     via = res.get("via", "jupiter")
     rt.engine.stats["fees_paid_sol"] += fee_sol
 
+    # 這裡維持 paper / dashboard 邏輯：price 為目前標記價
     exit_value = token_amount_to_sell * price
     entry_value_sold = entry_value_total * sell_fraction
     fees_allocated = fees_paid_total * sell_fraction + fee_sol
@@ -557,11 +592,6 @@ async def sell(p, reason, price, sell_fraction=1.0):
         "via": via,
     })
 
-    rt.engine.stats["trades"] = max(
-        int(rt.engine.stats.get("trades", 0)),
-        len(getattr(rt.engine, "trade_history", []) or []),
-    )
-
     update_breathing_state()
     institutional_loss_pause_if_needed()
     update_open_stats()
@@ -605,7 +635,7 @@ async def execute_ranked_portfolio(ranked, strategy_name="stable", weight=0.3, m
             continue
 
         score = sf(f.get("_score", 0.0), 0.0)
-        ai_prob = _safe_ai_prob(f)
+        ai_prob = sf(f.get("_ai_win_prob", 0.5), 0.5)
 
         try:
             base_size = allocate_size(
