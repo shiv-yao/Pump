@@ -77,6 +77,12 @@ def _ensure_runtime_defaults():
     if not hasattr(rt, "MAX_POSITION_SIZE"):
         rt.MAX_POSITION_SIZE = 0.03
 
+    if not hasattr(rt, "AI_MIN_WIN_PROB"):
+        rt.AI_MIN_WIN_PROB = 0.45
+
+    if not hasattr(rt, "ENABLE_AI_GATE"):
+        rt.ENABLE_AI_GATE = False
+
 
 def _safe_alloc():
     raw = getattr(rt, "FUND_ALLOCATOR", {})
@@ -91,7 +97,7 @@ def _safe_alloc():
     }
 
     for k in alloc:
-        if alloc[k] != alloc[k]:  # NaN guard
+        if alloc[k] != alloc[k]:
             alloc[k] = 0.0
         alloc[k] = max(0.0, min(1.0, alloc[k]))
 
@@ -131,7 +137,6 @@ async def main_loop():
         traded = False
 
         try:
-            # ================= GLOBAL RISK GATE =================
             try:
                 from app.engine.risk import institutional_pause_active
                 if institutional_pause_active():
@@ -141,12 +146,10 @@ async def main_loop():
             except Exception as e:
                 _log(f"PAUSE CHECK ERROR: {e}")
 
-            # ================= FETCH =================
             tokens = await fetch_alpha_candidates()
             if not isinstance(tokens, list):
                 tokens = []
 
-            # 沒候選就直接短休眠
             if not tokens:
                 engine.last_loop_ts = time.time()
                 engine.no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0) or 0) + 1
@@ -168,18 +171,15 @@ async def main_loop():
                 await asyncio.sleep(min(float(getattr(rt, "LOOP_SLEEP_SEC", 2.0) or 2.0), 1.5))
                 continue
 
-            # ================= SELL =================
             try:
                 await _run_sell_checks()
             except Exception as e:
                 _log(f"SELL GATHER ERROR: {e}")
 
-            # ================= STRATEGIES =================
             stable_ranked = await run_stable_engine(tokens)
             sniper_ranked = await run_sniper_engine(tokens)
             momentum_ranked = await process_candidates(tokens)
 
-            # ================= FUND BRAIN =================
             try:
                 ml_adjust_allocator()
             except Exception as e:
@@ -187,7 +187,6 @@ async def main_loop():
 
             alloc = _safe_alloc()
 
-            # ================= NORMAL EXECUTION =================
             traded_stable = await execute_ranked_portfolio(
                 stable_ranked,
                 strategy_name="stable",
@@ -211,7 +210,6 @@ async def main_loop():
 
             traded = bool(traded_stable or traded_sniper or traded_momentum)
 
-            # ================= FALLBACK BUY =================
             if not traded:
                 no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0) or 0)
                 force_after = int(getattr(rt, "FORCE_TRADE_AFTER", 30) or 30)
@@ -236,17 +234,15 @@ async def main_loop():
 
                         if not mint:
                             continue
-
                         if any((p.get("mint") == mint) for p in (engine.positions or [])):
                             continue
-
                         if sc < 0.045:
                             continue
                         if liq < min_liq:
                             continue
                         if wg < 0.15:
                             continue
-                        if ai_prob < 0.48:
+                        if ai_prob < float(getattr(rt, "AI_MIN_WIN_PROB", 0.45) or 0.45):
                             continue
                         if source == "dexscreener":
                             continue
@@ -269,11 +265,9 @@ async def main_loop():
                         if traded:
                             engine.stats["forced_trades"] = int(engine.stats.get("forced_trades", 0)) + 1
 
-            # ================= RUNTIME =================
             engine.last_loop_ts = time.time()
             engine.no_trade_cycles = 0 if traded else int(getattr(engine, "no_trade_cycles", 0) or 0) + 1
 
-            # ================= DEFENSIVE MODE =================
             wins = int(engine.stats.get("wins", 0) or 0)
             losses = int(engine.stats.get("losses", 0) or 0)
             if losses > wins + 3:
@@ -286,13 +280,11 @@ async def main_loop():
                 except Exception as e:
                     _log(f"DEFENSIVE MODE ERROR: {e}")
 
-            # ================= STATS =================
             try:
                 update_runtime_stats()
             except Exception as e:
                 _log(f"STATS ERROR: {e}")
 
-            # ================= METRICS =================
             try:
                 update_metrics()
             except Exception as e:
