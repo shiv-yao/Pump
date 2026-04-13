@@ -7,9 +7,6 @@ EQUITY_HISTORY = deque(maxlen=2000)
 LAST_METRICS = {}
 
 
-# =========================
-# SAFE HELPERS
-# =========================
 def sf(x, default=0.0):
     try:
         return float(x)
@@ -59,9 +56,6 @@ def ensure_engine_defaults():
         engine.no_trade_cycles = 0
 
 
-# =========================
-# CORE METRICS
-# =========================
 def calc_position_value(p):
     entry_price = sf(p.get("entry_price", p.get("entry", 0.0)), 0.0)
     mark_price = sf(
@@ -84,26 +78,20 @@ def calc_position_value(p):
 
 def calc_equity():
     ensure_engine_defaults()
-
     cash = sf(engine.capital, 0.0)
     equity = cash
-
     for p in getattr(engine, "positions", []):
         pv = calc_position_value(p)
         equity += sf(pv["market_value"], 0.0)
-
     return equity
 
 
 def calc_drawdown(equity):
     ensure_engine_defaults()
-
     peak = sf(getattr(engine, "peak_capital", equity), equity)
-
     if equity > peak:
         engine.peak_capital = equity
         peak = equity
-
     dd = (peak - equity) / peak if peak > 0 else 0.0
     return dd
 
@@ -112,18 +100,14 @@ def trade_stats():
     ensure_engine_defaults()
 
     trades = [t for t in getattr(engine, "trade_history", []) if isinstance(t, dict)]
-
     wins = [t for t in trades if sf(t.get("pnl", 0.0), 0.0) > 0]
     losses = [t for t in trades if sf(t.get("pnl", 0.0), 0.0) <= 0]
-
     total = len(trades)
 
     avg_win = sum(sf(t.get("pnl", 0.0), 0.0) for t in wins) / len(wins) if wins else 0.0
     avg_loss = sum(sf(t.get("pnl", 0.0), 0.0) for t in losses) / len(losses) if losses else 0.0
-
     gross_win = sum(sf(t.get("pnl", 0.0), 0.0) for t in wins)
     gross_loss = abs(sum(sf(t.get("pnl", 0.0), 0.0) for t in losses))
-
     realized_pnl_sol = sum(sf(t.get("pnl_sol", 0.0), 0.0) for t in trades)
 
     return {
@@ -157,7 +141,6 @@ def alpha_breakdown():
         out[strat]["pnl"] += pnl
         out[strat]["pnl_sol"] += pnl_sol
         out[strat]["trades"] += 1
-
         if pnl > 0:
             out[strat]["wins"] += 1
         else:
@@ -166,10 +149,7 @@ def alpha_breakdown():
     final = {}
     for k, v in out.items():
         t = v["trades"]
-        final[k] = {
-            **v,
-            "win_rate": v["wins"] / t if t else 0.0,
-        }
+        final[k] = {**v, "win_rate": v["wins"] / t if t else 0.0}
     return final
 
 
@@ -177,7 +157,6 @@ def exposure_stats():
     ensure_engine_defaults()
 
     capital = sf(getattr(engine, "capital", 0.0), 0.0)
-
     exp = 0.0
     by_token = {}
     by_strategy = defaultdict(float)
@@ -241,14 +220,11 @@ def open_positions_detail():
 
 def update_equity_curve(equity):
     EQUITY_HISTORY.append({
-        "t": int(time.time()),  # ✅
+        "t": int(time.time()),
         "equity": sf(equity, 0.0),
     })
 
 
-# =========================
-# BUILD METRICS
-# =========================
 def build_metrics():
     ensure_engine_defaults()
 
@@ -302,7 +278,6 @@ def build_metrics():
     except Exception:
         metrics["fund_brain"] = {"allocator": {}, "last_reason": ""}
 
-
     metrics["trading"] = {
         "executed": si(stats.get("executed", 0), 0),
         "wins": si(stats.get("wins", 0), 0),
@@ -317,9 +292,6 @@ def build_metrics():
     return metrics
 
 
-# =========================
-# MEMORY UPDATE
-# =========================
 def update_metrics():
     global LAST_METRICS
     try:
@@ -340,7 +312,6 @@ def get_metrics():
 
         m = LAST_METRICS or {}
 
-        # 🔥 強制補齊 UI 必要欄位
         if "summary" not in m:
             m["summary"] = {
                 "capital": 0.0,
@@ -352,16 +323,12 @@ def get_metrics():
                 "last_trade": "",
                 "no_trade_cycles": 0,
             }
-
         if "stats" not in m:
             m["stats"] = {}
-
         if "equity_curve" not in m:
             m["equity_curve"] = []
-
         if "recent_trades" not in m:
             m["recent_trades"] = []
-
         if "logs" not in m:
             m["logs"] = []
 
