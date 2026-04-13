@@ -82,7 +82,7 @@ MAX_CAPITAL = float(os.getenv("MAX_CAPITAL", "20"))
 
 MIN_OUT_AMOUNT = int(os.getenv("MIN_OUT_AMOUNT", "300"))
 MIN_UNIVERSE = int(os.getenv("MIN_UNIVERSE", "20"))
-BOOT_SYNTHETIC_UNIVERSE = os.getenv("BOOT_SYNTHETIC_UNIVERSE", "true").lower() == "true"
+BOOT_SYNTHETIC_UNIVERSE = os.getenv("BOOT_SYNTHETIC_UNIVERSE", "false").lower() == "true"
 
 ADAPTIVE_THRESHOLD_MIN = float(os.getenv("ADAPTIVE_THRESHOLD_MIN", "0.04"))
 ADAPTIVE_THRESHOLD_MAX = float(os.getenv("ADAPTIVE_THRESHOLD_MAX", "0.10"))
@@ -112,9 +112,10 @@ ALPHA_SMART_WEIGHT = float(os.getenv("ALPHA_SMART_WEIGHT", "0.25"))
 ALPHA_LIQ_WEIGHT = float(os.getenv("ALPHA_LIQ_WEIGHT", "0.10"))
 ALPHA_WALLET_WEIGHT = float(os.getenv("ALPHA_WALLET_WEIGHT", "0.05"))
 
-SNIPER_MULTIPLIER = float(os.getenv("SNIPER_MULTIPLIER", "1.30"))
-SMART_MULTIPLIER = float(os.getenv("SMART_MULTIPLIER", "1.20"))
-MOMENTUM_MULTIPLIER = float(os.getenv("MOMENTUM_MULTIPLIER", "1.00"))
+SNIPER_MULTIPLIER = float(os.getenv("SNIPER_MULTIPLIER", "1.35"))
+SMART_MULTIPLIER = float(os.getenv("SMART_MULTIPLIER", "1.15"))
+MOMENTUM_MULTIPLIER = float(os.getenv("MOMENTUM_MULTIPLIER", "1.05"))
+STABLE_MULTIPLIER = float(os.getenv("STABLE_MULTIPLIER", "1.12"))
 
 AGENT_UPDATE_SEC = int(os.getenv("AGENT_UPDATE_SEC", "20"))
 AGENT_MIN_TRADES = int(os.getenv("AGENT_MIN_TRADES", "5"))
@@ -162,19 +163,21 @@ JUPITER_PROGRAM_ID = os.getenv(
 
 FUND_BRAIN_UPDATE_SEC = int(os.getenv("FUND_BRAIN_UPDATE_SEC", "20"))
 FUND_MIN_TRADES = int(os.getenv("FUND_MIN_TRADES", "3"))
-FUND_SNIPER_BASE = float(os.getenv("FUND_SNIPER_BASE", "0.30"))
+
+FUND_STABLE_BASE = float(os.getenv("FUND_STABLE_BASE", "0.40"))
+FUND_SNIPER_BASE = float(os.getenv("FUND_SNIPER_BASE", "0.20"))
 FUND_SMART_BASE = float(os.getenv("FUND_SMART_BASE", "0.35"))
 FUND_MOMENTUM_BASE = float(os.getenv("FUND_MOMENTUM_BASE", "0.35"))
-FUND_EXPLORE_BASE = float(os.getenv("FUND_EXPLORE_BASE", "0.08"))
+FUND_EXPLORE_BASE = float(os.getenv("FUND_EXPLORE_BASE", "0.05"))
 
 USE_JITO = os.getenv("USE_JITO", "false").lower() == "true"
 JITO_TIP_SOL = float(os.getenv("JITO_TIP_SOL", "0.0005"))
 JITO_MIN_SCORE = float(os.getenv("JITO_MIN_SCORE", "0.125"))
 JITO_ONLY_A_PLUS = os.getenv("JITO_ONLY_A_PLUS", "true").lower() == "true"
 
-SNIPER_RECENT_WINDOW_SEC = int(os.getenv("SNIPER_RECENT_WINDOW_SEC", "18"))
-EARLY_ENTRY_BONUS = float(os.getenv("EARLY_ENTRY_BONUS", "0.018"))
-MEMPOOL_RECENCY_BONUS = float(os.getenv("MEMPOOL_RECENCY_BONUS", "0.028"))
+SNIPER_RECENT_WINDOW_SEC = int(os.getenv("SNIPER_RECENT_WINDOW_SEC", "10"))
+EARLY_ENTRY_BONUS = float(os.getenv("EARLY_ENTRY_BONUS", "0.02"))
+MEMPOOL_RECENCY_BONUS = float(os.getenv("MEMPOOL_RECENCY_BONUS", "0.025"))
 MEMPOOL_MAX_AGE_SEC = int(os.getenv("MEMPOOL_MAX_AGE_SEC", "25"))
 
 WALLET_GRAPH_WEIGHT = float(os.getenv("WALLET_GRAPH_WEIGHT", "0.12"))
@@ -195,6 +198,19 @@ INSTITUTIONAL_LOSS_PAUSE_SEC = int(os.getenv("INSTITUTIONAL_LOSS_PAUSE_SEC", "60
 DAILY_LOSS_LIMIT_SOL = float(os.getenv("DAILY_LOSS_LIMIT_SOL", "0.60"))
 MAX_STRATEGY_EXPOSURE = float(os.getenv("MAX_STRATEGY_EXPOSURE", "0.18"))
 MAX_SNIPER_EXPOSURE = float(os.getenv("MAX_SNIPER_EXPOSURE", "0.14"))
+
+# =========================================================
+# V80 3-STRATEGY CONFIG
+# =========================================================
+STABLE_ENTRY_THRESHOLD = float(os.getenv("STABLE_ENTRY_THRESHOLD", "0.075"))
+SNIPER_ENTRY_THRESHOLD = float(os.getenv("SNIPER_ENTRY_THRESHOLD", "0.065"))
+MOMENTUM_ENTRY_THRESHOLD = float(os.getenv("MOMENTUM_ENTRY_THRESHOLD", "0.082"))
+
+STABLE_TOP_K = int(os.getenv("STABLE_TOP_K", "3"))
+SNIPER_TOP_K = int(os.getenv("SNIPER_TOP_K", "2"))
+
+STABLE_WALLET_GRAPH_CUTOFF = float(os.getenv("STABLE_WALLET_GRAPH_CUTOFF", "0.45"))
+STABLE_SMART_CUTOFF = float(os.getenv("STABLE_SMART_CUTOFF", "0.45"))
 
 
 # =========================================================
@@ -232,6 +248,7 @@ AUTO_PARAMS = {
 }
 
 FUND_ALLOCATOR = {
+    "stable": FUND_STABLE_BASE,
     "sniper": FUND_SNIPER_BASE,
     "smart": FUND_SMART_BASE,
     "momentum": FUND_MOMENTUM_BASE,
@@ -325,10 +342,14 @@ def reset_runtime_memory():
     AUTO_PARAMS["take_profit"] = TAKE_PROFIT
     AUTO_PARAMS["stop_loss"] = STOP_LOSS
 
-    FUND_ALLOCATOR["sniper"] = FUND_SNIPER_BASE
-    FUND_ALLOCATOR["smart"] = FUND_SMART_BASE
-    FUND_ALLOCATOR["momentum"] = FUND_MOMENTUM_BASE
-    FUND_ALLOCATOR["explore"] = FUND_EXPLORE_BASE
+    FUND_ALLOCATOR.clear()
+    FUND_ALLOCATOR.update({
+        "stable": FUND_STABLE_BASE,
+        "sniper": FUND_SNIPER_BASE,
+        "smart": FUND_SMART_BASE,
+        "momentum": FUND_MOMENTUM_BASE,
+        "explore": FUND_EXPLORE_BASE,
+    })
 
     FUND_PERF.clear()
     FUND_STATE["last_update"] = 0.0
@@ -351,50 +372,3 @@ def reset_runtime_memory():
 
 def ensure_runtime():
     ensure_engine_state()
-
-
-# =========================================================
-# V78 LONG-RUN / 3-STRATEGY CONFIG
-# =========================================================
-STABLE_ENTRY_THRESHOLD = float(os.getenv("STABLE_ENTRY_THRESHOLD", "0.078"))
-SNIPER_ENTRY_THRESHOLD = float(os.getenv("SNIPER_ENTRY_THRESHOLD", "0.070"))
-MOMENTUM_ENTRY_THRESHOLD = float(os.getenv("MOMENTUM_ENTRY_THRESHOLD", "0.082"))
-
-STABLE_MULTIPLIER = float(os.getenv("STABLE_MULTIPLIER", "1.12"))
-STABLE_TOP_K = int(os.getenv("STABLE_TOP_K", "4"))
-SNIPER_TOP_K = int(os.getenv("SNIPER_TOP_K", "3"))
-
-STABLE_WALLET_GRAPH_CUTOFF = float(os.getenv("STABLE_WALLET_GRAPH_CUTOFF", "0.55"))
-STABLE_SMART_CUTOFF = float(os.getenv("STABLE_SMART_CUTOFF", "0.55"))
-
-FUND_STABLE_BASE = float(os.getenv("FUND_STABLE_BASE", "0.40"))
-
-# Ensure V78 fund buckets exist
-try:
-    FUND_ALLOCATOR.setdefault("stable", FUND_STABLE_BASE)
-    _ = FUND_PERF["stable"]
-except Exception:
-    pass
-
-# ===== STRATEGY MULTIPLIER =====
-SNIPER_MULTIPLIER = 1.35
-SMART_MULTIPLIER = 1.15
-MOMENTUM_MULTIPLIER = 1.05
-
-# ===== SNIPER BOOST =====
-SNIPER_RECENT_WINDOW_SEC = 10
-EARLY_ENTRY_BONUS = 0.02
-MEMPOOL_RECENCY_BONUS = 0.025
-
-# ===== FUND =====
-FUND_ALLOCATOR = {
-    "stable": 0.4,
-    "sniper": 0.2,
-    "momentum": 0.4,
-}
-
-FUND_PERF = {
-    "stable": {"pnl": 0, "trades": 0, "wins": 0, "losses": 0},
-    "sniper": {"pnl": 0, "trades": 0, "wins": 0, "losses": 0},
-    "momentum": {"pnl": 0, "trades": 0, "wins": 0, "losses": 0},
-}
