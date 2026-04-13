@@ -1,9 +1,7 @@
 import time
 
-
 def now():
     return time.time()
-
 
 def sf(x, default=0.0):
     try:
@@ -11,13 +9,11 @@ def sf(x, default=0.0):
     except Exception:
         return default
 
-
 def si(x, default=0):
     try:
         return int(float(x))
     except Exception:
         return default
-
 
 def clamp(x, lo, hi):
     try:
@@ -25,7 +21,6 @@ def clamp(x, lo, hi):
     except Exception:
         x = lo
     return max(lo, min(hi, x))
-
 
 def safe_div(a, b, default=0.0):
     try:
@@ -37,6 +32,27 @@ def safe_div(a, b, default=0.0):
     except Exception:
         return default
 
+def log(msg):
+    print(msg)
+
+def dedup(rows):
+    out = []
+    seen = set()
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        mint = r.get("mint")
+        if not mint or mint in seen:
+            continue
+        seen.add(mint)
+        out.append(r)
+    return out
+
+def valid_mint_like(s):
+    if not s or not isinstance(s, str):
+        return False
+    s = s.strip()
+    return 30 <= len(s) <= 50
 
 def parse_signature(res):
     if not isinstance(res, dict):
@@ -55,17 +71,11 @@ def parse_signature(res):
 
     return ""
 
-
 def parse_out_amount(obj):
-    """
-    盡量從各種 Jupiter / paper / wrapped response 抓到 outAmount
-    """
     if obj is None:
         return 0
-
     if isinstance(obj, (int, float)):
         return int(obj)
-
     if not isinstance(obj, dict):
         return 0
 
@@ -78,8 +88,6 @@ def parse_out_amount(obj):
         (obj.get("quote") or {}).get("out_amount"),
         (obj.get("quote") or {}).get("amount_out"),
         (obj.get("quote") or {}).get("outputAmount"),
-        ((obj.get("data") or {}).get("outAmount") if isinstance(obj.get("data"), dict) else None),
-        ((obj.get("swapResult") or {}).get("outAmount") if isinstance(obj.get("swapResult"), dict) else None),
     ]
 
     for v in candidates:
@@ -92,34 +100,9 @@ def parse_out_amount(obj):
         except Exception:
             pass
 
-    # routePlan 類型 fallback
-    quote = obj.get("quote") or {}
-    route_plan = quote.get("routePlan") or obj.get("routePlan") or []
-    if isinstance(route_plan, list):
-        for leg in route_plan:
-            if not isinstance(leg, dict):
-                continue
-            swap_info = leg.get("swapInfo") or {}
-            for k in ["outAmount", "outputAmount"]:
-                v = swap_info.get(k)
-                try:
-                    iv = int(float(v))
-                    if iv > 0:
-                        return iv
-                except Exception:
-                    pass
-
     return 0
 
-
 def extract_token_decimals(meta):
-    """
-    優先順序：
-    1. meta.decimals
-    2. meta.token_decimals
-    3. nested structures
-    4. fallback = 6
-    """
     if not isinstance(meta, dict):
         return 6
 
