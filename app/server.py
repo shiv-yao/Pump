@@ -5,14 +5,8 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, HTMLResponse
 
-# =========================
-# FIX: 確保 module 不爆
-# =========================
 sys.path.append(os.getcwd())
 
-# =========================
-# IMPORT ENGINE
-# =========================
 ENGINE_IMPORT_ERROR = None
 main_loop = None
 engine = None
@@ -47,20 +41,14 @@ except Exception as e:
         }
 
 
-# =========================
-# APP INIT
-# =========================
 app = FastAPI(
-    title="Pump Fusion V80",
-    version="80.0",
+    title="Pump Fusion V82",
+    version="82.0",
 )
 
 ENGINE_TASK = None
 
 
-# =========================
-# HELPERS
-# =========================
 def engine_task_running() -> bool:
     global ENGINE_TASK
     return ENGINE_TASK is not None and not ENGINE_TASK.done()
@@ -91,9 +79,6 @@ def safe_engine_summary():
         }
 
 
-# =========================
-# STARTUP
-# =========================
 @app.on_event("startup")
 async def startup():
     print("🚀 SERVER START")
@@ -124,9 +109,6 @@ async def startup():
     asyncio.create_task(delayed_start())
 
 
-# =========================
-# ROOT
-# =========================
 @app.get("/")
 async def root():
     return {
@@ -137,9 +119,6 @@ async def root():
     }
 
 
-# =========================
-# HEALTH CHECK（Railway會用）
-# =========================
 @app.get("/health")
 async def health():
     return {
@@ -149,9 +128,6 @@ async def health():
     }
 
 
-# =========================
-# DEBUG（看 engine 有沒有跑）
-# =========================
 @app.get("/debug")
 async def debug():
     task_state = None
@@ -181,35 +157,26 @@ async def debug():
     }
 
 
-# =========================
-# METRICS（memory版）
-# =========================
 @app.get("/metrics")
 async def metrics():
     try:
         data = get_metrics()
         return JSONResponse(
             content=data,
-            headers={"Cache-Control": "no-store"}
+            headers={"Cache-Control": "no-store"},
         )
     except Exception as e:
         return JSONResponse(
             content={"error": str(e)},
-            status_code=500
+            status_code=500,
         )
 
 
-# =========================
-# LIVE ENGINE SNAPSHOT
-# =========================
 @app.get("/engine")
 async def engine_info():
     return safe_engine_summary()
 
 
-# =========================
-# UI DASHBOARD
-# =========================
 @app.get("/ui", response_class=HTMLResponse)
 async def dashboard():
     return """
@@ -217,6 +184,7 @@ async def dashboard():
 <html>
 <head>
     <title>Pump Fund PRO</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body style="background:#0b0f1a;color:#fff;font-family:sans-serif;padding:20px">
@@ -232,16 +200,13 @@ async def dashboard():
 </div>
 
 <br>
-
 <canvas id="chart" height="120"></canvas>
 
 <br>
-
 <h3>🧠 Strategy Allocation</h3>
 <canvas id="strategyChart" height="120"></canvas>
 
 <br>
-
 <h3>📦 Positions</h3>
 <table border="1" cellpadding="6" style="border-collapse:collapse;width:100%">
 <thead>
@@ -252,20 +217,19 @@ async def dashboard():
     <th>Price</th>
     <th>PnL%</th>
     <th>Value</th>
+    <th>AI</th>
 </tr>
 </thead>
 <tbody id="positions"></tbody>
 </table>
 
 <br>
-
 <h3>🧾 Recent Trades</h3>
-<pre id="trades_log" style="max-height:200px;overflow:auto;background:#111;padding:10px"></pre>
+<pre id="trades_log" style="max-height:220px;overflow:auto;background:#111;padding:10px"></pre>
 
 <br>
-
 <h3>📡 Logs</h3>
-<pre id="logs" style="max-height:200px;overflow:auto;background:#111;padding:10px"></pre>
+<pre id="logs" style="max-height:220px;overflow:auto;background:#111;padding:10px"></pre>
 
 <script>
 let equityChart = null;
@@ -277,15 +241,11 @@ function safe(v, d = 0) {
 
 async function load() {
     try {
-        const res = await fetch("/metrics?ts=" + Date.now(), {
-            cache: "no-store"
-        });
-
+        const res = await fetch("/metrics?ts=" + Date.now(), { cache: "no-store" });
         const data = await res.json();
 
         if (!data || !data.summary) {
-            document.getElementById("logs").innerText =
-                JSON.stringify(data, null, 2);
+            document.getElementById("logs").innerText = JSON.stringify(data, null, 2);
             return;
         }
 
@@ -297,14 +257,12 @@ async function load() {
         const logRows = Array.isArray(data.logs) ? data.logs : [];
         const alpha = data.alpha || {};
 
-        // ===== summary =====
         document.getElementById("capital").innerText = safe(s.capital).toFixed(4);
         document.getElementById("equity").innerText = safe(s.equity).toFixed(4);
         document.getElementById("dd").innerText = (safe(s.drawdown) * 100).toFixed(2) + "%";
         document.getElementById("pos").innerText = safe(s.positions, rows.length);
         document.getElementById("trades").innerText = safe(stats.trades, recentTrades.length);
 
-        // ===== equity chart =====
         const labels = curve.map(x => new Date((x.t || 0) * 1000).toLocaleTimeString());
         const values = curve.map(x => safe(x.equity));
 
@@ -322,10 +280,7 @@ async function load() {
                         tension: 0.2
                     }]
                 },
-                options: {
-                    animation: false,
-                    responsive: true
-                }
+                options: { animation: false, responsive: true }
             });
         } else {
             equityChart.data.labels = labels;
@@ -333,7 +288,6 @@ async function load() {
             equityChart.update();
         }
 
-        // ===== strategy chart =====
         const stratLabels = Object.keys(alpha);
         const stratValues = stratLabels.map(k => safe((alpha[k] || {}).pnl_sol));
 
@@ -348,10 +302,7 @@ async function load() {
                         data: stratValues
                     }]
                 },
-                options: {
-                    animation: false,
-                    responsive: true
-                }
+                options: { animation: false, responsive: true }
             });
         } else {
             stratChart.data.labels = stratLabels;
@@ -359,13 +310,13 @@ async function load() {
             stratChart.update();
         }
 
-        // ===== positions =====
         const tbody = document.getElementById("positions");
         tbody.innerHTML = "";
 
         rows.forEach(p => {
             const tr = document.createElement("tr");
             const pnlPct = safe(p.unrealized_pnl_pct);
+            const aiProb = safe(p.ai_win_prob);
             tr.innerHTML = `
                 <td>${(p.mint || "").slice(0, 6)}</td>
                 <td>${p.mode || ""}</td>
@@ -375,17 +326,13 @@ async function load() {
                     ${(pnlPct * 100).toFixed(2)}%
                 </td>
                 <td>${safe(p.market_value).toFixed(4)}</td>
+                <td>${(aiProb * 100).toFixed(1)}%</td>
             `;
             tbody.appendChild(tr);
         });
 
-        // ===== trades =====
-        document.getElementById("trades_log").innerText =
-            JSON.stringify(recentTrades, null, 2);
-
-        // ===== logs =====
-        document.getElementById("logs").innerText =
-            logRows.slice(-50).join("\\n");
+        document.getElementById("trades_log").innerText = JSON.stringify(recentTrades, null, 2);
+        document.getElementById("logs").innerText = logRows.slice(-50).join("\\n");
 
     } catch (err) {
         document.getElementById("logs").innerText = "UI ERROR: " + err;
@@ -401,9 +348,6 @@ load();
 """
 
 
-# =========================
-# SAFE SHUTDOWN（避免殭屍）
-# =========================
 @app.on_event("shutdown")
 async def shutdown():
     global ENGINE_TASK
