@@ -123,3 +123,107 @@ def extract_token_decimals(meta):
             pass
 
     return 6
+
+def strategy_bucket_from_mode(mode):
+    m = str(mode or "").lower().strip()
+
+    if m in {"stable"}:
+        return "stable"
+
+    if m in {"sniper", "early", "mempool"}:
+        return "sniper"
+
+    if m in {"smart", "smart_money", "wallet"}:
+        return "smart"
+
+    if m in {"momentum", "breakout", "trend"}:
+        return "momentum"
+
+    if m in {"explore", "experimental"}:
+        return "explore"
+
+    return "momentum"
+
+def update_open_stats():
+    try:
+        from app.state import engine
+    except Exception:
+        return
+
+    positions = getattr(engine, "positions", []) or []
+    if not hasattr(engine, "stats") or not isinstance(engine.stats, dict):
+        engine.stats = {}
+
+    open_exposure = 0.0
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        open_exposure += sf(p.get("entry_value", p.get("size", 0.0)), 0.0)
+
+    engine.stats["open_positions"] = len(positions)
+    engine.stats["open_exposure"] = open_exposure
+
+
+def source_stat_win(src, pnl=0.0):
+    try:
+        from app.engine import runtime as rt
+        if not hasattr(rt, "SOURCE_STATS") or rt.SOURCE_STATS is None:
+            rt.SOURCE_STATS = {}
+        s = rt.SOURCE_STATS.setdefault(src, {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0})
+        s["count"] += 1
+        s["wins"] += 1
+        s["total_pnl"] += sf(pnl, 0.0)
+    except Exception:
+        pass
+
+
+def source_stat_loss(src, pnl=0.0):
+    try:
+        from app.engine import runtime as rt
+        if not hasattr(rt, "SOURCE_STATS") or rt.SOURCE_STATS is None:
+            rt.SOURCE_STATS = {}
+        s = rt.SOURCE_STATS.setdefault(src, {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0})
+        s["count"] += 1
+        s["losses"] += 1
+        s["total_pnl"] += sf(pnl, 0.0)
+    except Exception:
+        pass
+
+
+def strategy_stat_update(strategy, pnl=0.0):
+    try:
+        from app.engine import runtime as rt
+        if not hasattr(rt, "STRATEGY_STATS") or rt.STRATEGY_STATS is None:
+            rt.STRATEGY_STATS = {}
+        s = rt.STRATEGY_STATS.setdefault(strategy, {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0})
+        s["count"] += 1
+        if sf(pnl, 0.0) > 0:
+            s["wins"] += 1
+        else:
+            s["losses"] += 1
+        s["total_pnl"] += sf(pnl, 0.0)
+    except Exception:
+        pass
+
+
+def push_trade(trade):
+    try:
+        from app.state import engine
+        if not hasattr(engine, "trade_history") or engine.trade_history is None:
+            engine.trade_history = []
+        engine.trade_history.append(trade)
+        engine.trade_history = engine.trade_history[-1000:]
+    except Exception:
+        pass
+
+
+def score_stat_add(name, value):
+    try:
+        from app.engine import runtime as rt
+        if not hasattr(rt, "SCORE_COMPONENT_STATS") or rt.SCORE_COMPONENT_STATS is None:
+            rt.SCORE_COMPONENT_STATS = {}
+        s = rt.SCORE_COMPONENT_STATS.setdefault(name, {"count": 0, "sum": 0.0})
+        s["count"] += 1
+        s["sum"] += sf(value, 0.0)
+    except Exception:
+        pass
