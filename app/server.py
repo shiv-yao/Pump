@@ -51,8 +51,8 @@ except Exception as e:
 # APP INIT
 # =========================
 app = FastAPI(
-    title="Pump Fusion V74",
-    version="74.3",
+    title="Pump Fusion V80",
+    version="80.0",
 )
 
 ENGINE_TASK = None
