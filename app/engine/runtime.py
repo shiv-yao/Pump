@@ -372,3 +372,6 @@ def reset_runtime_memory():
 
 def ensure_runtime():
     ensure_engine_state()
+
+from app.state import engine as _engine
+engine = _engine
