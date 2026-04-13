@@ -92,20 +92,26 @@ def _ensure_runtime_dicts():
             "explore": 0.08,
         }
 
-    if not hasattr(rt, "LAST_TRADE"):
+    if not hasattr(rt, "LAST_TRADE") or rt.LAST_TRADE is None:
         rt.LAST_TRADE = {}
 
-    if not hasattr(rt, "LAST_PRICE"):
+    if not hasattr(rt, "LAST_PRICE") or rt.LAST_PRICE is None:
         rt.LAST_PRICE = {}
 
-    if not hasattr(rt, "LAST_MOMENTUM"):
+    if not hasattr(rt, "LAST_MOMENTUM") or rt.LAST_MOMENTUM is None:
         rt.LAST_MOMENTUM = {}
 
-    if not hasattr(rt, "BLACKLIST"):
+    if not hasattr(rt, "BLACKLIST") or rt.BLACKLIST is None:
         rt.BLACKLIST = {}
 
     if not hasattr(rt, "BUY_TIMES") or rt.BUY_TIMES is None:
         rt.BUY_TIMES = []
+
+    if not hasattr(rt.engine, "positions") or rt.engine.positions is None:
+        rt.engine.positions = []
+
+    if not hasattr(rt.engine, "capital"):
+        rt.engine.capital = 0.0
 
 
 # =========================================================
@@ -369,6 +375,8 @@ async def buy(m, f, position_size, mtype, forced=False):
         "mint": m,
         "entry": f["price"],
         "entry_price": f["price"],
+        "price": f["price"],
+        "mark_price": f["price"],
         "size": order_sol,
         "size_sol": order_sol,
         "entry_value": order_sol,
@@ -394,14 +402,14 @@ async def buy(m, f, position_size, mtype, forced=False):
         "wallet_graph_score": f.get("wallet_graph_score", 0.0),
     }
 
-    if not hasattr(rt.engine, "positions") or rt.engine.positions is None:
-        rt.engine.positions = []
     rt.engine.positions.append(position)
 
     rt.LAST_TRADE[m] = now()
     rt.BUY_TIMES.append(now())
     rt.engine.stats["executed"] += 1
     rt.engine.stats["signals"] += 1
+    rt.engine.stats["trades"] += 1
+
     if forced:
         rt.engine.stats["forced_trades"] += 1
 
@@ -484,7 +492,11 @@ async def sell(p, reason, price, sell_fraction=1.0):
     fees_allocated = fees_paid_total * sell_fraction + fee_sol
 
     pnl_sol = exit_value - entry_value_sold - fees_allocated
-    pnl = clamp(safe_div(pnl_sol, entry_value_sold, 0.0), -getattr(rt, "MAX_PNL_ABS", 0.2), getattr(rt, "MAX_PNL_ABS", 0.2))
+    pnl = clamp(
+        safe_div(pnl_sol, entry_value_sold, 0.0),
+        -getattr(rt, "MAX_PNL_ABS", 0.2),
+        getattr(rt, "MAX_PNL_ABS", 0.2),
+    )
 
     rt.engine.capital += max(0.0, exit_value - fee_sol)
     rt.engine.stats["realized_pnl_sol"] += pnl_sol
@@ -566,6 +578,9 @@ async def check_sell(p):
 
     if price is None or entry <= 0:
         return False
+
+    p["price"] = price
+    p["mark_price"] = price
 
     hold_sec = now() - sf(p.get("time"), now())
     if price < 1e-8 or hold_sec < 8:
@@ -661,34 +676,85 @@ async def check_sell(p):
     return False
 
 
-async def execute_ranked_portfolio(ranked, strategy_name="stable", max_new=1):
+# =========================================================
+# EXECUTE RANKED
+# =========================================================
+async def execute_ranked_portfolio(ranked, strategy_name="stable", weight=0.3, max_new=1):
+    _ensure_stats()
     _ensure_runtime_dicts()
+
     traded = False
     buys = 0
 
     ranked = ranked if isinstance(ranked, list) else []
     ranked = sorted(ranked, key=lambda x: x.get("_score", 0.0), reverse=True)
 
+    if not ranked:
+        return False
+
+    current_positions = getattr(rt.engine, "positions", []) or []
+
     for f in ranked:
         if buys >= max_new:
             break
+
+        if not isinstance(f, dict):
+            continue
 
         m = f.get("mint")
         if not m:
             continue
 
-        if any(p.get("mint") == m for p in getattr(rt.engine, "positions", []) or []):
+        if any((p.get("mint") == m) for p in current_positions if isinstance(p, dict)):
             continue
 
-        pos_size = allocate_size(
-            f.get("_score", 0.0),
-            max(len(ranked), 1),
-            strategy=strategy_name,
-        )
+        score = sf(f.get("_score", 0.0), 0.0)
+
+        try:
+            base_size = allocate_size(
+                score,
+                max(len(ranked), 1),
+                strategy=strategy_name,
+            )
+        except Exception:
+            base_size = 0.0
+
+        try:
+            w = float(weight if weight is not None else 0.3)
+        except Exception:
+            w = 0.3
+
+        w = max(0.05, min(1.0, w))
+        pos_size = base_size * w
+
+        min_order = sf(getattr(rt, "MIN_ORDER_SOL", 0.01), 0.01)
+        max_pos_size = sf(getattr(rt, "MAX_POSITION_SIZE", 0.03), 0.03)
+        capital = sf(getattr(rt.engine, "capital", 0.0), 0.0)
+
+        if pos_size < min_order:
+            pos_size = min_order
+
+        pos_size = min(pos_size, max_pos_size, capital)
+
         if pos_size <= 0:
             continue
 
-        ok = await buy(m, f, pos_size, strategy_name, forced=False)
+        if capital < min_order:
+            continue
+
+        try:
+            ok = await buy(
+                m,
+                f,
+                pos_size,
+                strategy_name,
+                forced=False,
+            )
+        except Exception as e:
+            rt.engine.stats["errors"] = int(rt.engine.stats.get("errors", 0)) + 1
+            _log(f"EXECUTE_RANKED BUY ERROR {m[:6]} {e}")
+            ok = False
+
         if ok:
             buys += 1
             traded = True
