@@ -50,6 +50,22 @@ def _roll_day_if_needed():
         rt.INSTITUTIONAL_STATE["last_reason"] = "new_day"
 
 
+def _safe_position_price(price, entry):
+    p = sf(price, 0.0)
+    e = sf(entry, 0.0)
+
+    if p <= 0:
+        return e
+
+    if e > 0:
+        if p > e * 50:
+            return e
+        if p < e / 50:
+            return e
+
+    return p
+
+
 def detect_regime():
     _ensure_runtime_state()
 
@@ -121,52 +137,6 @@ def institutional_daily_loss_hit():
     return daily_realized <= -daily_loss_limit
 
 
-def hourly_loss_hit():
-    _ensure_runtime_state()
-
-    trades = list(getattr(rt.engine, "trade_history", []) or [])
-    if not trades:
-        return False
-
-    cutoff = now() - 3600
-    pnl_sol_sum = 0.0
-
-    for t in trades:
-        if not isinstance(t, dict):
-            continue
-
-        close_ts = sf(t.get("time_close", t.get("time", 0.0)), 0.0)
-        if close_ts < cutoff:
-            continue
-
-        pnl_sol_sum += sf(t.get("pnl_sol", 0.0), 0.0)
-
-    max_loss_per_hour = abs(sf(getattr(rt, "MAX_LOSS_PER_HOUR_SOL", 0.12), 0.12))
-    return pnl_sol_sum <= -max_loss_per_hour
-
-
-def max_trades_per_day_hit():
-    _roll_day_if_needed()
-
-    trades = list(getattr(rt.engine, "trade_history", []) or [])
-    if not trades:
-        return False
-
-    current_bucket = int(time.time() // 86400)
-    count = 0
-
-    for t in trades:
-        if not isinstance(t, dict):
-            continue
-
-        ts = sf(t.get("time_close", t.get("time", 0.0)), 0.0)
-        if int(ts // 86400) == current_bucket:
-            count += 1
-
-    max_trades = int(getattr(rt, "MAX_TRADES_PER_DAY", 999999) or 999999)
-    return count >= max_trades
-
-
 def institutional_pause_active():
     _ensure_runtime_state()
     return now() < sf(rt.INSTITUTIONAL_STATE.get("pause_until", 0.0), 0.0)
@@ -183,18 +153,6 @@ def institutional_loss_pause_if_needed():
         rt.INSTITUTIONAL_STATE["pause_until"] = now() + getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_SEC", 600)
         rt.INSTITUTIONAL_STATE["last_reason"] = "daily_loss_limit"
         _log("INSTITUTIONAL pause triggered by daily loss limit")
-        return True
-
-    if hourly_loss_hit():
-        rt.INSTITUTIONAL_STATE["pause_until"] = now() + getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_SEC", 600)
-        rt.INSTITUTIONAL_STATE["last_reason"] = "hourly_loss_limit"
-        _log("INSTITUTIONAL pause triggered by hourly loss limit")
-        return True
-
-    if max_trades_per_day_hit():
-        rt.INSTITUTIONAL_STATE["pause_until"] = now() + getattr(rt, "INSTITUTIONAL_LOSS_PAUSE_SEC", 600)
-        rt.INSTITUTIONAL_STATE["last_reason"] = "max_trades_per_day"
-        _log("INSTITUTIONAL pause triggered by max trades per day")
         return True
 
     recent = list(getattr(rt.engine, "trade_history", []) or [])
@@ -251,6 +209,9 @@ async def check_sell(p):
     if price is None or entry <= 0:
         return False
 
+    price = _safe_position_price(price, entry)
+
+    # 關鍵：每次檢查同步更新 mark
     p["price"] = price
     p["mark_price"] = price
 
@@ -322,6 +283,7 @@ async def check_sell(p):
         await asyncio.sleep(0.4)
         price2 = await get_price(m)
         if price2:
+            price2 = _safe_position_price(price2, entry)
             market_value2 = token_amount * price2
             pnl2 = clamp(
                 safe_div(market_value2 - entry_value, entry_value, 0.0),
@@ -329,6 +291,8 @@ async def check_sell(p):
                 getattr(rt, "MAX_PNL_ABS", 0.20),
             )
             if pnl2 <= effective_sl:
+                p["price"] = price2
+                p["mark_price"] = price2
                 return await sell(p, "SL", price2, 1.0)
         return False
 
