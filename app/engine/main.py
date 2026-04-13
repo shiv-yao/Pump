@@ -125,7 +125,7 @@ async def main_loop():
     _ensure_runtime_defaults()
 
     engine.running = True
-    _log("🔥 V80 FINAL FUND SYSTEM START")
+    _log("🔥 V82 AI FUND SYSTEM START")
 
     while engine.running:
         traded = False
@@ -146,15 +146,25 @@ async def main_loop():
             if not isinstance(tokens, list):
                 tokens = []
 
-            # 沒候選就直接短休眠，不跑後面重計算
+            # 沒候選就直接短休眠
             if not tokens:
                 engine.last_loop_ts = time.time()
                 engine.no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0) or 0) + 1
                 try:
+                    update_runtime_stats()
+                except Exception as e:
+                    _log(f"STATS ERROR: {e}")
+                try:
                     update_metrics()
                 except Exception as e:
                     _log(f"METRICS ERROR: {e}")
-                _log(f"LOOP | cap={engine.capital:.4f} pos={len(engine.positions)} tokens=0 traded=False no_trade_cycles={engine.no_trade_cycles}")
+
+                _log(
+                    f"LOOP | cap={engine.capital:.4f} "
+                    f"pos={len(engine.positions)} "
+                    f"tokens=0 traded=False "
+                    f"no_trade_cycles={engine.no_trade_cycles}"
+                )
                 await asyncio.sleep(min(float(getattr(rt, "LOOP_SLEEP_SEC", 2.0) or 2.0), 1.5))
                 continue
 
@@ -221,6 +231,7 @@ async def main_loop():
                         liq = float(f.get("liq", 0.0) or 0.0)
                         mint = f.get("mint")
                         wg = float(f.get("wallet_graph_score", 0.0) or 0.0)
+                        ai_prob = float(f.get("_ai_win_prob", 0.5) or 0.5)
                         source = str(f.get("source", "")).lower()
 
                         if not mint:
@@ -229,12 +240,13 @@ async def main_loop():
                         if any((p.get("mint") == mint) for p in (engine.positions or [])):
                             continue
 
-                        # fallback 還是要過最基本品質
                         if sc < 0.045:
                             continue
                         if liq < min_liq:
                             continue
                         if wg < 0.15:
+                            continue
+                        if ai_prob < 0.48:
                             continue
                         if source == "dexscreener":
                             continue
