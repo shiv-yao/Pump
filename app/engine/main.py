@@ -49,6 +49,8 @@ def _ensure_engine_defaults():
     engine.stats.setdefault("signals", 0)
     engine.stats.setdefault("executed", 0)
     engine.stats.setdefault("forced_trades", 0)
+    engine.stats.setdefault("wins", 0)
+    engine.stats.setdefault("losses", 0)
 
 
 def _ensure_runtime_defaults():
@@ -72,6 +74,51 @@ def _ensure_runtime_defaults():
     if not hasattr(rt, "LOOP_SLEEP_SEC"):
         rt.LOOP_SLEEP_SEC = 2.0
 
+    if not hasattr(rt, "MAX_POSITION_SIZE"):
+        rt.MAX_POSITION_SIZE = 0.03
+
+
+def _safe_alloc():
+    raw = getattr(rt, "FUND_ALLOCATOR", {})
+    if not isinstance(raw, dict):
+        raw = {}
+
+    alloc = {
+        "stable": float(raw.get("stable", 0.40) or 0.40),
+        "sniper": float(raw.get("sniper", 0.20) or 0.20),
+        "momentum": float(raw.get("momentum", 0.35) or 0.35),
+        "explore": float(raw.get("explore", 0.05) or 0.05),
+    }
+
+    for k in alloc:
+        if alloc[k] != alloc[k]:  # NaN guard
+            alloc[k] = 0.0
+        alloc[k] = max(0.0, min(1.0, alloc[k]))
+
+    s = alloc["stable"] + alloc["sniper"] + alloc["momentum"] + alloc["explore"]
+    if s <= 0:
+        return {"stable": 0.40, "sniper": 0.20, "momentum": 0.35, "explore": 0.05}
+
+    for k in alloc:
+        alloc[k] /= s
+
+    return alloc
+
+
+async def _run_sell_checks():
+    positions = list(getattr(engine, "positions", []) or [])
+    if not positions:
+        return
+
+    results = await asyncio.gather(
+        *[check_sell(p) for p in positions],
+        return_exceptions=True,
+    )
+
+    for r in results:
+        if isinstance(r, Exception):
+            _log(f"SELL ERROR: {r}")
+
 
 async def main_loop():
     _ensure_engine_defaults()
@@ -84,17 +131,38 @@ async def main_loop():
         traded = False
 
         try:
+            # ================= GLOBAL RISK GATE =================
+            try:
+                from app.engine.risk import institutional_pause_active
+                if institutional_pause_active():
+                    _log("⛔ INSTITUTIONAL PAUSE ACTIVE")
+                    await asyncio.sleep(float(getattr(rt, "LOOP_SLEEP_SEC", 2.0) or 2.0))
+                    continue
+            except Exception as e:
+                _log(f"PAUSE CHECK ERROR: {e}")
+
             # ================= FETCH =================
             tokens = await fetch_alpha_candidates()
             if not isinstance(tokens, list):
                 tokens = []
 
-            # ================= SELL =================
-            for p in list(engine.positions):
+            # 沒候選就直接短休眠，不跑後面重計算
+            if not tokens:
+                engine.last_loop_ts = time.time()
+                engine.no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0) or 0) + 1
                 try:
-                    await check_sell(p)
+                    update_metrics()
                 except Exception as e:
-                    _log(f"SELL ERROR: {e}")
+                    _log(f"METRICS ERROR: {e}")
+                _log(f"LOOP | cap={engine.capital:.4f} pos={len(engine.positions)} tokens=0 traded=False no_trade_cycles={engine.no_trade_cycles}")
+                await asyncio.sleep(min(float(getattr(rt, "LOOP_SLEEP_SEC", 2.0) or 2.0), 1.5))
+                continue
+
+            # ================= SELL =================
+            try:
+                await _run_sell_checks()
+            except Exception as e:
+                _log(f"SELL GATHER ERROR: {e}")
 
             # ================= STRATEGIES =================
             stable_ranked = await run_stable_engine(tokens)
@@ -107,12 +175,7 @@ async def main_loop():
             except Exception as e:
                 _log(f"ALLOCATOR ERROR: {e}")
 
-            alloc = getattr(rt, "FUND_ALLOCATOR", {
-                "stable": 0.4,
-                "sniper": 0.2,
-                "momentum": 0.35,
-                "explore": 0.05,
-            })
+            alloc = _safe_alloc()
 
             # ================= NORMAL EXECUTION =================
             traded_stable = await execute_ranked_portfolio(
@@ -136,7 +199,7 @@ async def main_loop():
                 max_new=1,
             )
 
-            traded = traded_stable or traded_sniper or traded_momentum
+            traded = bool(traded_stable or traded_sniper or traded_momentum)
 
             # ================= FALLBACK BUY =================
             if not traded:
@@ -157,15 +220,26 @@ async def main_loop():
                         sc = float(f.get("_score", 0.0) or 0.0)
                         liq = float(f.get("liq", 0.0) or 0.0)
                         mint = f.get("mint")
+                        wg = float(f.get("wallet_graph_score", 0.0) or 0.0)
+                        source = str(f.get("source", "")).lower()
 
                         if not mint:
                             continue
 
-                        if any(p.get("mint") == mint for p in engine.positions):
+                        if any((p.get("mint") == mint) for p in (engine.positions or [])):
                             continue
 
-                        if sc >= 0.045 and liq >= min_liq:
-                            fallback.append(f)
+                        # fallback 還是要過最基本品質
+                        if sc < 0.045:
+                            continue
+                        if liq < min_liq:
+                            continue
+                        if wg < 0.15:
+                            continue
+                        if source == "dexscreener":
+                            continue
+
+                        fallback.append(f)
 
                     if fallback:
                         _log(
@@ -192,16 +266,25 @@ async def main_loop():
             losses = int(engine.stats.get("losses", 0) or 0)
             if losses > wins + 3:
                 try:
-                    rt.MAX_POSITION_SIZE = max(float(getattr(rt, "MAX_POSITION_SIZE", 0.03)) * 0.7, 0.005)
+                    rt.MAX_POSITION_SIZE = max(
+                        float(getattr(rt, "MAX_POSITION_SIZE", 0.03)) * 0.7,
+                        0.005,
+                    )
                     _log(f"⚠️ DEFENSIVE MODE MAX_POSITION_SIZE={rt.MAX_POSITION_SIZE:.4f}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log(f"DEFENSIVE MODE ERROR: {e}")
 
             # ================= STATS =================
-            update_runtime_stats()
+            try:
+                update_runtime_stats()
+            except Exception as e:
+                _log(f"STATS ERROR: {e}")
 
             # ================= METRICS =================
-            update_metrics()
+            try:
+                update_metrics()
+            except Exception as e:
+                _log(f"METRICS ERROR: {e}")
 
             _log(
                 f"LOOP | cap={engine.capital:.4f} "
