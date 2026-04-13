@@ -13,6 +13,19 @@ from app.engine.ml_fund_brain import ml_adjust_allocator
 from app.engine.strategy_stable import run_stable_engine
 from app.engine.strategy_sniper import run_sniper_engine
 
+# =========================
+# LLM BRAIN
+# =========================
+try:
+    from app.engine.llm_brain import multi_llm_review
+    from app.engine.llm_router import fuse_llm_decisions, apply_llm_to_candidate
+    LLM_BRAIN_OK = True
+except Exception:
+    multi_llm_review = None
+    fuse_llm_decisions = None
+    apply_llm_to_candidate = None
+    LLM_BRAIN_OK = False
+
 
 def _log(msg: str):
     print(msg)
@@ -77,6 +90,12 @@ def _ensure_runtime_defaults():
     if not hasattr(rt, "MAX_POSITION_SIZE"):
         rt.MAX_POSITION_SIZE = 0.03
 
+    if not hasattr(rt, "LLM_REVIEW_TOP_K"):
+        rt.LLM_REVIEW_TOP_K = 2
+
+    if not hasattr(rt, "LLM_MIN_SCORE"):
+        rt.LLM_MIN_SCORE = 0.35
+
 
 def _safe_alloc():
     raw = getattr(rt, "FUND_ALLOCATOR", {})
@@ -120,12 +139,70 @@ async def _run_sell_checks():
             _log(f"SELL ERROR: {r}")
 
 
+async def _apply_llm_brain(ranked, strategy_name="momentum", top_k=None):
+    ranked = ranked if isinstance(ranked, list) else []
+    if not ranked:
+        return []
+
+    if not LLM_BRAIN_OK:
+        return ranked
+
+    if top_k is None:
+        top_k = int(getattr(rt, "LLM_REVIEW_TOP_K", 2) or 2)
+
+    out = []
+
+    for i, f in enumerate(ranked):
+        if not isinstance(f, dict):
+            continue
+
+        if i >= top_k:
+            out.append(f)
+            continue
+
+        try:
+            review = await multi_llm_review(f)
+            fused = fuse_llm_decisions(review)
+            merged = apply_llm_to_candidate(f, fused)
+
+            llm_buy_votes = int(merged.get("_llm_buy_votes", 0) or 0)
+            llm_score = float(merged.get("_llm_score", 0.0) or 0.0)
+
+            # 太弱就略過，但保守保留 stable 高分單
+            if llm_buy_votes <= 0 and llm_score < float(getattr(rt, "LLM_MIN_SCORE", 0.35) or 0.35):
+                if strategy_name == "stable" and float(merged.get("_score", 0.0) or 0.0) >= 0.11:
+                    out.append(merged)
+                else:
+                    _log(
+                        f"LLM_SKIP {str(merged.get('mint',''))[:6]} "
+                        f"strat={strategy_name} llm_score={llm_score:.3f}"
+                    )
+                continue
+
+            _log(
+                f"LLM_OK {str(merged.get('mint',''))[:6]} "
+                f"strat={strategy_name} "
+                f"score={float(merged.get('_score',0.0) or 0.0):.4f} "
+                f"llm_score={llm_score:.3f} "
+                f"votes={llm_buy_votes}"
+            )
+
+            out.append(merged)
+
+        except Exception as e:
+            _log(f"LLM REVIEW ERROR {str(f.get('mint',''))[:6]} {e}")
+            out.append(f)
+
+    out.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+    return out
+
+
 async def main_loop():
     _ensure_engine_defaults()
     _ensure_runtime_defaults()
 
     engine.running = True
-    _log("🔥 V82.1 AI FUND SYSTEM START")
+    _log("🔥 V82.1 AI FUND SYSTEM + LLM BRAIN START")
 
     while engine.running:
         traded = False
@@ -172,10 +249,33 @@ async def main_loop():
             except Exception as e:
                 _log(f"SELL GATHER ERROR: {e}")
 
+            # ================= STRATEGIES =================
             stable_ranked = await run_stable_engine(tokens)
             sniper_ranked = await run_sniper_engine(tokens)
             momentum_ranked = await process_candidates(tokens)
 
+            # ================= LLM BRAIN =================
+            if LLM_BRAIN_OK:
+                try:
+                    stable_ranked = await _apply_llm_brain(
+                        stable_ranked,
+                        strategy_name="stable",
+                        top_k=int(getattr(rt, "LLM_REVIEW_TOP_K", 2) or 2),
+                    )
+                    sniper_ranked = await _apply_llm_brain(
+                        sniper_ranked,
+                        strategy_name="sniper",
+                        top_k=int(getattr(rt, "LLM_REVIEW_TOP_K", 2) or 2),
+                    )
+                    momentum_ranked = await _apply_llm_brain(
+                        momentum_ranked,
+                        strategy_name="momentum",
+                        top_k=int(getattr(rt, "LLM_REVIEW_TOP_K", 2) or 2),
+                    )
+                except Exception as e:
+                    _log(f"LLM BRAIN ERROR: {e}")
+
+            # ================= FUND BRAIN =================
             try:
                 ml_adjust_allocator()
             except Exception as e:
@@ -206,6 +306,7 @@ async def main_loop():
 
             traded = bool(traded_stable or traded_sniper or traded_momentum)
 
+            # ================= FALLBACK BUY =================
             if not traded:
                 no_trade_cycles = int(getattr(engine, "no_trade_cycles", 0) or 0)
                 force_after = int(getattr(rt, "FORCE_TRADE_AFTER", 30) or 30)
