@@ -12,6 +12,16 @@ from app.engine.sources import get_price, get_price_info
 from app.engine.utils import clamp, now, score_stat_add, sf
 from app.state import engine
 
+try:
+    from app.engine.ai_predictor import predict_trade_quality
+except Exception:
+    def predict_trade_quality(f):
+        return {
+            "win_prob": 0.5,
+            "expected_pnl": 0.0,
+            "score": 0.0,
+        }
+
 
 def _ensure_runtime_state():
     if not hasattr(rt, "WALLET_GRAPH_CACHE") or rt.WALLET_GRAPH_CACHE is None:
@@ -465,9 +475,29 @@ async def process_candidates(tokens):
                 continue
 
             sc, mtype, detail = score_with_allocator(f)
-            f["_score"] = sc
+
+            # V82 AI predictor
+            ai = predict_trade_quality(f)
+            f["_ai_win_prob"] = sf(ai.get("win_prob", 0.5), 0.5)
+            f["_ai_pnl"] = sf(ai.get("expected_pnl", 0.0), 0.0)
+            f["_ai_score"] = sf(ai.get("score", 0.0), 0.0)
+
+            # AI filter
+            if f["_ai_win_prob"] < 0.45:
+                continue
+
+            # AI reweight
+            sc *= (0.7 + f["_ai_win_prob"] * 0.6)
+
+            f["_score"] = clamp(sc, 0.0, getattr(rt, "MAX_SCORE", 1.5))
             f["_mode"] = mtype
-            f["_tier"] = "A+" if sc >= 0.145 else "A" if sc >= getattr(rt, "STRICT_A_TIER_THRESHOLD", 0.095) else "B"
+            f["_tier"] = (
+                "A+"
+                if f["_score"] >= 0.145 else
+                "A"
+                if f["_score"] >= getattr(rt, "STRICT_A_TIER_THRESHOLD", 0.095)
+                else "B"
+            )
             f["_detail"] = detail
             ranked.append(f)
         except Exception:
