@@ -305,3 +305,42 @@ def strategy_bucket_from_mode(mode):
         return "explore"
 
     return "momentum"
+
+# =========================================================
+# RECENT CLOSED TRADES
+# =========================================================
+def recent_closed_trades(limit=20):
+    try:
+        from app.state import engine
+
+        trades = getattr(engine, "trade_history", []) or []
+        rows = []
+
+        for t in reversed(trades):
+            if not isinstance(t, dict):
+                continue
+
+            rows.append({
+                "mint": t.get("mint"),
+                "mode": t.get("mode"),
+                "entry": sf(t.get("entry", 0.0), 0.0),
+                "exit": sf(t.get("exit", 0.0), 0.0),
+                "pnl": sf(t.get("pnl", 0.0), 0.0),
+                "pnl_sol": sf(t.get("pnl_sol", 0.0), 0.0),
+                "reason": t.get("reason", ""),
+                "time_open": t.get("time_open"),
+                "time_close": t.get("time_close"),
+                "source": t.get("source", ""),
+                "via": t.get("via", ""),
+            })
+
+            if len(rows) >= int(limit):
+                break
+
+        return rows
+
+    except Exception:
+        return []
+
+def get_recent_closed_trades(limit=20):
+    return recent_closed_trades(limit=limit)
