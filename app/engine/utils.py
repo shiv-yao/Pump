@@ -1,129 +1,291 @@
 import time
+from collections import defaultdict
 
-def now():
-    return time.time()
 
+# =========================================================
+# BASIC SAFE HELPERS
+# =========================================================
 def sf(x, default=0.0):
     try:
         return float(x)
     except Exception:
         return default
 
+
 def si(x, default=0):
     try:
-        return int(float(x))
+        return int(x)
     except Exception:
         return default
+
+
+def sbool(x, default=False):
+    try:
+        return bool(x)
+    except Exception:
+        return default
+
+
+def now():
+    return time.time()
+
 
 def clamp(x, lo, hi):
-    try:
-        x = float(x)
-    except Exception:
-        x = lo
-    return max(lo, min(hi, x))
+    x = sf(x, lo)
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
 
 def safe_div(a, b, default=0.0):
-    try:
-        a = float(a)
-        b = float(b)
-        if abs(b) < 1e-18:
-            return default
-        return a / b
-    except Exception:
+    a = sf(a, 0.0)
+    b = sf(b, 0.0)
+    if abs(b) <= 1e-12:
         return default
+    return a / b
 
+
+# =========================================================
+# LOG
+# =========================================================
 def log(msg):
     print(msg)
+    try:
+        from app.state import engine
+        if not hasattr(engine, "logs") or engine.logs is None:
+            engine.logs = []
+        engine.logs.append(str(msg))
+        engine.logs = engine.logs[-1200:]
+    except Exception:
+        pass
+
+
+# =========================================================
+# MINT / DEDUP
+# =========================================================
+def valid_mint_like(x):
+    if not isinstance(x, str):
+        return False
+    x = x.strip()
+    if len(x) < 32 or len(x) > 48:
+        return False
+
+    allowed = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    return all(c in allowed for c in x)
+
 
 def dedup(rows):
     out = []
     seen = set()
+
     for r in rows or []:
         if not isinstance(r, dict):
             continue
+
         mint = r.get("mint")
-        if not mint or mint in seen:
+        if not mint:
             continue
+
+        if mint in seen:
+            continue
+
         seen.add(mint)
         out.append(r)
+
     return out
 
-def valid_mint_like(s):
-    if not s or not isinstance(s, str):
-        return False
-    s = s.strip()
-    return 30 <= len(s) <= 50
 
-def parse_signature(res):
-    if not isinstance(res, dict):
-        return ""
-
-    for k in ["signature", "txid", "tx_sig", "sig"]:
-        v = res.get(k)
-        if v:
-            return str(v)
-
-    quote = res.get("quote") or {}
-    for k in ["signature", "txid", "tx_sig", "sig"]:
-        v = quote.get(k)
-        if v:
-            return str(v)
-
-    return ""
-
-def parse_out_amount(obj):
-    if obj is None:
-        return 0
-    if isinstance(obj, (int, float)):
-        return int(obj)
-    if not isinstance(obj, dict):
+# =========================================================
+# QUOTE / TX PARSERS
+# =========================================================
+def parse_out_amount(q):
+    if not isinstance(q, dict):
         return 0
 
     candidates = [
-        obj.get("outAmount"),
-        obj.get("out_amount"),
-        obj.get("amount_out"),
-        obj.get("outputAmount"),
-        (obj.get("quote") or {}).get("outAmount"),
-        (obj.get("quote") or {}).get("out_amount"),
-        (obj.get("quote") or {}).get("amount_out"),
-        (obj.get("quote") or {}).get("outputAmount"),
+        q.get("outAmount"),
+        (q.get("quote") or {}).get("outAmount"),
+        (q.get("data") or {}).get("outAmount"),
+        q.get("amount_out"),
+        q.get("amountOut"),
     ]
 
-    for v in candidates:
+    for x in candidates:
         try:
-            if v is None:
+            if x is None:
                 continue
-            iv = int(float(v))
-            if iv > 0:
-                return iv
+            return int(float(x))
         except Exception:
             pass
 
     return 0
 
-def extract_token_decimals(meta):
+
+def parse_signature(res):
+    if not isinstance(res, dict):
+        return ""
+
+    candidates = [
+        res.get("signature"),
+        res.get("txid"),
+        res.get("sig"),
+        (res.get("data") or {}).get("signature"),
+        (res.get("result") or {}).get("signature") if isinstance(res.get("result"), dict) else None,
+    ]
+
+    for x in candidates:
+        if isinstance(x, str) and x.strip():
+            return x.strip()
+
+    return ""
+
+
+def extract_token_decimals(meta, default=6):
     if not isinstance(meta, dict):
-        return 6
+        return default
 
     candidates = [
         meta.get("decimals"),
-        meta.get("token_decimals"),
-        (meta.get("output_token") or {}).get("decimals") if isinstance(meta.get("output_token"), dict) else None,
         (meta.get("baseToken") or {}).get("decimals") if isinstance(meta.get("baseToken"), dict) else None,
         (meta.get("token") or {}).get("decimals") if isinstance(meta.get("token"), dict) else None,
     ]
 
-    for v in candidates:
+    for x in candidates:
         try:
-            iv = int(v)
-            if 0 <= iv <= 18:
-                return iv
+            v = int(x)
+            if 0 <= v <= 18:
+                return v
         except Exception:
             pass
 
-    return 6
+    return default
 
+
+# =========================================================
+# ENGINE / TRADE HELPERS
+# =========================================================
+def push_trade(trade):
+    try:
+        from app.state import engine
+        if not hasattr(engine, "trade_history") or engine.trade_history is None:
+            engine.trade_history = []
+        engine.trade_history.append(trade)
+        engine.trade_history = engine.trade_history[-1000:]
+    except Exception:
+        pass
+
+
+def update_open_stats():
+    try:
+        from app.state import engine
+    except Exception:
+        return
+
+    positions = getattr(engine, "positions", []) or []
+
+    if not hasattr(engine, "stats") or not isinstance(engine.stats, dict):
+        engine.stats = {}
+
+    open_exposure = 0.0
+    unrealized_pnl = 0.0
+
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+
+        entry_value = sf(p.get("entry_value", p.get("size", 0.0)), 0.0)
+        token_amount = sf(p.get("token_amount", 0.0), 0.0)
+        mark_price = sf(
+            p.get("price", p.get("mark_price", p.get("entry_price", p.get("entry", 0.0)))),
+            0.0,
+        )
+
+        open_exposure += entry_value
+
+        if token_amount > 0 and mark_price > 0:
+            market_value = token_amount * mark_price
+        else:
+            market_value = entry_value
+
+        unrealized_pnl += (market_value - entry_value)
+
+    engine.stats["open_positions"] = len(positions)
+    engine.stats["open_exposure"] = open_exposure
+    engine.stats["unrealized_pnl_sol"] = unrealized_pnl
+
+
+# =========================================================
+# SOURCE / STRATEGY STATS
+# =========================================================
+def source_stat_win(src, pnl=0.0):
+    try:
+        from app.engine import runtime as rt
+        if not hasattr(rt, "SOURCE_STATS") or rt.SOURCE_STATS is None:
+            rt.SOURCE_STATS = defaultdict(
+                lambda: {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+            )
+
+        s = rt.SOURCE_STATS[src]
+        s["count"] += 1
+        s["wins"] += 1
+        s["total_pnl"] += sf(pnl, 0.0)
+    except Exception:
+        pass
+
+
+def source_stat_loss(src, pnl=0.0):
+    try:
+        from app.engine import runtime as rt
+        if not hasattr(rt, "SOURCE_STATS") or rt.SOURCE_STATS is None:
+            rt.SOURCE_STATS = defaultdict(
+                lambda: {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+            )
+
+        s = rt.SOURCE_STATS[src]
+        s["count"] += 1
+        s["losses"] += 1
+        s["total_pnl"] += sf(pnl, 0.0)
+    except Exception:
+        pass
+
+
+def strategy_stat_update(strategy, pnl=0.0):
+    try:
+        from app.engine import runtime as rt
+        if not hasattr(rt, "STRATEGY_STATS") or rt.STRATEGY_STATS is None:
+            rt.STRATEGY_STATS = defaultdict(
+                lambda: {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+            )
+
+        s = rt.STRATEGY_STATS[strategy]
+        s["count"] += 1
+        if sf(pnl, 0.0) > 0:
+            s["wins"] += 1
+        else:
+            s["losses"] += 1
+        s["total_pnl"] += sf(pnl, 0.0)
+    except Exception:
+        pass
+
+
+def score_stat_add(name, value):
+    try:
+        from app.engine import runtime as rt
+        if not hasattr(rt, "SCORE_COMPONENT_STATS") or rt.SCORE_COMPONENT_STATS is None:
+            rt.SCORE_COMPONENT_STATS = defaultdict(lambda: {"count": 0, "sum": 0.0})
+
+        s = rt.SCORE_COMPONENT_STATS[name]
+        s["count"] += 1
+        s["sum"] += sf(value, 0.0)
+    except Exception:
+        pass
+
+
+# =========================================================
+# MODE NORMALIZER
+# =========================================================
 def strategy_bucket_from_mode(mode):
     m = str(mode or "").lower().strip()
 
@@ -143,87 +305,3 @@ def strategy_bucket_from_mode(mode):
         return "explore"
 
     return "momentum"
-
-def update_open_stats():
-    try:
-        from app.state import engine
-    except Exception:
-        return
-
-    positions = getattr(engine, "positions", []) or []
-    if not hasattr(engine, "stats") or not isinstance(engine.stats, dict):
-        engine.stats = {}
-
-    open_exposure = 0.0
-    for p in positions:
-        if not isinstance(p, dict):
-            continue
-        open_exposure += sf(p.get("entry_value", p.get("size", 0.0)), 0.0)
-
-    engine.stats["open_positions"] = len(positions)
-    engine.stats["open_exposure"] = open_exposure
-
-
-def source_stat_win(src, pnl=0.0):
-    try:
-        from app.engine import runtime as rt
-        if not hasattr(rt, "SOURCE_STATS") or rt.SOURCE_STATS is None:
-            rt.SOURCE_STATS = {}
-        s = rt.SOURCE_STATS.setdefault(src, {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0})
-        s["count"] += 1
-        s["wins"] += 1
-        s["total_pnl"] += sf(pnl, 0.0)
-    except Exception:
-        pass
-
-
-def source_stat_loss(src, pnl=0.0):
-    try:
-        from app.engine import runtime as rt
-        if not hasattr(rt, "SOURCE_STATS") or rt.SOURCE_STATS is None:
-            rt.SOURCE_STATS = {}
-        s = rt.SOURCE_STATS.setdefault(src, {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0})
-        s["count"] += 1
-        s["losses"] += 1
-        s["total_pnl"] += sf(pnl, 0.0)
-    except Exception:
-        pass
-
-
-def strategy_stat_update(strategy, pnl=0.0):
-    try:
-        from app.engine import runtime as rt
-        if not hasattr(rt, "STRATEGY_STATS") or rt.STRATEGY_STATS is None:
-            rt.STRATEGY_STATS = {}
-        s = rt.STRATEGY_STATS.setdefault(strategy, {"count": 0, "wins": 0, "losses": 0, "total_pnl": 0.0})
-        s["count"] += 1
-        if sf(pnl, 0.0) > 0:
-            s["wins"] += 1
-        else:
-            s["losses"] += 1
-        s["total_pnl"] += sf(pnl, 0.0)
-    except Exception:
-        pass
-
-
-def push_trade(trade):
-    try:
-        from app.state import engine
-        if not hasattr(engine, "trade_history") or engine.trade_history is None:
-            engine.trade_history = []
-        engine.trade_history.append(trade)
-        engine.trade_history = engine.trade_history[-1000:]
-    except Exception:
-        pass
-
-
-def score_stat_add(name, value):
-    try:
-        from app.engine import runtime as rt
-        if not hasattr(rt, "SCORE_COMPONENT_STATS") or rt.SCORE_COMPONENT_STATS is None:
-            rt.SCORE_COMPONENT_STATS = {}
-        s = rt.SCORE_COMPONENT_STATS.setdefault(name, {"count": 0, "sum": 0.0})
-        s["count"] += 1
-        s["sum"] += sf(value, 0.0)
-    except Exception:
-        pass
