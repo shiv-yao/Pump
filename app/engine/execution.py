@@ -99,6 +99,7 @@ def _ensure_runtime_dicts():
         rt.BLACKLIST = {}
     if not hasattr(rt, "BUY_TIMES") or rt.BUY_TIMES is None:
         rt.BUY_TIMES = []
+
     if not hasattr(rt.engine, "positions") or rt.engine.positions is None:
         rt.engine.positions = []
     if not hasattr(rt.engine, "capital"):
@@ -125,7 +126,13 @@ def mempool_use_jito(f):
     return mode_name == "sniper"
 
 
-async def safe_execute_swap(input_mint: str, output_mint: str, amount: int, prefer_jito=False, jito_context=None):
+async def safe_execute_swap(
+    input_mint: str,
+    output_mint: str,
+    amount: int,
+    prefer_jito: bool = False,
+    jito_context=None,
+):
     _ensure_stats()
     _ensure_runtime_dicts()
 
@@ -200,9 +207,12 @@ def _extract_best_decimals(f, res):
         candidates.extend([
             meta.get("decimals"),
             meta.get("token_decimals"),
-            (meta.get("output_token") or {}).get("decimals") if isinstance(meta.get("output_token"), dict) else None,
-            (meta.get("baseToken") or {}).get("decimals") if isinstance(meta.get("baseToken"), dict) else None,
-            (meta.get("token") or {}).get("decimals") if isinstance(meta.get("token"), dict) else None,
+            (meta.get("output_token") or {}).get("decimals")
+            if isinstance(meta.get("output_token"), dict) else None,
+            (meta.get("baseToken") or {}).get("decimals")
+            if isinstance(meta.get("baseToken"), dict) else None,
+            (meta.get("token") or {}).get("decimals")
+            if isinstance(meta.get("token"), dict) else None,
         ])
 
     if isinstance(res, dict):
@@ -212,8 +222,10 @@ def _extract_best_decimals(f, res):
                 quote.get("outputDecimals"),
                 quote.get("outDecimals"),
                 quote.get("decimals"),
-                (quote.get("outputToken") or {}).get("decimals") if isinstance(quote.get("outputToken"), dict) else None,
-                (quote.get("tokenMeta") or {}).get("decimals") if isinstance(quote.get("tokenMeta"), dict) else None,
+                (quote.get("outputToken") or {}).get("decimals")
+                if isinstance(quote.get("outputToken"), dict) else None,
+                (quote.get("tokenMeta") or {}).get("decimals")
+                if isinstance(quote.get("tokenMeta"), dict) else None,
             ])
 
     for v in candidates:
@@ -232,6 +244,13 @@ def atomic_to_token_amount(out_amount, decimals):
         return 0.0
     try:
         return float(out_amount) / float(10 ** int(decimals))
+    except Exception:
+        return 0.0
+
+
+def lamports_to_sol(lamports):
+    try:
+        return float(lamports) / float(getattr(rt, "SOL_DECIMALS", 1_000_000_000))
     except Exception:
         return 0.0
 
@@ -372,7 +391,6 @@ async def buy(m, f, position_size, mtype, forced=False):
         else:
             rt.engine.stats["jito_fail"] += 1
 
-    # 買入時 mark price 先等於 entry
     entry_price = sf(f.get("price", 0.0), 0.0)
     if entry_price <= 0:
         entry_price = safe_div(order_sol, token_amount, 0.0)
@@ -504,6 +522,7 @@ async def sell(p, reason, price, sell_fraction=1.0):
     if p.get("paper"):
         res = {"paper": True, "via": "paper"}
         fee_sol = getattr(rt, "ESTIMATED_TX_FEE_SOL", 0.000005)
+        exit_value = token_amount_to_sell * price
     else:
         res = await safe_execute_swap(
             m,
@@ -519,6 +538,16 @@ async def sell(p, reason, price, sell_fraction=1.0):
         )
         fee_sol = extract_fee_sol_from_res(res)
 
+        out_amount_sol_atomic = parse_out_amount(res)
+        if out_amount_sol_atomic <= 0:
+            q = await safe_quote(m, rt.SOL, atomic_sell)
+            out_amount_sol_atomic = parse_out_amount(q)
+
+        if out_amount_sol_atomic > 0:
+            exit_value = lamports_to_sol(out_amount_sol_atomic)
+        else:
+            exit_value = token_amount_to_sell * price
+
     if not res or res.get("error"):
         rt.engine.stats["errors"] += 1
         _log(f"SELL_FAIL {m[:6]} {res.get('error') if res else 'empty'}")
@@ -527,8 +556,6 @@ async def sell(p, reason, price, sell_fraction=1.0):
     via = res.get("via", "jupiter")
     rt.engine.stats["fees_paid_sol"] += fee_sol
 
-    # 這裡維持 paper / dashboard 邏輯：price 為目前標記價
-    exit_value = token_amount_to_sell * price
     entry_value_sold = entry_value_total * sell_fraction
     fees_allocated = fees_paid_total * sell_fraction + fee_sol
 
@@ -598,9 +625,15 @@ async def sell(p, reason, price, sell_fraction=1.0):
 
     if is_full_exit:
         rt.BLACKLIST[m] = now()
-        rt.engine.last_trade = f"SELL {m[:6]} {reason} via={via} pnl={pnl:.4f} pnl_sol={pnl_sol:.6f}"
+        rt.engine.last_trade = (
+            f"SELL {m[:6]} {reason} via={via} "
+            f"pnl={pnl:.4f} pnl_sol={pnl_sol:.6f}"
+        )
     else:
-        rt.engine.last_trade = f"PARTIAL {m[:6]} {reason} via={via} pnl={pnl:.4f} pnl_sol={pnl_sol:.6f}"
+        rt.engine.last_trade = (
+            f"PARTIAL {m[:6]} {reason} via={via} "
+            f"pnl={pnl:.4f} pnl_sol={pnl_sol:.6f}"
+        )
 
     _log(rt.engine.last_trade)
     return True
@@ -619,7 +652,7 @@ async def execute_ranked_portfolio(ranked, strategy_name="stable", weight=0.3, m
     if not ranked:
         return False
 
-    current_positions = getattr(rt.engine, "positions", []) or []
+    current_positions = list(getattr(rt.engine, "positions", []) or [])
 
     for f in ranked:
         if buys >= max_new:
@@ -679,5 +712,6 @@ async def execute_ranked_portfolio(ranked, strategy_name="stable", weight=0.3, m
         if ok:
             buys += 1
             traded = True
+            current_positions = list(getattr(rt.engine, "positions", []) or [])
 
     return traded
