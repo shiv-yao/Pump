@@ -6,7 +6,6 @@ import os
 import shutil
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -30,9 +29,14 @@ log = logging.getLogger(__name__)
 # =========================================================
 # PATHS
 # =========================================================
-BASE_DIR = Path(__file__).resolve().parent
-PLUGINS_DIR = BASE_DIR / "plugins"
-INDEX_HTML = BASE_DIR / "index.html"
+BASE_DIR = Path(__file__).resolve().parent          # /app/app
+PROJECT_ROOT = BASE_DIR.parent                      # /app
+
+INDEX_HTML = PROJECT_ROOT / "index.html"
+PLUGINS_DIR = PROJECT_ROOT / "plugins"
+REGISTRY_FILE = PLUGINS_DIR / "registry.json"
+INSTALLED_PLUGINS_FILE = PROJECT_ROOT / "installed_plugins.json"
+
 PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
 
 # =========================================================
@@ -40,7 +44,6 @@ PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
 # =========================================================
 plugin_registry: dict[str, dict] = {}
 agent_sessions: dict[str, "AgentSession"] = {}
-STORE_REGISTRY_PATH = BASE_DIR / "plugins" / "registry.json"
 
 DEFAULT_CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
 DEFAULT_GPT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
@@ -79,20 +82,19 @@ class PluginManualCreate(BaseModel):
     tools: list[dict]
     handler_code: Optional[str] = None
     category: Optional[str] = "utility"
-    price: Optional[int] = 0
-    author: Optional[str] = "local"
+    price: Optional[float] = 0
 
 
 # =========================================================
-# UTIL
+# HELPERS
 # =========================================================
 def mask_key(value: str) -> str:
     if not value:
         return ""
-    value = value.strip()
-    if len(value) <= 8:
-        return "*" * len(value)
-    return f"{value[:6]}***{value[-4:]}"
+    v = value.strip()
+    if len(v) <= 8:
+        return "*" * len(v)
+    return f"{v[:6]}***{v[-4:]}"
 
 
 def flatten_history_to_text(history: Optional[list]) -> str:
@@ -103,45 +105,196 @@ def flatten_history_to_text(history: Optional[list]) -> str:
         role = item.get("role", "unknown")
         content = item.get("content", "")
         if isinstance(content, list):
-            content = json.dumps(content, ensure_ascii=False)
+            try:
+                content = json.dumps(content, ensure_ascii=False)
+            except Exception:
+                content = str(content)
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
 
 
-def is_low_balance_error(message: str) -> bool:
+def is_fallback_error(message: str) -> bool:
     msg = message.lower()
     markers = [
         "credit balance is too low",
         "purchase credits",
         "plans & billing",
         "billing",
-        "insufficient credits",
         "quota",
-    ]
-    return any(m in msg for m in markers)
-
-
-def is_model_or_auth_error(message: str) -> bool:
-    msg = message.lower()
-    markers = [
+        "authentication_error",
         "invalid x-api-key",
-        "authentication",
         "unauthorized",
         "forbidden",
         "model not found",
         "not allowed",
-        "invalid api key",
         "incorrect api key",
         "invalid_api_key",
-        "401",
-        "403",
-        "billing",
-        "quota",
-        "credit balance is too low",
         "overloaded",
         "temporarily unavailable",
+        "401",
+        "403",
     ]
     return any(m in msg for m in markers)
+
+
+# =========================================================
+# INSTALLED PLUGINS PERSISTENCE
+# =========================================================
+def load_installed_plugin_records() -> list[dict]:
+    if not INSTALLED_PLUGINS_FILE.exists():
+        return []
+
+    try:
+        with open(INSTALLED_PLUGINS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception as e:
+        log.error(f"Failed to load installed plugin records: {e}")
+        return []
+
+
+def save_installed_plugin_records(records: list[dict]) -> None:
+    try:
+        with open(INSTALLED_PLUGINS_FILE, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.error(f"Failed to save installed plugin records: {e}")
+
+
+def remember_installed_plugin(name: str, url: str) -> None:
+    records = load_installed_plugin_records()
+
+    exists = any(
+        item.get("name") == name and item.get("url") == url
+        for item in records
+    )
+
+    if not exists:
+        records.append({"name": name, "url": url})
+        save_installed_plugin_records(records)
+
+
+def forget_installed_plugin(name: str) -> None:
+    records = load_installed_plugin_records()
+    filtered = [item for item in records if item.get("name") != name]
+    save_installed_plugin_records(filtered)
+
+
+# =========================================================
+# PLUGIN LOADER
+# =========================================================
+def load_plugin_manifest(plugin_dir: Path) -> Optional[dict]:
+    manifest_path = plugin_dir / "plugin.json"
+    if not manifest_path.exists():
+        manifest_path = plugin_dir / "skill.json"
+        if not manifest_path.exists():
+            return None
+
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if "id" not in data:
+            data["id"] = data.get("name", plugin_dir.name)
+        if "name" not in data:
+            data["name"] = data["id"]
+
+        data.setdefault("description", "")
+        data.setdefault("version", "1.0.0")
+        data.setdefault("enabled", True)
+        data.setdefault("category", "utility")
+        data.setdefault("price", 0)
+        data.setdefault("author", "local")
+        data.setdefault("tools", [])
+
+        return data
+
+    except Exception as e:
+        log.error(f"Failed loading manifest {manifest_path}: {e}")
+        return None
+
+
+def load_all_plugins():
+    global plugin_registry
+    plugin_registry = {}
+
+    PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+
+    for path in PLUGINS_DIR.iterdir():
+        if not path.is_dir():
+            continue
+
+        manifest = load_plugin_manifest(path)
+        if not manifest:
+            continue
+
+        plugin_id = manifest.get("id", path.name)
+        plugin_registry[plugin_id] = {
+            "manifest": manifest,
+            "path": str(path),
+            "enabled": manifest.get("enabled", True),
+        }
+        log.info(f"Loaded plugin: {plugin_id}")
+
+    log.info(f"Total plugins loaded: {len(plugin_registry)}")
+
+
+def get_active_tools() -> list[dict]:
+    tools = []
+    for plugin in plugin_registry.values():
+        if not plugin["enabled"]:
+            continue
+        for tool in plugin["manifest"].get("tools", []):
+            if isinstance(tool, dict) and tool.get("name"):
+                tools.append(tool)
+    return tools
+
+
+async def execute_tool(tool_name: str, tool_input: dict):
+    for plugin_id, plugin in plugin_registry.items():
+        if not plugin["enabled"]:
+            continue
+
+        for tool in plugin["manifest"].get("tools", []):
+            if tool.get("name") != tool_name:
+                continue
+
+            plugin_path = Path(plugin["path"])
+            handler_file = plugin_path / "handler.py"
+
+            if not handler_file.exists():
+                return f"Tool '{tool_name}' handler.py not found in plugin '{plugin_id}'."
+
+            try:
+                spec = importlib.util.spec_from_file_location(f"plugin_{plugin_id}", handler_file)
+                if spec is None or spec.loader is None:
+                    return f"Tool '{tool_name}' failed to load module spec."
+
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+
+                if not hasattr(mod, tool_name):
+                    return f"Tool '{tool_name}' function not found in handler.py."
+
+                fn = getattr(mod, tool_name)
+
+                if inspect.iscoroutinefunction(fn):
+                    result = await fn(**tool_input)
+                else:
+                    result = fn(**tool_input)
+
+                if result is None:
+                    return ""
+
+                if isinstance(result, (dict, list)):
+                    return json.dumps(result, ensure_ascii=False, indent=2)
+
+                return str(result)
+
+            except Exception:
+                return f"Tool execution error:\n{traceback.format_exc()}"
+
+    return f"tool not found: {tool_name}"
 
 
 # =========================================================
@@ -188,6 +341,7 @@ async def check_claude_status() -> dict:
         }
     except Exception as e:
         msg = str(e).lower()
+
         if "credit balance is too low" in msg or "billing" in msg:
             status = "low_balance"
             human = "Claude 餘額不足"
@@ -199,7 +353,8 @@ async def check_claude_status() -> dict:
             human = "Claude 模型名稱錯誤或無權限"
         else:
             status = "error"
-            human = f"Claude 檢查失敗"
+            human = "Claude 檢查失敗"
+
         return {
             "provider": "claude",
             "ok": False,
@@ -250,7 +405,8 @@ async def check_openai_status() -> dict:
         }
     except Exception as e:
         msg = str(e).lower()
-        if "incorrect api key" in msg or "invalid_api_key" in msg or "401" in msg:
+
+        if "invalid_api_key" in msg or "incorrect api key" in msg or "401" in msg:
             status = "invalid_key"
             human = "OpenAI API key 無效"
         elif "billing" in msg or "quota" in msg or "insufficient" in msg:
@@ -262,6 +418,7 @@ async def check_openai_status() -> dict:
         else:
             status = "error"
             human = "OpenAI 檢查失敗"
+
         return {
             "provider": "openai",
             "ok": False,
@@ -297,272 +454,181 @@ def check_trading_status() -> dict:
 
 
 # =========================================================
-# PLUGIN LOADER
-# =========================================================
-def load_plugin_manifest(plugin_dir: Path) -> Optional[dict]:
-    plugin_json = plugin_dir / "plugin.json"
-    skill_json = plugin_dir / "skill.json"
-
-    target = plugin_json if plugin_json.exists() else skill_json
-    if not target.exists():
-        return None
-
-    try:
-        with open(target, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        if "id" not in data:
-            data["id"] = data.get("name", plugin_dir.name)
-        if "name" not in data:
-            data["name"] = data["id"]
-        if "enabled" not in data:
-            data["enabled"] = True
-
-        return data
-    except Exception as e:
-        log.error(f"Failed loading plugin manifest {target}: {e}")
-        return None
-
-
-def load_all_plugins():
-    global plugin_registry
-    plugin_registry = {}
-
-    PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
-
-    for path in PLUGINS_DIR.iterdir():
-        if not path.is_dir():
-            continue
-
-        manifest = load_plugin_manifest(path)
-        if not manifest:
-            continue
-
-        plugin_id = manifest.get("id", path.name)
-        plugin_registry[plugin_id] = {
-            "manifest": manifest,
-            "path": str(path),
-            "enabled": manifest.get("enabled", True),
-            "installed_at": manifest.get("installed_at", "unknown"),
-        }
-        log.info(f"Loaded plugin: {plugin_id}")
-
-    log.info(f"Total plugins loaded: {len(plugin_registry)}")
-
-
-def get_active_tools() -> list[dict]:
-    tools = []
-    for _, plugin in plugin_registry.items():
-        if not plugin["enabled"]:
-            continue
-        tools.extend(plugin["manifest"].get("tools", []))
-    return tools
-
-
-async def execute_tool(tool_name: str, tool_input: dict) -> str:
-    for plugin_id, plugin in plugin_registry.items():
-        if not plugin["enabled"]:
-            continue
-
-        for tool in plugin["manifest"].get("tools", []):
-            if tool.get("name") != tool_name:
-                continue
-
-            handler_file = Path(plugin["path"]) / "handler.py"
-            if not handler_file.exists():
-                return f"Tool '{tool_name}' handler.py not found."
-
-            try:
-                spec = importlib.util.spec_from_file_location(f"plugin_{plugin_id}", handler_file)
-                if spec is None or spec.loader is None:
-                    return f"Tool '{tool_name}' load failed."
-
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-
-                if not hasattr(mod, tool_name):
-                    return f"Tool '{tool_name}' function not found."
-
-                fn = getattr(mod, tool_name)
-
-                if inspect.iscoroutinefunction(fn):
-                    result = await fn(**tool_input)
-                else:
-                    result = fn(**tool_input)
-
-                if result is None:
-                    return ""
-                if isinstance(result, (dict, list)):
-                    return json.dumps(result, ensure_ascii=False, indent=2)
-                return str(result)
-
-            except Exception:
-                return f"Tool execution error:\n{traceback.format_exc()}"
-
-    return f"tool not found: {tool_name}"
-
-
-# =========================================================
 # STORE / INSTALL
 # =========================================================
-async def install_plugin_from_url(plugin_name: str, url: str) -> bool:
-    plugin_dir = PLUGINS_DIR / plugin_name
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            plugin_json_url = f"{url.rstrip('/')}/plugin.json"
-            skill_json_url = f"{url.rstrip('/')}/skill.json"
-            handler_url = f"{url.rstrip('/')}/handler.py"
-
-            r = await client.get(plugin_json_url)
-            manifest_text = None
-            if r.status_code == 200:
-                manifest_text = r.text
-            else:
-                r2 = await client.get(skill_json_url)
-                if r2.status_code == 200:
-                    manifest_text = r2.text
-
-            if not manifest_text:
-                log.error("plugin.json/skill.json not found")
-                return False
-
-            manifest = json.loads(manifest_text)
-            manifest["installed_at"] = datetime.now().isoformat()
-            manifest["enabled"] = True
-            if "id" not in manifest:
-                manifest["id"] = plugin_name
-
-            with open(plugin_dir / "plugin.json", "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2, ensure_ascii=False)
-
-            rh = await client.get(handler_url)
-            if rh.status_code == 200:
-                with open(plugin_dir / "handler.py", "w", encoding="utf-8") as f:
-                    f.write(rh.text)
-
-        load_all_plugins()
-        return True
-    except Exception as e:
-        log.error(f"Install plugin error: {e}")
-        return False
-
-
-def read_store_registry():
-    if not STORE_REGISTRY_PATH.exists():
+def get_store_registry():
+    if not REGISTRY_FILE.exists():
         return []
+
     try:
-        with open(STORE_REGISTRY_PATH, "r", encoding="utf-8") as f:
+        with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             return data if isinstance(data, list) else []
     except Exception:
         return []
 
 
+async def install_plugin_from_url(plugin_name: str, url: str, remember: bool = True) -> bool:
+    plugin_dir = PLUGINS_DIR / plugin_name
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+
+    base = url.rstrip("/")
+
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            manifest_resp = await client.get(f"{base}/plugin.json")
+            if manifest_resp.status_code != 200:
+                manifest_resp = await client.get(f"{base}/skill.json")
+                if manifest_resp.status_code != 200:
+                    log.error(f"plugin.json/skill.json not found from {base}")
+                    return False
+
+            handler_resp = await client.get(f"{base}/handler.py")
+
+            try:
+                manifest = manifest_resp.json()
+            except Exception:
+                log.error("Invalid plugin manifest JSON")
+                return False
+
+            if "id" not in manifest:
+                manifest["id"] = plugin_name
+            if "name" not in manifest:
+                manifest["name"] = plugin_name
+
+            with open(plugin_dir / "plugin.json", "w", encoding="utf-8") as f:
+                json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+            if handler_resp.status_code == 200:
+                with open(plugin_dir / "handler.py", "w", encoding="utf-8") as f:
+                    f.write(handler_resp.text)
+
+        load_all_plugins()
+
+        if remember:
+            remember_installed_plugin(plugin_name, url)
+
+        return True
+
+    except Exception as e:
+        log.error(f"install_plugin_from_url error: {e}")
+        return False
+
+
+async def restore_installed_plugins() -> None:
+    records = load_installed_plugin_records()
+    if not records:
+        log.info("No installed plugin records to restore.")
+        return
+
+    log.info(f"Restoring {len(records)} installed plugins...")
+
+    for item in records:
+        name = item.get("name", "").strip()
+        url = item.get("url", "").strip()
+
+        if not name or not url:
+            continue
+
+        try:
+            ok = await install_plugin_from_url(name, url, remember=False)
+            if ok:
+                log.info(f"Restored plugin: {name}")
+            else:
+                log.warning(f"Failed to restore plugin: {name}")
+        except Exception as e:
+            log.error(f"Error restoring plugin {name}: {e}")
+
+
 # =========================================================
 # BUILTIN PLUGINS
 # =========================================================
 async def ensure_builtin_plugins():
-    builtins = {
-        "web_search": {
-            "id": "web_search",
-            "name": "web_search",
-            "description": "搜尋網路上的最新資訊",
-            "version": "1.0.0",
-            "enabled": True,
-            "installed_at": datetime.now().isoformat(),
-            "category": "utility",
-            "tools": [{
-                "name": "web_search",
-                "description": "搜尋網路上的資訊",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "搜尋關鍵字"}
-                    },
-                    "required": ["query"]
-                }
-            }]
-        },
+    builtin_plugins = {
         "calculator": {
-            "id": "calculator",
-            "name": "calculator",
-            "description": "數學計算工具",
-            "version": "1.0.0",
-            "enabled": True,
-            "installed_at": datetime.now().isoformat(),
-            "category": "utility",
-            "tools": [{
-                "name": "calculate",
-                "description": "執行數學運算",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "expression": {"type": "string", "description": "數學表達式，如 2+2*3"}
-                    },
-                    "required": ["expression"]
-                }
-            }]
-        },
-        "trading_signals": {
-            "id": "trading_signals",
-            "name": "trading_signals",
-            "description": "加密貨幣交易信號分析",
-            "version": "1.0.0",
-            "enabled": True,
-            "installed_at": datetime.now().isoformat(),
-            "category": "trading",
-            "tools": [{
-                "name": "get_trading_signal",
-                "description": "取得指定幣種的交易信號",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "symbol": {"type": "string", "description": "幣種，如 BTCUSDT"},
-                        "timeframe": {"type": "string", "description": "時間框架", "default": "1h"}
-                    },
-                    "required": ["symbol"]
-                }
-            }]
-        }
+            "plugin_json": {
+                "id": "calculator",
+                "name": "calculator",
+                "description": "數學計算工具",
+                "version": "1.0.0",
+                "enabled": True,
+                "category": "utility",
+                "price": 0,
+                "author": "system",
+                "tools": [{
+                    "name": "calculate",
+                    "description": "執行數學運算",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "expression": {"type": "string", "description": "例如 2+2*10"}
+                        },
+                        "required": ["expression"]
+                    }
+                }]
+            },
+            "handler": '''import ast
+import operator
+
+def calculate(expression: str) -> str:
+    ops = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Pow: operator.pow,
+        ast.USub: operator.neg,
+        ast.Mod: operator.mod,
     }
 
-    for plugin_id, manifest in builtins.items():
-        plugin_dir = PLUGINS_DIR / plugin_id
-        plugin_dir.mkdir(parents=True, exist_ok=True)
-        plugin_json = plugin_dir / "plugin.json"
-        if not plugin_json.exists():
-            with open(plugin_json, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2, ensure_ascii=False)
+    def eval_node(node):
+        if isinstance(node, ast.Num):
+            return node.n
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp):
+            op_type = type(node.op)
+            if op_type not in ops:
+                raise ValueError(f"Unsupported operator: {op_type}")
+            return ops[op_type](eval_node(node.left), eval_node(node.right))
+        if isinstance(node, ast.UnaryOp):
+            op_type = type(node.op)
+            if op_type not in ops:
+                raise ValueError(f"Unsupported unary operator: {op_type}")
+            return ops[op_type](eval_node(node.operand))
+        raise ValueError(f"Unsupported expression: {node}")
 
-    _write_builtin_handlers()
-
-    if not STORE_REGISTRY_PATH.exists():
-        registry = [
-            {
-                "id": "echo_tool",
-                "name": "Echo Tool",
-                "description": "回傳輸入文字",
+    try:
+        tree = ast.parse(expression, mode="eval")
+        result = eval_node(tree.body)
+        return f"{expression} = {result}"
+    except Exception as e:
+        return f"計算錯誤: {e}"
+'''
+        },
+        "web_search": {
+            "plugin_json": {
+                "id": "web_search",
+                "name": "web_search",
+                "description": "搜尋網路上的最新資訊",
+                "version": "1.0.0",
+                "enabled": True,
+                "category": "utility",
                 "price": 0,
-                "url": "https://raw.githubusercontent.com/YOUR_REPO/main/plugins/echo_tool"
+                "author": "system",
+                "tools": [{
+                    "name": "web_search",
+                    "description": "搜尋網路上的資訊",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "搜尋關鍵字"}
+                        },
+                        "required": ["query"]
+                    }
+                }]
             },
-            {
-                "id": "alpha_scanner",
-                "name": "Alpha Scanner",
-                "description": "掃描市場 alpha 機會",
-                "price": 0,
-                "url": "https://raw.githubusercontent.com/YOUR_REPO/main/plugins/alpha_scanner"
-            }
-        ]
-        with open(STORE_REGISTRY_PATH, "w", encoding="utf-8") as f:
-            json.dump(registry, f, indent=2, ensure_ascii=False)
-
-    load_all_plugins()
-
-
-def _write_builtin_handlers():
-    web_search_handler = '''import os
+            "handler": '''import os
 import httpx
 
 async def web_search(query: str) -> str:
@@ -596,39 +662,31 @@ async def web_search(query: str) -> str:
     except Exception as e:
         return f"搜尋錯誤: {e}"
 '''
-    calc_handler = '''import ast
-import operator
-
-def calculate(expression: str) -> str:
-    ops = {
-        ast.Add: operator.add,
-        ast.Sub: operator.sub,
-        ast.Mult: operator.mul,
-        ast.Div: operator.truediv,
-        ast.Pow: operator.pow,
-        ast.USub: operator.neg,
-        ast.Mod: operator.mod,
-    }
-
-    def eval_node(node):
-        if isinstance(node, ast.Num):
-            return node.n
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            return node.value
-        if isinstance(node, ast.BinOp):
-            return ops[type(node.op)](eval_node(node.left), eval_node(node.right))
-        if isinstance(node, ast.UnaryOp):
-            return ops[type(node.op)](eval_node(node.operand))
-        raise ValueError(f"Unsupported expression: {node}")
-
-    try:
-        tree = ast.parse(expression, mode="eval")
-        result = eval_node(tree.body)
-        return f"{expression} = {result}"
-    except Exception as e:
-        return f"計算錯誤: {e}"
-'''
-    trading_handler = '''import httpx
+        },
+        "trading_signals": {
+            "plugin_json": {
+                "id": "trading_signals",
+                "name": "trading_signals",
+                "description": "加密貨幣交易信號分析",
+                "version": "1.0.0",
+                "enabled": True,
+                "category": "trading",
+                "price": 0,
+                "author": "system",
+                "tools": [{
+                    "name": "get_trading_signal",
+                    "description": "取得指定幣種的交易信號",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string", "description": "例如 BTCUSDT"},
+                            "timeframe": {"type": "string", "description": "例如 15m, 1h", "default": "1h"}
+                        },
+                        "required": ["symbol"]
+                    }
+                }]
+            },
+            "handler": '''import httpx
 
 async def get_trading_signal(symbol: str, timeframe: str = "1h") -> str:
     try:
@@ -654,15 +712,27 @@ async def get_trading_signal(symbol: str, timeframe: str = "1h") -> str:
     except Exception as e:
         return f"無法取得 {symbol} 數據: {e}"
 '''
-    for plugin_id, code in {
-        "web_search": web_search_handler,
-        "calculator": calc_handler,
-        "trading_signals": trading_handler,
-    }.items():
-        d = PLUGINS_DIR / plugin_id
-        d.mkdir(parents=True, exist_ok=True)
-        with open(d / "handler.py", "w", encoding="utf-8") as f:
-            f.write(code)
+        },
+    }
+
+    for plugin_id, data in builtin_plugins.items():
+        pdir = PLUGINS_DIR / plugin_id
+        pdir.mkdir(parents=True, exist_ok=True)
+
+        plugin_json_path = pdir / "plugin.json"
+        handler_path = pdir / "handler.py"
+
+        if not plugin_json_path.exists():
+            with open(plugin_json_path, "w", encoding="utf-8") as f:
+                json.dump(data["plugin_json"], f, ensure_ascii=False, indent=2)
+
+        if not handler_path.exists():
+            with open(handler_path, "w", encoding="utf-8") as f:
+                f.write(data["handler"])
+
+    if not REGISTRY_FILE.exists():
+        with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
 
 
 # =========================================================
@@ -683,25 +753,28 @@ class AgentSession:
     async def _run_with_claude(self, user_message: str, history: Optional[list] = None) -> dict:
         if not self.claude_client:
             return {
-                "response": "Claude 不可用",
+                "response": "Claude 不可用。",
                 "steps": [],
                 "messages": [],
-                "error": "missing_anthropic_api_key",
+                "error": "claude_unavailable",
                 "provider": "claude",
             }
 
         messages = list(history) if history else []
         messages.append({"role": "user", "content": user_message})
+
         tools = get_active_tools()
         steps = []
+        max_iterations = 8
 
-        for _ in range(8):
+        for _ in range(max_iterations):
             kwargs = {
                 "model": self.claude_model,
                 "max_tokens": 2048,
                 "system": self.system_prompt,
                 "messages": messages,
             }
+
             if tools:
                 kwargs["tools"] = tools
 
@@ -713,10 +786,10 @@ class AgentSession:
 
             for tb in text_blocks:
                 text = getattr(tb, "text", "")
-                if text.strip():
+                if text and text.strip():
                     steps.append({"type": "text", "content": text})
 
-            if not tool_uses:
+            if response.stop_reason == "end_turn" or not tool_uses:
                 break
 
             tool_results = []
@@ -724,18 +797,18 @@ class AgentSession:
                 steps.append({
                     "type": "tool_call",
                     "tool": tool_use.name,
-                    "input": tool_use.input
+                    "input": tool_use.input,
                 })
                 result = await execute_tool(tool_use.name, tool_use.input)
                 steps.append({
                     "type": "tool_result",
                     "tool": tool_use.name,
-                    "result": result
+                    "result": result,
                 })
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_use.id,
-                    "content": result
+                    "content": result,
                 })
 
             messages.append({"role": "user", "content": tool_results})
@@ -746,8 +819,11 @@ class AgentSession:
                 final_text = step["content"]
                 break
 
+        if not final_text:
+            final_text = "已完成處理，但沒有文字回應。"
+
         return {
-            "response": final_text or "Claude 已完成，但沒有文字回應。",
+            "response": final_text,
             "steps": steps,
             "messages": messages,
             "provider": "claude",
@@ -756,26 +832,30 @@ class AgentSession:
     async def _run_with_gpt(self, user_message: str, history: Optional[list] = None, reason: str = "") -> dict:
         if not self.openai_client:
             return {
-                "response": "GPT 不可用",
+                "response": "GPT 不可用。",
                 "steps": [],
                 "messages": history or [],
-                "error": "missing_openai_api_key",
+                "error": "gpt_unavailable",
                 "provider": "gpt",
             }
 
         history_text = flatten_history_to_text(history)
         prompt = (
             f"{self.system_prompt}\n\n"
-            "你目前是 Claude 的備援模型。請直接完成使用者需求。\n"
+            f"你目前是 Claude 的備援模型。"
+            f"如果 Claude 不可用，請直接繼續幫使用者完成任務。"
         )
+
         if history_text:
-            prompt += f"\n先前對話：\n{history_text}\n"
-        prompt += f"\n使用者最新訊息：{user_message}\n"
+            prompt += f"\n\n先前對話：\n{history_text}"
+
+        prompt += f"\n\n使用者最新訊息：{user_message}"
 
         resp = await self.openai_client.responses.create(
             model=self.gpt_model,
             input=prompt,
         )
+
         text = getattr(resp, "output_text", "") or "GPT 已接手，但沒有文字回應。"
 
         steps = []
@@ -792,7 +872,7 @@ class AgentSession:
             "provider": "gpt",
         }
 
-    async def _run_local_fallback(self, user_message: str, history: Optional[list] = None, reason: str = "") -> Optional[dict]:
+    async def _run_local_fallback(self, user_message: str, history: Optional[list] = None) -> Optional[dict]:
         lowered = user_message.strip()
         if any(ch.isdigit() for ch in lowered) and any(op in lowered for op in ["+", "-", "*", "/", "%"]):
             try:
@@ -800,8 +880,8 @@ class AgentSession:
                 return {
                     "response": f"雲端模型暫時不可用，已改用本地 calculator：\n{result}",
                     "steps": [
-                        {"type": "fallback", "content": "Local fallback enabled"},
-                        {"type": "tool_result", "tool": "calculate", "result": result}
+                        {"type": "fallback", "content": "Cloud model unavailable, switched to local calculator"},
+                        {"type": "tool_result", "tool": "calculate", "result": result},
                     ],
                     "messages": history or [],
                     "provider": "local",
@@ -817,7 +897,14 @@ class AgentSession:
             try:
                 return await self._run_with_claude(user_message, history)
             except Exception as e:
-                log.error(f"Claude failed: {e}\n{traceback.format_exc()}")
+                err_text = str(e)
+                log.error(f"Claude failed: {err_text}\n{traceback.format_exc()}")
+
+                if self.openai_client and is_fallback_error(err_text):
+                    try:
+                        return await self._run_with_gpt(user_message, history, reason=err_text)
+                    except Exception as gpt_err:
+                        log.error(f"GPT fallback failed: {gpt_err}\n{traceback.format_exc()}")
 
         if self.openai_client:
             try:
@@ -825,7 +912,7 @@ class AgentSession:
             except Exception as e:
                 log.error(f"GPT failed: {e}\n{traceback.format_exc()}")
 
-        local = await self._run_local_fallback(user_message, history, reason="No cloud model available")
+        local = await self._run_local_fallback(user_message, history)
         if local:
             return local
 
@@ -851,8 +938,10 @@ def parse_command(command: str) -> dict:
     raw = command.strip()
     if raw.startswith("/"):
         raw = raw[1:].strip()
+
     if not raw:
         return {"cmd": "", "args": []}
+
     parts = raw.split()
     return {"cmd": parts[0].lower(), "args": parts[1:]}
 
@@ -873,27 +962,28 @@ async def execute_platform_command(command: str) -> dict:
                 "/help\n"
                 "/skills\n"
                 "/providers\n"
-                "/status\n"
                 "/store\n"
                 "/install <name> <url>\n"
                 "/enable <name>\n"
                 "/disable <name>\n"
                 "/remove <name>\n"
                 "/price <symbol>\n"
+                "/signal <symbol>\n"
+                "/scan <symbol1> [symbol2] ...\n"
                 "/balance\n"
                 "/positions\n"
                 "/orders\n"
                 "/buy <symbol> <amount>\n"
                 "/sell <symbol> <amount>\n"
-                "/scan <symbol1> [symbol2] ...\n"
+                "/killswitch\n"
                 "/start_arb_bot\n"
                 "/stop_arb_bot\n"
                 "/arb_status\n"
-                "/clear\n"
+                "/clear"
             )
         }
 
-    if cmd in ("skills", "plugins"):
+    if cmd == "skills":
         items = []
         for plugin_id, info in plugin_registry.items():
             state = "ON" if info["enabled"] else "OFF"
@@ -903,7 +993,7 @@ async def execute_platform_command(command: str) -> dict:
             "output": "\n".join(items) if items else "No plugins loaded"
         }
 
-    if cmd in ("providers", "status"):
+    if cmd == "providers":
         claude = await check_claude_status()
         openai = await check_openai_status()
         trading = check_trading_status()
@@ -917,79 +1007,101 @@ async def execute_platform_command(command: str) -> dict:
         }
 
     if cmd == "store":
-        registry = read_store_registry()
-        return {
-            "success": True,
-            "output": json.dumps(registry, ensure_ascii=False, indent=2)
-        }
+        data = get_store_registry()
+        installed = set(plugin_registry.keys())
+        items = []
+        for p in data:
+            pid = p.get("id", "unknown")
+            state = "INSTALLED" if pid in installed else "AVAILABLE"
+            items.append(f"{pid} | {p.get('name', pid)} | ${p.get('price', 0)} | {state}")
+        return {"success": True, "output": "\n".join(items) if items else "Store empty"}
 
     if cmd == "install":
         if len(args) < 2:
-            return {"success": False, "output": "用法：/install <name> <url>"}
-        name, url = args[0], args[1]
-        ok = await install_plugin_from_url(name, url)
+            return {"success": False, "output": "用法：/install <plugin_name> <url>"}
+        plugin_name, url = args[0], args[1]
+        ok = await install_plugin_from_url(plugin_name, url, remember=True)
         return {
             "success": ok,
-            "output": f"Installed: {name}" if ok else f"安裝失敗：{name}"
+            "output": f"Installed: {plugin_name}" if ok else f"Install failed: {plugin_name}"
         }
 
     if cmd == "enable":
         if len(args) < 1:
-            return {"success": False, "output": "用法：/enable <name>"}
-        name = args[0]
-        if name not in plugin_registry:
-            return {"success": False, "output": f"Plugin not found: {name}"}
-        manifest_path = Path(plugin_registry[name]["path"]) / "plugin.json"
-        manifest = load_plugin_manifest(Path(plugin_registry[name]["path"]))
+            return {"success": False, "output": "用法：/enable <plugin_name>"}
+        plugin_id = args[0]
+        if plugin_id not in plugin_registry:
+            return {"success": False, "output": f"Plugin not found: {plugin_id}"}
+        plugin_json = Path(plugin_registry[plugin_id]["path"]) / "plugin.json"
+        with open(plugin_json, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
         manifest["enabled"] = True
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        with open(plugin_json, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
         load_all_plugins()
-        return {"success": True, "output": f"Enabled: {name}"}
+        return {"success": True, "output": f"Enabled: {plugin_id}"}
 
     if cmd == "disable":
         if len(args) < 1:
-            return {"success": False, "output": "用法：/disable <name>"}
-        name = args[0]
-        if name not in plugin_registry:
-            return {"success": False, "output": f"Plugin not found: {name}"}
-        manifest_path = Path(plugin_registry[name]["path"]) / "plugin.json"
-        manifest = load_plugin_manifest(Path(plugin_registry[name]["path"]))
+            return {"success": False, "output": "用法：/disable <plugin_name>"}
+        plugin_id = args[0]
+        if plugin_id not in plugin_registry:
+            return {"success": False, "output": f"Plugin not found: {plugin_id}"}
+        plugin_json = Path(plugin_registry[plugin_id]["path"]) / "plugin.json"
+        with open(plugin_json, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
         manifest["enabled"] = False
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        with open(plugin_json, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
         load_all_plugins()
-        return {"success": True, "output": f"Disabled: {name}"}
+        return {"success": True, "output": f"Disabled: {plugin_id}"}
 
     if cmd == "remove":
         if len(args) < 1:
-            return {"success": False, "output": "用法：/remove <name>"}
-        name = args[0]
-        plugin_dir = PLUGINS_DIR / name
-        if not plugin_dir.exists():
-            return {"success": False, "output": f"Plugin not found: {name}"}
-        shutil.rmtree(plugin_dir)
+            return {"success": False, "output": "用法：/remove <plugin_name>"}
+        plugin_id = args[0]
+        pdir = PLUGINS_DIR / plugin_id
+        if not pdir.exists():
+            return {"success": False, "output": f"Plugin not found: {plugin_id}"}
+        shutil.rmtree(pdir)
+        forget_installed_plugin(plugin_id)
         load_all_plugins()
-        return {"success": True, "output": f"Removed: {name}"}
+        return {"success": True, "output": f"Removed: {plugin_id}"}
 
     if cmd == "price":
         if len(args) < 1:
             return {"success": False, "output": "用法：/price <symbol>"}
         symbol = args[0].upper()
         result = await execute_tool("get_spot_price", {"symbol": symbol})
-        return {"success": True, "output": result}
+        if "not found" in str(result).lower():
+            result = await execute_tool("get_trading_signal", {"symbol": symbol, "timeframe": "1h"})
+        return {"success": True, "output": str(result)}
+
+    if cmd == "signal":
+        if len(args) < 1:
+            return {"success": False, "output": "用法：/signal <symbol>"}
+        symbol = args[0].upper()
+        result = await execute_tool("get_trading_signal", {"symbol": symbol, "timeframe": "1h"})
+        return {"success": True, "output": str(result)}
+
+    if cmd == "scan":
+        if len(args) < 1:
+            return {"success": False, "output": "用法：/scan <symbol1> [symbol2] ..."}
+        symbols = [x.upper() for x in args]
+        result = await execute_tool("scan_market", {"symbols": symbols})
+        return {"success": True, "output": str(result)}
 
     if cmd == "balance":
         result = await execute_tool("get_balance", {})
-        return {"success": True, "output": result}
+        return {"success": True, "output": str(result)}
 
     if cmd == "positions":
         result = await execute_tool("get_positions", {})
-        return {"success": True, "output": result}
+        return {"success": True, "output": str(result)}
 
     if cmd == "orders":
         result = await execute_tool("get_orders", {})
-        return {"success": True, "output": result}
+        return {"success": True, "output": str(result)}
 
     if cmd == "buy":
         if len(args) < 2:
@@ -997,7 +1109,7 @@ async def execute_platform_command(command: str) -> dict:
         symbol = args[0].upper()
         amount = float(args[1])
         result = await execute_tool("buy_token", {"symbol": symbol, "amount": amount})
-        return {"success": True, "output": result}
+        return {"success": True, "output": str(result)}
 
     if cmd == "sell":
         if len(args) < 2:
@@ -1005,53 +1117,52 @@ async def execute_platform_command(command: str) -> dict:
         symbol = args[0].upper()
         amount = float(args[1])
         result = await execute_tool("sell_token", {"symbol": symbol, "amount": amount})
-        return {"success": True, "output": result}
+        return {"success": True, "output": str(result)}
 
-    if cmd == "scan":
-        if len(args) < 1:
-            return {"success": False, "output": "用法：/scan <symbol1> [symbol2] ..."}
-        symbols = [x.upper() for x in args]
-        result = await execute_tool("scan_market", {"symbols": symbols})
-        return {"success": True, "output": result}
+    if cmd == "killswitch":
+        result = await execute_tool("kill_switch", {})
+        return {"success": True, "output": str(result)}
 
     if cmd == "start_arb_bot":
         result = await execute_tool("start_arb_bot", {})
-        return {"success": True, "output": result}
+        return {"success": True, "output": str(result)}
 
     if cmd == "stop_arb_bot":
         result = await execute_tool("stop_arb_bot", {})
-        return {"success": True, "output": result}
+        return {"success": True, "output": str(result)}
 
     if cmd == "arb_status":
         result = await execute_tool("arb_status", {})
-        return {"success": True, "output": result}
+        return {"success": True, "output": str(result)}
 
     if cmd == "clear":
         return {"success": True, "output": "__CLEAR__"}
 
     return {
         "success": False,
-        "output": f"Unknown command: {cmd}\nType /help"
+        "output": f"Unknown command: {cmd}\nType /help to see available commands."
     }
+
+
+# =========================================================
+# APP LIFESPAN
+# =========================================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await ensure_builtin_plugins()
+    load_all_plugins()
+    await restore_installed_plugins()
+    load_all_plugins()
+
+    log.info("AI Plugin Terminal started")
+    yield
+    log.info("AI Plugin Terminal stopped")
 
 
 # =========================================================
 # APP
 # =========================================================
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    load_all_plugins()
-    await ensure_builtin_plugins()
-    log.info("AI Plugin Platform started")
-    yield
-    log.info("AI Plugin Platform stopped")
-
-
-app = FastAPI(
-    title="AI Plugin Platform",
-    version="2.0.0",
-    lifespan=lifespan
-)
+app = FastAPI(title="AI Plugin Terminal", version="2.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1063,29 +1174,26 @@ app.add_middleware(
 # =========================================================
 # ROUTES
 # =========================================================
+@app.get("/", response_class=HTMLResponse)
+async def frontend():
+    if INDEX_HTML.exists():
+        with open(INDEX_HTML, "r", encoding="utf-8") as f:
+            return f.read()
+
+    return f"""
+    <h1>index.html not found</h1>
+    <p>Expected path: {INDEX_HTML}</p>
+    <p>cwd: {os.getcwd()}</p>
+    """
+
+
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
         "plugins": len(plugin_registry),
-        "time": datetime.now().isoformat(),
         "claude_enabled": ENABLE_CLAUDE,
         "openai_enabled": ENABLE_OPENAI,
-    }
-
-
-@app.get("/api/status/providers")
-async def provider_status():
-    claude = await check_claude_status()
-    openai = await check_openai_status()
-    trading = check_trading_status()
-    return {
-        "success": True,
-        "providers": {
-            "claude": claude,
-            "openai": openai,
-            "trading_api": trading
-        }
     }
 
 
@@ -1100,8 +1208,8 @@ async def list_plugins():
                 "version": info["manifest"].get("version", "1.0.0"),
                 "enabled": info["enabled"],
                 "category": info["manifest"].get("category", "utility"),
+                "price": info["manifest"].get("price", 0),
                 "tools": [t.get("name") for t in info["manifest"].get("tools", [])],
-                "installed_at": info["installed_at"],
             }
             for pid, info in plugin_registry.items()
         ]
@@ -1109,13 +1217,14 @@ async def list_plugins():
 
 
 @app.get("/api/store")
-async def plugin_store():
-    registry = read_store_registry()
+async def store():
+    data = get_store_registry()
     installed = set(plugin_registry.keys())
     return {
         "plugins": [
             {**p, "installed": p.get("id") in installed}
-            for p in registry
+            for p in data
+            if isinstance(p, dict)
         ]
     }
 
@@ -1123,34 +1232,34 @@ async def plugin_store():
 @app.post("/api/plugins/install")
 async def install_plugin(req: InstallPluginRequest):
     if req.manifest:
-        plugin_dir = PLUGINS_DIR / req.name
-        plugin_dir.mkdir(parents=True, exist_ok=True)
+        pdir = PLUGINS_DIR / req.name
+        pdir.mkdir(parents=True, exist_ok=True)
 
         manifest = dict(req.manifest)
-        manifest["installed_at"] = datetime.now().isoformat()
-        manifest["enabled"] = True
         if "id" not in manifest:
             manifest["id"] = req.name
+        if "name" not in manifest:
+            manifest["name"] = req.name
 
-        with open(plugin_dir / "plugin.json", "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        with open(pdir / "plugin.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
 
         load_all_plugins()
-        return {"success": True, "message": f"Plugin '{req.name}' installed"}
+        return {"success": True, "message": f"Plugin '{req.name}' installed from manifest"}
 
     if req.url:
-        ok = await install_plugin_from_url(req.name, req.url)
+        ok = await install_plugin_from_url(req.name, req.url, remember=True)
         if ok:
-            return {"success": True, "message": f"Plugin '{req.name}' installed from {req.url}"}
-        raise HTTPException(status_code=400, detail="Failed to install plugin from URL")
+            return {"success": True, "message": f"Plugin '{req.name}' installed from URL"}
+        raise HTTPException(status_code=400, detail="Install failed from URL")
 
-    raise HTTPException(status_code=400, detail="Provide either manifest or url")
+    raise HTTPException(status_code=400, detail="Provide manifest or url")
 
 
 @app.post("/api/plugins/create")
 async def create_plugin(req: PluginManualCreate):
-    plugin_dir = PLUGINS_DIR / req.name
-    plugin_dir.mkdir(parents=True, exist_ok=True)
+    pdir = PLUGINS_DIR / req.name
+    pdir.mkdir(parents=True, exist_ok=True)
 
     manifest = {
         "id": req.name,
@@ -1158,18 +1267,17 @@ async def create_plugin(req: PluginManualCreate):
         "description": req.description,
         "version": "1.0.0",
         "enabled": True,
-        "installed_at": datetime.now().isoformat(),
-        "category": req.category,
-        "price": req.price,
-        "author": req.author,
+        "category": req.category or "utility",
+        "price": req.price or 0,
+        "author": "manual",
         "tools": req.tools,
     }
 
-    with open(plugin_dir / "plugin.json", "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    with open(pdir / "plugin.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     if req.handler_code:
-        with open(plugin_dir / "handler.py", "w", encoding="utf-8") as f:
+        with open(pdir / "handler.py", "w", encoding="utf-8") as f:
             f.write(req.handler_code)
 
     load_all_plugins()
@@ -1181,26 +1289,45 @@ async def toggle_plugin(plugin_id: str):
     if plugin_id not in plugin_registry:
         raise HTTPException(status_code=404, detail="Plugin not found")
 
-    plugin_dir = Path(plugin_registry[plugin_id]["path"])
-    manifest = load_plugin_manifest(plugin_dir)
+    plugin_json = Path(plugin_registry[plugin_id]["path"]) / "plugin.json"
+    with open(plugin_json, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
     manifest["enabled"] = not manifest.get("enabled", True)
 
-    with open(plugin_dir / "plugin.json", "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    with open(plugin_json, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     load_all_plugins()
     return {"success": True, "enabled": manifest["enabled"]}
 
 
 @app.delete("/api/plugins/{plugin_id}")
-async def delete_plugin(plugin_id: str):
-    plugin_dir = PLUGINS_DIR / plugin_id
-    if not plugin_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
+async def remove_plugin(plugin_id: str):
+    pdir = PLUGINS_DIR / plugin_id
+    if not pdir.exists():
+        raise HTTPException(status_code=404, detail="Plugin not found")
 
-    shutil.rmtree(plugin_dir)
+    shutil.rmtree(pdir)
+    forget_installed_plugin(plugin_id)
     load_all_plugins()
+
     return {"success": True}
+
+
+@app.get("/api/status/providers")
+async def provider_status():
+    claude = await check_claude_status()
+    openai = await check_openai_status()
+    trading = check_trading_status()
+    return {
+        "success": True,
+        "providers": {
+            "claude": claude,
+            "openai": openai,
+            "trading_api": trading,
+        }
+    }
 
 
 @app.post("/api/chat")
@@ -1210,9 +1337,9 @@ async def chat(req: ChatRequest):
     return JSONResponse({
         "response": result.get("response", ""),
         "steps": result.get("steps", []),
-        "session_id": req.session_id,
-        "error": result.get("error"),
         "provider": result.get("provider"),
+        "error": result.get("error"),
+        "session_id": req.session_id,
     })
 
 
@@ -1222,24 +1349,33 @@ async def command(req: CommandRequest):
         result = await execute_platform_command(req.command)
         return JSONResponse(result)
     except Exception as e:
+        log.error(f"Command error: {e}\n{traceback.format_exc()}")
         return JSONResponse({
             "success": False,
             "output": f"Command error: {str(e)}"
         }, status_code=500)
 
 
-@app.get("/", response_class=HTMLResponse)
-async def frontend():
-    if INDEX_HTML.exists():
-        with open(INDEX_HTML, "r", encoding="utf-8") as f:
-            return f.read()
-    return "<h1>index.html not found</h1>"
-
-
+# =========================================================
+# ERROR HANDLER
+# =========================================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     log.error(f"Unhandled error on {request.url.path}: {exc}\n{traceback.format_exc()}")
     return JSONResponse(
         status_code=500,
-        content={"success": False, "error": str(exc), "path": str(request.url.path)}
+        content={
+            "success": False,
+            "error": str(exc),
+            "path": str(request.url.path),
+        },
     )
+
+
+# =========================================================
+# ENTRY
+# =========================================================
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", "8080"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
