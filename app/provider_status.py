@@ -77,12 +77,26 @@ async def check_claude_status() -> dict:
             "model": model,
             "key_masked": mask_key(api_key),
         }
-    except Exception:
+    except Exception as e:
+        msg = str(e).lower()
+        if "credit balance is too low" in msg or "billing" in msg:
+            status = "low_balance"
+            human = "Claude 餘額不足"
+        elif "invalid x-api-key" in msg or "authentication" in msg or "unauthorized" in msg:
+            status = "invalid_key"
+            human = "Claude API key 無效"
+        elif "model" in msg and ("not found" in msg or "not allowed" in msg):
+            status = "model_error"
+            human = "Claude 模型名稱錯誤或無權限"
+        else:
+            status = "error"
+            human = "Claude 檢查失敗"
+
         return {
             "provider": "claude",
             "ok": False,
-            "status": "error",
-            "message": "Claude 檢查失敗",
+            "status": status,
+            "message": human,
             "model": model,
             "key_masked": mask_key(api_key),
         }
@@ -123,12 +137,26 @@ async def check_openai_status() -> dict:
             "model": model,
             "key_masked": mask_key(api_key),
         }
-    except Exception:
+    except Exception as e:
+        msg = str(e).lower()
+        if "incorrect api key" in msg or "invalid_api_key" in msg or "401" in msg:
+            status = "invalid_key"
+            human = "OpenAI API key 無效"
+        elif "quota" in msg or "billing" in msg or "insufficient" in msg:
+            status = "billing_error"
+            human = "OpenAI billing / 額度有問題"
+        elif "model" in msg and ("not found" in msg or "does not exist" in msg):
+            status = "model_error"
+            human = "OpenAI 模型名稱錯誤"
+        else:
+            status = "error"
+            human = "OpenAI 檢查失敗"
+
         return {
             "provider": "openai",
             "ok": False,
-            "status": "error",
-            "message": "OpenAI 檢查失敗",
+            "status": status,
+            "message": human,
             "model": model,
             "key_masked": mask_key(api_key),
         }
