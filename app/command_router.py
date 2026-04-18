@@ -1,21 +1,18 @@
 import json
-import shutil
-from pathlib import Path
 
-from app.db import forget_installed_plugin
 from app.plugin_manager import (
     execute_tool,
     get_store_registry,
     install_plugin_from_url,
-    load_all_plugins,
     plugin_registry,
+    set_plugin_enabled,
+    remove_plugin,
 )
 from app.provider_status import (
     check_claude_status,
     check_openai_status,
     check_trading_status,
 )
-from app.settings import PLUGINS_DIR
 
 
 def parse_command(command: str) -> dict:
@@ -92,46 +89,20 @@ async def execute_platform_command(command: str) -> dict:
     if cmd == "enable":
         if len(args) < 1:
             return {"success": False, "output": "用法：/enable <plugin_name>"}
-        pid = args[0]
-        if pid not in plugin_registry:
-            return {"success": False, "output": f"Plugin not found: {pid}"}
-
-        plugin_json = Path(plugin_registry[pid]["path"]) / "plugin.json"
-        with open(plugin_json, "r", encoding="utf-8") as f:
-            manifest = json.load(f)
-        manifest["enabled"] = True
-        with open(plugin_json, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, ensure_ascii=False, indent=2)
-        load_all_plugins()
-        return {"success": True, "output": f"Enabled: {pid}"}
+        ok = set_plugin_enabled(args[0], True)
+        return {"success": ok, "output": f"Enabled: {args[0]}" if ok else f"Plugin not found: {args[0]}"}
 
     if cmd == "disable":
         if len(args) < 1:
             return {"success": False, "output": "用法：/disable <plugin_name>"}
-        pid = args[0]
-        if pid not in plugin_registry:
-            return {"success": False, "output": f"Plugin not found: {pid}"}
-
-        plugin_json = Path(plugin_registry[pid]["path"]) / "plugin.json"
-        with open(plugin_json, "r", encoding="utf-8") as f:
-            manifest = json.load(f)
-        manifest["enabled"] = False
-        with open(plugin_json, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, ensure_ascii=False, indent=2)
-        load_all_plugins()
-        return {"success": True, "output": f"Disabled: {pid}"}
+        ok = set_plugin_enabled(args[0], False)
+        return {"success": ok, "output": f"Disabled: {args[0]}" if ok else f"Plugin not found: {args[0]}"}
 
     if cmd == "remove":
         if len(args) < 1:
             return {"success": False, "output": "用法：/remove <plugin_name>"}
-        pid = args[0]
-        pdir = PLUGINS_DIR / pid
-        if not pdir.exists():
-            return {"success": False, "output": f"Plugin not found: {pid}"}
-        shutil.rmtree(pdir)
-        forget_installed_plugin(pid)
-        load_all_plugins()
-        return {"success": True, "output": f"Removed: {pid}"}
+        ok = remove_plugin(args[0])
+        return {"success": ok, "output": f"Removed: {args[0]}" if ok else f"Plugin not found: {args[0]}"}
 
     if cmd == "price":
         if len(args) < 1:
