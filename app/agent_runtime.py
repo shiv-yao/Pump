@@ -53,28 +53,56 @@ class AgentSession:
 
         tools = get_active_tools()
         steps = []
+        max_iterations = 8
 
-        kwargs = {
-            "model": self.claude_model,
-            "max_tokens": 2048,
-            "system": self.system_prompt,
-            "messages": messages,
-        }
-        if tools:
-            kwargs["tools"] = tools
+        for _ in range(max_iterations):
+            kwargs = {
+                "model": self.claude_model,
+                "max_tokens": 2048,
+                "system": self.system_prompt,
+                "messages": messages,
+            }
+            if tools:
+                kwargs["tools"] = tools
 
-        response = await self.claude_client.messages.create(**kwargs)
-        messages.append({"role": "assistant", "content": response.content})
+            response = await self.claude_client.messages.create(**kwargs)
+            messages.append({"role": "assistant", "content": response.content})
 
-        text_blocks = [b for b in response.content if getattr(b, "type", None) == "text"]
-        for tb in text_blocks:
-            text = getattr(tb, "text", "")
-            if text.strip():
-                steps.append({"type": "text", "content": text})
+            tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
+            text_blocks = [b for b in response.content if getattr(b, "type", None) == "text"]
+
+            for tb in text_blocks:
+                text = getattr(tb, "text", "")
+                if text.strip():
+                    steps.append({"type": "text", "content": text})
+
+            if response.stop_reason == "end_turn" or not tool_uses:
+                break
+
+            tool_results = []
+            for tool_use in tool_uses:
+                steps.append({
+                    "type": "tool_call",
+                    "tool": tool_use.name,
+                    "input": tool_use.input,
+                })
+                result = await execute_tool(tool_use.name, tool_use.input)
+                steps.append({
+                    "type": "tool_result",
+                    "tool": tool_use.name,
+                    "result": result,
+                })
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use.id,
+                    "content": result,
+                })
+
+            messages.append({"role": "user", "content": tool_results})
 
         final_text = ""
         for step in reversed(steps):
-            if step["type"] == "text":
+            if step["type"] == "text" and step["content"].strip():
                 final_text = step["content"]
                 break
 
