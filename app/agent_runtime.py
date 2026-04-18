@@ -4,15 +4,15 @@ from typing import Optional
 import anthropic
 from openai import AsyncOpenAI
 
+from app.plugin_manager import execute_tool, get_active_tools
+from app.provider_status import is_fallback_error
 from app.settings import (
-    ENABLE_CLAUDE,
-    ENABLE_OPENAI,
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_GPT_MODEL,
     DEFAULT_SYSTEM_PROMPT,
+    ENABLE_CLAUDE,
+    ENABLE_OPENAI,
 )
-from app.plugin_manager import get_active_tools, execute_tool
-from app.provider_status import is_fallback_error
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ def flatten_history_to_text(history: Optional[list]) -> str:
 class AgentSession:
     def __init__(self):
         import os
+
         anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         openai_key = os.getenv("OPENAI_API_KEY", "").strip()
 
@@ -95,9 +96,13 @@ class AgentSession:
             input=prompt,
         )
 
+        steps = []
+        if reason:
+            steps.append({"type": "fallback", "content": "Claude unavailable, switched to GPT"})
+
         return {
             "response": getattr(resp, "output_text", "") or "GPT 已接手，但沒有文字回應。",
-            "steps": [{"type": "fallback", "content": "Claude unavailable, switched to GPT"}] if reason else [],
+            "steps": steps,
             "messages": history or [],
             "provider": "gpt",
         }
