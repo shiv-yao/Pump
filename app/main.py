@@ -1,3 +1,4 @@
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -8,21 +9,25 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from app.agent_runtime import get_session
 from app.builtin_plugins import ensure_builtin_plugins
 from app.command_router import execute_platform_command
-from app.db import forget_installed_plugin, init_plugin_db
+from app.db import init_plugin_db
 from app.models import ChatRequest, CommandRequest, InstallPluginRequest, PluginManualCreate
 from app.plugin_manager import (
+    create_plugin_from_manifest,
     get_store_registry,
+    install_plugin_from_inline_manifest,
     install_plugin_from_url,
     load_all_plugins,
     plugin_registry,
+    remove_plugin,
     restore_installed_plugins,
+    set_plugin_enabled,
 )
 from app.provider_status import (
     check_claude_status,
     check_openai_status,
     check_trading_status,
 )
-from app.settings import ENABLE_CLAUDE, ENABLE_OPENAI, INDEX_HTML, PLUGINS_DIR
+from app.settings import ENABLE_CLAUDE, ENABLE_OPENAI, INDEX_HTML
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -41,7 +46,7 @@ async def lifespan(app: FastAPI):
     log.info("AI Plugin Terminal stopped")
 
 
-app = FastAPI(title="AI Plugin Terminal", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="AI Plugin Terminal", version="3.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -104,7 +109,10 @@ async def store():
 @app.post("/api/plugins/install")
 async def install_plugin(req: InstallPluginRequest):
     if req.manifest:
-        return {"success": True, "message": "Manifest install route placeholder"}
+        ok = install_plugin_from_inline_manifest(req.name, dict(req.manifest))
+        if ok:
+            return {"success": True, "message": f"Plugin '{req.name}' installed from manifest"}
+        raise HTTPException(status_code=400, detail="Install failed from manifest")
 
     if req.url:
         ok = await install_plugin_from_url(req.name, req.url, remember=True)
@@ -117,41 +125,35 @@ async def install_plugin(req: InstallPluginRequest):
 
 @app.post("/api/plugins/create")
 async def create_plugin(req: PluginManualCreate):
-    return {"success": True, "plugin": req.name}
+    plugin_id = create_plugin_from_manifest(
+        name=req.name,
+        description=req.description,
+        tools=req.tools,
+        handler_code=req.handler_code,
+        category=req.category or "utility",
+        price=req.price or 0,
+    )
+    return {"success": True, "plugin": plugin_id}
 
 
 @app.patch("/api/plugins/{plugin_id}/toggle")
 async def toggle_plugin(plugin_id: str):
-    import json
-    from pathlib import Path
-
     if plugin_id not in plugin_registry:
         raise HTTPException(status_code=404, detail="Plugin not found")
 
-    plugin_json = Path(plugin_registry[plugin_id]["path"]) / "plugin.json"
-    with open(plugin_json, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
+    enabled_now = plugin_registry[plugin_id]["enabled"]
+    ok = set_plugin_enabled(plugin_id, not enabled_now)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Toggle failed")
 
-    manifest["enabled"] = not manifest.get("enabled", True)
-
-    with open(plugin_json, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-
-    load_all_plugins()
-    return {"success": True, "enabled": manifest["enabled"]}
+    return {"success": True, "enabled": not enabled_now}
 
 
 @app.delete("/api/plugins/{plugin_id}")
-async def remove_plugin(plugin_id: str):
-    import shutil
-
-    pdir = PLUGINS_DIR / plugin_id
-    if not pdir.exists():
+async def delete_plugin(plugin_id: str):
+    ok = remove_plugin(plugin_id)
+    if not ok:
         raise HTTPException(status_code=404, detail="Plugin not found")
-
-    shutil.rmtree(pdir)
-    forget_installed_plugin(plugin_id)
-    load_all_plugins()
     return {"success": True}
 
 
