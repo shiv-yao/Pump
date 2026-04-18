@@ -1,96 +1,118 @@
-import logging
+import os
+import sqlite3
 
-import psycopg
-from psycopg.rows import dict_row
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-from app.settings import DATABASE_URL
+DB_MODE = "postgres" if DATABASE_URL else "sqlite"
 
-log = logging.getLogger(__name__)
+SQLITE_PATH = "plugins.db"
 
+
+# ===============================
+# DB CONNECTION
+# ===============================
 
 def get_db_conn():
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL 未設定")
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    if DB_MODE == "postgres":
+        import psycopg
+        from psycopg.rows import dict_row
 
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
+    else:
+        conn = sqlite3.connect(SQLITE_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+
+# ===============================
+# INIT TABLE
+# ===============================
 
 def init_plugin_db():
     conn = get_db_conn()
     cur = conn.cursor()
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS installed_plugins (
-        id BIGSERIAL PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        url TEXT NOT NULL,
-        installed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-    """)
+    if DB_MODE == "postgres":
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS plugins (
+            name TEXT PRIMARY KEY,
+            url TEXT,
+            enabled BOOLEAN DEFAULT TRUE
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS plugins (
+            name TEXT PRIMARY KEY,
+            url TEXT,
+            enabled INTEGER DEFAULT 1
+        )
+        """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    print(f"[DB] initialized ({DB_MODE})")
+
+
+# ===============================
+# SAVE PLUGIN
+# ===============================
+
+def save_plugin(name, url):
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    if DB_MODE == "postgres":
+        cur.execute("""
+        INSERT INTO plugins (name, url, enabled)
+        VALUES (%s, %s, TRUE)
+        ON CONFLICT (name)
+        DO UPDATE SET url = EXCLUDED.url, enabled = TRUE
+        """, (name, url))
+    else:
+        cur.execute("""
+        INSERT OR REPLACE INTO plugins (name, url, enabled)
+        VALUES (?, ?, 1)
+        """, (name, url))
 
     conn.commit()
     cur.close()
     conn.close()
 
 
-def load_installed_plugin_records() -> list[dict]:
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
+# ===============================
+# LOAD PLUGINS
+# ===============================
 
-        cur.execute("""
-            SELECT name, url, installed_at
-            FROM installed_plugins
-            ORDER BY installed_at ASC, id ASC
-        """)
+def load_plugins():
+    conn = get_db_conn()
+    cur = conn.cursor()
 
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+    cur.execute("SELECT name, url FROM plugins WHERE enabled=1")
+    rows = cur.fetchall()
 
-        return [
-            {
-                "name": row["name"],
-                "url": row["url"],
-                "installed_at": str(row["installed_at"]),
-            }
-            for row in rows
-        ]
-    except Exception as e:
-        log.error(f"Failed to load installed plugin records: {e}")
-        return []
+    cur.close()
+    conn.close()
+
+    return rows
 
 
-def remember_installed_plugin(name: str, url: str) -> None:
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
+# ===============================
+# DISABLE PLUGIN
+# ===============================
 
-        cur.execute("""
-            INSERT INTO installed_plugins (name, url)
-            VALUES (%s, %s)
-            ON CONFLICT (name)
-            DO UPDATE SET url = EXCLUDED.url
-        """, (name, url))
+def disable_plugin(name):
+    conn = get_db_conn()
+    cur = conn.cursor()
 
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        log.error(f"Failed to remember plugin '{name}': {e}")
+    if DB_MODE == "postgres":
+        cur.execute("UPDATE plugins SET enabled=FALSE WHERE name=%s", (name,))
+    else:
+        cur.execute("UPDATE plugins SET enabled=0 WHERE name=?", (name,))
 
-
-def forget_installed_plugin(name: str) -> None:
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-
-        cur.execute("""
-            DELETE FROM installed_plugins
-            WHERE name = %s
-        """, (name,))
-
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        log.error(f"Failed to forget plugin '{name}': {e}")
+    conn.commit()
+    cur.close()
+    conn.close()
