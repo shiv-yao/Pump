@@ -1,4 +1,5 @@
 import logging
+
 import psycopg
 from psycopg.rows import dict_row
 
@@ -35,11 +36,13 @@ def load_installed_plugin_records() -> list[dict]:
     try:
         conn = get_db_conn()
         cur = conn.cursor()
+
         cur.execute("""
             SELECT name, url, installed_at
             FROM installed_plugins
             ORDER BY installed_at ASC, id ASC
         """)
+
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -61,12 +64,14 @@ def remember_installed_plugin(name: str, url: str) -> None:
     try:
         conn = get_db_conn()
         cur = conn.cursor()
+
         cur.execute("""
             INSERT INTO installed_plugins (name, url)
             VALUES (%s, %s)
             ON CONFLICT (name)
             DO UPDATE SET url = EXCLUDED.url
         """, (name, url))
+
         conn.commit()
         cur.close()
         conn.close()
@@ -78,7 +83,12 @@ def forget_installed_plugin(name: str) -> None:
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("DELETE FROM installed_plugins WHERE name = %s", (name,))
+
+        cur.execute("""
+            DELETE FROM installed_plugins
+            WHERE name = %s
+        """, (name,))
+
         conn.commit()
         cur.close()
         conn.close()
