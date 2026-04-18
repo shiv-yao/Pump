@@ -7,8 +7,8 @@ from typing import Optional
 
 import httpx
 
-from app.settings import PLUGINS_DIR, REGISTRY_FILE
 from app.db import load_installed_plugin_records, remember_installed_plugin
+from app.settings import PLUGINS_DIR, REGISTRY_FILE
 
 log = logging.getLogger(__name__)
 
@@ -103,15 +103,21 @@ async def execute_tool(tool_name: str, tool_input: dict):
                     return f"Tool '{tool_name}' function not found."
 
                 fn = getattr(mod, tool_name)
-                result = await fn(**tool_input) if inspect.iscoroutinefunction(fn) else fn(**tool_input)
+
+                if inspect.iscoroutinefunction(fn):
+                    result = await fn(**tool_input)
+                else:
+                    result = fn(**tool_input)
 
                 if result is None:
                     return ""
+
                 if isinstance(result, (dict, list)):
                     return json.dumps(result, ensure_ascii=False, indent=2)
+
                 return str(result)
 
-            except Exception as e:
+            except Exception:
                 import traceback
                 return f"Tool execution error:\n{traceback.format_exc()}"
 
@@ -164,7 +170,6 @@ async def install_plugin_from_url(plugin_name: str, url: str, remember: bool = T
             remember_installed_plugin(plugin_name, url)
 
         return True
-
     except Exception as e:
         log.error(f"install_plugin_from_url error: {e}")
         return False
@@ -181,6 +186,7 @@ async def restore_installed_plugins():
     for item in records:
         name = item.get("name", "").strip()
         url = item.get("url", "").strip()
+
         if not name or not url:
             continue
 
