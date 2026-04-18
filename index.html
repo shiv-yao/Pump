@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Agent · Skill Store</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #080c10;
+    --surface: #0e1419;
+    --border: #1e2d3d;
+    --accent: #00d4aa;
+    --accent2: #ff6b35;
+    --accent3: #7c3aed;
+    --text: #cdd6f4;
+    --muted: #4a5568;
+    --danger: #f87171;
+    --success: #4ade80;
+    --warn: #fbbf24;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    font-size: 13px;
+    height: 100vh;
+    display: grid;
+    grid-template-rows: 48px 1fr;
+    grid-template-columns: 280px 1fr 280px;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  header {
+    grid-column: 1 / -1;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 16px;
+  }
+  .logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 16px; color: var(--accent); letter-spacing: -0.5px; }
+  .logo span { color: var(--accent2); }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .header-right { margin-left: auto; display: flex; gap: 12px; align-items: center; font-size: 11px; color: var(--muted); }
+
+  /* ── Left Panel: Skill Store ── */
+  .panel-left {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-title {
+    padding: 14px 16px 10px;
+    font-family: 'Syne', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .skill-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .skill-item {
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    margin-bottom: 4px;
+    cursor: pointer;
+    transition: all .15s;
+    position: relative;
+  }
+  .skill-item:hover { background: rgba(0,212,170,.05); border-color: var(--border); }
+  .skill-item.active { background: rgba(0,212,170,.08); border-color: var(--accent); }
+  .skill-name { font-weight: 700; font-size: 12px; color: var(--text); margin-bottom: 3px; }
+  .skill-desc { font-size: 10px; color: var(--muted); line-height: 1.4; }
+  .skill-badge {
+    position: absolute; top: 8px; right: 8px;
+    font-size: 9px; padding: 2px 6px; border-radius: 3px;
+    font-weight: 700;
+  }
+  .badge-on { background: rgba(74,222,128,.15); color: var(--success); }
+  .badge-off { background: rgba(248,113,113,.1); color: var(--danger); }
+  .skill-tools { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
+  .tool-tag { font-size: 9px; padding: 1px 5px; background: rgba(124,58,237,.2); color: #a78bfa; border-radius: 3px; }
+
+  .btn-add-skill {
+    margin: 8px;
+    padding: 10px;
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    color: var(--muted);
+    cursor: pointer;
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    transition: all .15s;
+    text-align: center;
+  }
+  .btn-add-skill:hover { border-color: var(--accent); color: var(--accent); background: rgba(0,212,170,.03); }
+
+  /* ── Center: Chat ── */
+  .panel-center {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .chat-header {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .chat-header span { color: var(--text); font-weight: 700; }
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .msg { max-width: 85%; animation: fadeIn .2s ease; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+  .msg.user { align-self: flex-end; }
+  .msg.agent { align-self: flex-start; }
+  .msg-bubble {
+    padding: 12px 16px;
+    border-radius: 8px;
+    line-height: 1.6;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.user .msg-bubble {
+    background: rgba(0,212,170,.12);
+    border: 1px solid rgba(0,212,170,.25);
+    color: var(--text);
+  }
+  .msg.agent .msg-bubble {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  .msg-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; padding: 0 4px; }
+
+  .tool-step {
+    background: rgba(124,58,237,.08);
+    border: 1px solid rgba(124,58,237,.2);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: #a78bfa;
+    margin: 4px 0;
+  }
+  .tool-result {
+    background: rgba(0,212,170,.05);
+    border: 1px solid rgba(0,212,170,.15);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: #67e8c8;
+    margin: 4px 0;
+    white-space: pre-wrap;
+  }
+
+  .typing { display: flex; gap: 4px; align-items: center; padding: 8px 0; }
+  .typing span {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+    animation: bounce .8s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .3s; }
+  @keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+
+  .chat-input-area {
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  .chat-input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    font-size: 13px;
+    resize: none;
+    outline: none;
+    min-height: 42px;
+    max-height: 120px;
+    transition: border-color .15s;
+  }
+  .chat-input:focus { border-color: var(--accent); }
+  .chat-input::placeholder { color: var(--muted); }
+  .btn-send {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-family: 'Space Mono', monospace;
+    font-weight: 700;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .15s;
+    white-space: nowrap;
+  }
+  .btn-send:hover { background: #00f0c0; transform: translateY(-1px); }
+  .btn-send:disabled { background: var(--muted); transform: none; cursor: not-allowed; }
+
+  /* ── Right Panel: Logs / Info ── */
+  .panel-right {
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tab {
+    flex: 1; padding: 10px; text-align: center;
+    font-size: 10px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase;
+    color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent;
+    transition: all .15s;
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { flex: 1; overflow-y: auto; padding: 12px; display: none; }
+  .tab-content.active { display: block; }
+
+  .log-entry {
+    font-size: 10px; line-height: 1.7;
+    border-bottom: 1px solid rgba(30,45,61,.5);
+    padding: 4px 0;
+  }
+  .log-time { color: var(--muted); }
+  .log-tool { color: #a78bfa; }
+  .log-ok { color: var(--success); }
+  .log-err { color: var(--danger); }
+
+  .info-card {
+    background: rgba(255,255,255,.02);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+  .info-card h4 { font-family: 'Syne', sans-serif; font-size: 11px; color: var(--accent); margin-bottom: 6px; }
+  .info-row { display: flex; justify-content: space-between; font-size: 10px; padding: 3px 0; border-bottom: 1px solid rgba(30,45,61,.5); }
+  .info-row:last-child { border: none; }
+  .info-val { color: var(--accent); font-weight: 700; }
+
+  /* ── Modal ── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.7); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    width: 480px;
+    max-width: 90vw;
+  }
+  .modal h3 { font-family: 'Syne', sans-serif; font-size: 16px; margin-bottom: 16px; color: var(--accent); }
+  .form-group { margin-bottom: 14px; }
+  .form-group label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .8px; }
+  .form-group input, .form-group textarea, .form-group select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 12px; color: var(--text);
+    font-family: 'Space Mono', monospace; font-size: 12px; outline: none;
+  }
+  .form-group input:focus, .form-group textarea:focus { border-color: var(--accent); }
+  .form-group textarea { min-height: 80px; resize: vertical; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+  .btn { padding: 8px 16px; border-radius: 6px; font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; cursor: pointer; border: none; }
+  .btn-primary { background: var(--accent); color: #000; }
+  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .btn:hover { opacity: .85; }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 12px; }
+  .empty-state .icon { font-size: 32px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">AI<span>·</span>AGENT</div>
+  <div class="status-dot"></div>
+  <span style="font-size:11px;color:var(--muted)">online</span>
+  <div class="header-right">
+    <span id="skill-count">0 skills</span>
+    <span>|</span>
+    <span id="model-label">claude-opus-4-5</span>
+  </div>
+</header>
+
+<!-- Left: Skill Store -->
+<div class="panel-left">
+  <div class="panel-title">
+    <span>⬡</span> SKILL STORE
+  </div>
+  <div class="skill-list" id="skill-list">
+    <div class="empty-state"><div class="icon">⬡</div>Loading skills...</div>
+  </div>
+  <button class="btn-add-skill" onclick="openModal()">+ Install Skill</button>
+</div>
+
+<!-- Center: Chat -->
+<div class="panel-center">
+  <div class="chat-header">
+    <span>AGENT CHAT</span>
+    &nbsp;·&nbsp; 使用已啟用的 skills 自動選擇工具
+  </div>
+  <div class="chat-messages" id="chat-messages">
+    <div class="empty-state">
+      <div class="icon">◈</div>
+      開始對話，Agent 會自動選擇合適的 skill
+    </div>
+  </div>
+  <div class="chat-input-area">
+    <textarea class="chat-input" id="chat-input" placeholder="輸入訊息... (Shift+Enter 換行)" rows="1"></textarea>
+    <button class="btn-send" id="btn-send" onclick="sendMessage()">SEND →</button>
+  </div>
+</div>
+
+<!-- Right: Logs & Info -->
+<div class="panel-right">
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('logs')">LOGS</div>
+    <div class="tab" onclick="switchTab('info')">INFO</div>
+  </div>
+  <div class="tab-content active" id="tab-logs">
+    <div id="log-list"></div>
+  </div>
+  <div class="tab-content" id="tab-info">
+    <div class="info-card">
+      <h4>SYSTEM</h4>
+      <div class="info-row"><span>Status</span><span class="info-val" id="info-status">online</span></div>
+      <div class="info-row"><span>Skills</span><span class="info-val" id="info-skills">-</span></div>
+      <div class="info-row"><span>Active Tools</span><span class="info-val" id="info-tools">-</span></div>
+    </div>
+    <div class="info-card">
+      <h4>QUICK COMMANDS</h4>
+      <div style="font-size:10px;line-height:2;color:var(--muted)">
+        "搜尋 BTC 最新消息"<br>
+        "計算 123 * 456"<br>
+        "BTC 交易信號分析"<br>
+        "ETH 現在應該做多還是做空？"
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Install Skill Modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h3>⬡ Install Skill</h3>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <button class="btn btn-primary" onclick="setInstallMode('manual')" id="mode-manual">手動建立</button>
+      <button class="btn btn-ghost" onclick="setInstallMode('url')" id="mode-url">從 URL 安裝</button>
+    </div>
+    <div id="install-manual">
+      <div class="form-group">
+        <label>Skill Name</label>
+        <input id="sk-name" placeholder="my_skill">
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <input id="sk-desc" placeholder="這個 skill 的功能描述">
+      </div>
+      <div class="form-group">
+        <label>Tool Name</label>
+        <input id="sk-tool" placeholder="my_function">
+      </div>
+      <div class="form-group">
+        <label>Tool Description</label>
+        <input id="sk-tool-desc" placeholder="這個工具做什麼">
+      </div>
+      <div class="form-group">
+        <label>Handler Code (Python async def)</label>
+        <textarea id="sk-code" placeholder="async def my_function(param: str) -> str:&#10;    return f'Result: {param}'"></textarea>
+      </div>
+    </div>
+    <div id="install-url" style="display:none">
+      <div class="form-group">
+        <label>Skill Name</label>
+        <input id="sk-url-name" placeholder="skill_name">
+      </div>
+      <div class="form-group">
+        <label>Skill URL (含 skill.json + handler.py)</label>
+        <input id="sk-url" placeholder="https://raw.githubusercontent.com/...">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="installSkill()">安裝</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let skills = [];
+let chatHistory = [];
+let installMode = 'manual';
+let activeTab = 'logs';
+
+// ── API ──
+async function api(path, method = 'GET', body = null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  return r.json();
+}
+
+// ── Skills ──
+async function loadSkills() {
+  const data = await api('/api/skills');
+  skills = data.skills || [];
+  renderSkills();
+  document.getElementById('skill-count').textContent = `${skills.filter(s=>s.enabled).length} skills active`;
+  document.getElementById('info-skills').textContent = skills.length;
+  const toolCount = skills.reduce((a, s) => a + (s.enabled ? s.tools.length : 0), 0);
+  document.getElementById('info-tools').textContent = toolCount;
+}
+
+function renderSkills() {
+  const el = document.getElementById('skill-list');
+  if (!skills.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">⬡</div>No skills installed</div>';
+    return;
+  }
+  el.innerHTML = skills.map(s => `
+    <div class="skill-item ${s.enabled ? 'active' : ''}" id="sk-${s.name}">
+      <span class="skill-badge ${s.enabled ? 'badge-on' : 'badge-off'}">${s.enabled ? 'ON' : 'OFF'}</span>
+      <div class="skill-name">${s.name}</div>
+      <div class="skill-desc">${s.description || 'No description'}</div>
+      <div class="skill-tools">${s.tools.map(t => `<span class="tool-tag">${t}</span>`).join('')}</div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button onclick="toggleSkill('${s.name}')" style="font-size:9px;padding:2px 8px;background:transparent;border:1px solid var(--border);border-radius:3px;color:var(--muted);cursor:pointer;">
+          ${s.enabled ? 'DISABLE' : 'ENABLE'}
+        </button>
+        <button onclick="removeSkill('${s.name}')" style="font-size:9px;padding:2px 8px;background:transparent;border:1px solid rgba(248,113,113,.3);border-radius:3px;color:var(--danger);cursor:pointer;">
+          REMOVE
+        </button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function toggleSkill(name) {
+  await api(`/api/skills/${name}/toggle`, 'PATCH');
+  addLog('skill', `Toggled skill: ${name}`);
+  loadSkills();
+}
+
+async function removeSkill(name) {
+  if (!confirm(`移除 skill: ${name}?`)) return;
+  await api(`/api/skills/${name}`, 'DELETE');
+  addLog('ok', `Removed skill: ${name}`);
+  loadSkills();
+}
+
+// ── Chat ──
+async function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+  document.getElementById('btn-send').disabled = true;
+
+  appendMessage('user', msg);
+  const typing = appendTyping();
+
+  try {
+    const result = await api('/api/chat', 'POST', {
+      message: msg,
+      session_id: 'main',
+      history: chatHistory
+    });
+
+    typing.remove();
+
+    // Show tool steps
+    const steps = result.steps || [];
+    for (const step of steps) {
+      if (step.type === 'tool_call') {
+        appendToolStep(`🔧 ${step.tool}(${JSON.stringify(step.input)})`);
+        addLog('tool', `${step.tool}: ${JSON.stringify(step.input)}`);
+      } else if (step.type === 'tool_result') {
+        appendToolResult(step.result);
+        addLog('ok', `Result: ${step.result.substring(0, 80)}...`);
+      }
+    }
+
+    if (result.response) {
+      appendMessage('agent', result.response);
+    }
+
+    // Update history
+    chatHistory = result.messages || [];
+
+  } catch (e) {
+    typing.remove();
+    appendMessage('agent', `❌ 錯誤: ${e.message}`);
+    addLog('err', e.message);
+  }
+
+  document.getElementById('btn-send').disabled = false;
+}
+
+function appendMessage(role, text) {
+  const msgs = document.getElementById('chat-messages');
+  // Clear empty state
+  const empty = msgs.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `
+    <div class="msg-label">${role === 'user' ? 'YOU' : 'AGENT'}</div>
+    <div class="msg-bubble">${text}</div>
+  `;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+function appendTyping() {
+  const msgs = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'msg agent';
+  div.innerHTML = `<div class="msg-label">AGENT</div><div class="msg-bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+function appendToolStep(text) {
+  const msgs = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'tool-step';
+  div.textContent = text;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function appendToolResult(text) {
+  const msgs = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'tool-result';
+  div.textContent = text.length > 300 ? text.substring(0, 300) + '...' : text;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// ── Logs ──
+function addLog(type, msg) {
+  const el = document.getElementById('log-list');
+  const time = new Date().toLocaleTimeString('zh-TW', {hour12: false});
+  const div = document.createElement('div');
+  div.className = 'log-entry';
+  div.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-${type}">${msg}</span>`;
+  el.insertBefore(div, el.firstChild);
+}
+
+// ── Modal ──
+function openModal() { document.getElementById('modal').classList.add('open'); }
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+function setInstallMode(mode) {
+  installMode = mode;
+  document.getElementById('install-manual').style.display = mode === 'manual' ? 'block' : 'none';
+  document.getElementById('install-url').style.display = mode === 'url' ? 'block' : 'none';
+  document.getElementById('mode-manual').className = `btn ${mode === 'manual' ? 'btn-primary' : 'btn-ghost'}`;
+  document.getElementById('mode-url').className = `btn ${mode === 'url' ? 'btn-primary' : 'btn-ghost'}`;
+}
+
+async function installSkill() {
+  if (installMode === 'manual') {
+    const name = document.getElementById('sk-name').value.trim();
+    const desc = document.getElementById('sk-desc').value.trim();
+    const toolName = document.getElementById('sk-tool').value.trim();
+    const toolDesc = document.getElementById('sk-tool-desc').value.trim();
+    const code = document.getElementById('sk-code').value.trim();
+    if (!name || !toolName) return alert('請填寫 Skill Name 和 Tool Name');
+
+    await api('/api/skills/create', 'POST', {
+      name, description: desc,
+      tools: [{
+        name: toolName,
+        description: toolDesc,
+        input_schema: { type: 'object', properties: {}, required: [] }
+      }],
+      handler_code: code
+    });
+  } else {
+    const name = document.getElementById('sk-url-name').value.trim();
+    const url = document.getElementById('sk-url').value.trim();
+    if (!name || !url) return alert('請填寫 Name 和 URL');
+    await api('/api/skills/install', 'POST', { name, url });
+  }
+
+  closeModal();
+  addLog('ok', `Skill installed successfully`);
+  loadSkills();
+}
+
+// ── Tabs ──
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById(`tab-${tab}`).classList.add('active');
+}
+
+// ── Enter to send ──
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('chat-input');
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+  loadSkills();
+  addLog('ok', 'Agent initialized');
+});
+</script>
+</body>
+</html>
