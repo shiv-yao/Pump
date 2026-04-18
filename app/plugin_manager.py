@@ -2,12 +2,13 @@ import importlib.util
 import inspect
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Optional
 
 import httpx
 
-from app.db import load_installed_plugin_records, remember_installed_plugin
+from app.db import load_installed_plugin_records, remember_installed_plugin, forget_installed_plugin
 from app.settings import PLUGINS_DIR, REGISTRY_FILE
 
 log = logging.getLogger(__name__)
@@ -136,6 +137,40 @@ def get_store_registry():
         return []
 
 
+def create_plugin_from_manifest(
+    name: str,
+    description: str,
+    tools: list[dict],
+    handler_code: Optional[str] = None,
+    category: str = "utility",
+    price: float = 0,
+) -> str:
+    pdir = PLUGINS_DIR / name
+    pdir.mkdir(parents=True, exist_ok=True)
+
+    manifest = {
+        "id": name,
+        "name": name,
+        "description": description,
+        "version": "1.0.0",
+        "enabled": True,
+        "category": category,
+        "price": price,
+        "author": "manual",
+        "tools": tools,
+    }
+
+    with open(pdir / "plugin.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    if handler_code:
+        with open(pdir / "handler.py", "w", encoding="utf-8") as f:
+            f.write(handler_code)
+
+    load_all_plugins()
+    return name
+
+
 async def install_plugin_from_url(plugin_name: str, url: str, remember: bool = True) -> bool:
     plugin_dir = PLUGINS_DIR / plugin_name
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -173,6 +208,54 @@ async def install_plugin_from_url(plugin_name: str, url: str, remember: bool = T
     except Exception as e:
         log.error(f"install_plugin_from_url error: {e}")
         return False
+
+
+def install_plugin_from_inline_manifest(name: str, manifest: dict) -> bool:
+    try:
+        pdir = PLUGINS_DIR / name
+        pdir.mkdir(parents=True, exist_ok=True)
+
+        if "id" not in manifest:
+            manifest["id"] = name
+        if "name" not in manifest:
+            manifest["name"] = name
+
+        with open(pdir / "plugin.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+        load_all_plugins()
+        return True
+    except Exception as e:
+        log.error(f"install_plugin_from_inline_manifest error: {e}")
+        return False
+
+
+def set_plugin_enabled(plugin_id: str, enabled: bool) -> bool:
+    if plugin_id not in plugin_registry:
+        return False
+
+    plugin_json = Path(plugin_registry[plugin_id]["path"]) / "plugin.json"
+    with open(plugin_json, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    manifest["enabled"] = enabled
+
+    with open(plugin_json, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    load_all_plugins()
+    return True
+
+
+def remove_plugin(plugin_id: str) -> bool:
+    pdir = PLUGINS_DIR / plugin_id
+    if not pdir.exists():
+        return False
+
+    shutil.rmtree(pdir)
+    forget_installed_plugin(plugin_id)
+    load_all_plugins()
+    return True
 
 
 async def restore_installed_plugins():
