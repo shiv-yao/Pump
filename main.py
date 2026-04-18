@@ -1,6 +1,6 @@
 """
 main.py - AI Agent with Plugin Skill Store
-Railway 可部署，支援動態安裝/管理 skills
+Railway 可部署，支援動態安裝 / 管理 skills
 """
 
 import importlib.util
@@ -17,34 +17,50 @@ from typing import Any, Optional
 
 import anthropic
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# =========================================================
+# LOGGING
+# =========================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 log = logging.getLogger(__name__)
 
-# ─── Paths ───
+# =========================================================
+# PATHS
+# =========================================================
 BASE_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = BASE_DIR / "skills"
 INDEX_HTML = BASE_DIR / "index.html"
-SKILLS_DIR.mkdir(exist_ok=True)
 
-# ─── Global skill registry ───
+SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+# =========================================================
+# GLOBALS
+# =========================================================
 skill_registry: dict[str, dict] = {}
 agent_sessions: dict[str, "AgentSession"] = {}
 
 SKILL_REGISTRY_URL = os.getenv(
     "SKILL_REGISTRY_URL",
-    "https://raw.githubusercontent.com/your-org/skill-store/main/registry.json",
+    "https://raw.githubusercontent.com/your-org/skill-store/main/registry.json"
 )
 
+DEFAULT_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
+DEFAULT_SYSTEM_PROMPT = os.getenv(
+    "AGENT_SYSTEM_PROMPT",
+    "你是一個強大的 AI Agent，擁有多種 skills 可以使用。"
+    "根據用戶需求選擇合適的工具完成任務。使用繁體中文回應。"
+)
 
-# ══════════════════════════════════════════
+# =========================================================
 # SKILL LOADER
-# ══════════════════════════════════════════
-
+# =========================================================
 def load_skill_manifest(skill_dir: Path) -> Optional[dict]:
     manifest_path = skill_dir / "skill.json"
     if not manifest_path.exists():
@@ -54,17 +70,15 @@ def load_skill_manifest(skill_dir: Path) -> Optional[dict]:
         with open(manifest_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        log.error(f"❌ Failed to load manifest from {manifest_path}: {e}")
+        log.error(f"Failed loading manifest {manifest_path}: {e}")
         return None
 
 
 def load_all_skills():
-    """掃描並載入所有已安裝的 skills"""
     global skill_registry
     skill_registry = {}
 
-    if not SKILLS_DIR.exists():
-        SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
     for skill_path in SKILLS_DIR.iterdir():
         if not skill_path.is_dir():
@@ -81,14 +95,14 @@ def load_all_skills():
             "enabled": manifest.get("enabled", True),
             "installed_at": manifest.get("installed_at", "unknown"),
         }
-        log.info(f"✅ Loaded skill: {skill_name}")
+        log.info(f"Loaded skill: {skill_name}")
 
-    log.info(f"📦 Total skills loaded: {len(skill_registry)}")
+    log.info(f"Total skills loaded: {len(skill_registry)}")
 
 
 def get_active_tools() -> list[dict]:
-    """回傳所有啟用 skill 的 Anthropic tool 定義"""
     tools: list[dict] = []
+
     for _, info in skill_registry.items():
         if not info["enabled"]:
             continue
@@ -102,7 +116,6 @@ def get_active_tools() -> list[dict]:
 
 
 async def execute_tool(tool_name: str, tool_input: dict) -> str:
-    """執行指定 skill 的 tool"""
     for skill_name, info in skill_registry.items():
         if not info["enabled"]:
             continue
@@ -118,15 +131,18 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
                 return f"Tool '{tool_name}' handler.py not found."
 
             try:
-                spec = importlib.util.spec_from_file_location(f"skill_{skill_name}", handler_file)
+                spec = importlib.util.spec_from_file_location(
+                    f"skill_{skill_name}",
+                    handler_file
+                )
                 if spec is None or spec.loader is None:
-                    return f"Tool '{tool_name}' could not load module spec."
+                    return f"Tool '{tool_name}' load failed."
 
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)
 
                 if not hasattr(mod, tool_name):
-                    return f"Tool '{tool_name}' not found in handler.py."
+                    return f"Tool '{tool_name}' function not found in handler.py."
 
                 fn = getattr(mod, tool_name)
 
@@ -137,8 +153,10 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
 
                 if result is None:
                     return ""
+
                 if isinstance(result, (dict, list)):
                     return json.dumps(result, ensure_ascii=False, indent=2)
+
                 return str(result)
 
             except Exception:
@@ -147,20 +165,15 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
     return f"Tool '{tool_name}' not found or not executable."
 
 
-# ══════════════════════════════════════════
-# AI AGENT CORE
-# ══════════════════════════════════════════
-
+# =========================================================
+# AGENT CORE
+# =========================================================
 class AgentSession:
     def __init__(self):
         api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         self.client = anthropic.AsyncAnthropic(api_key=api_key) if api_key else None
-        self.model = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
-        self.system_prompt = os.getenv(
-            "AGENT_SYSTEM_PROMPT",
-            "你是一個強大的 AI Agent，擁有多種 skills 可以使用。"
-            "根據用戶需求選擇合適的工具完成任務。使用繁體中文回應。"
-        )
+        self.model = DEFAULT_MODEL
+        self.system_prompt = DEFAULT_SYSTEM_PROMPT
 
     async def run(self, user_message: str, history: Optional[list] = None) -> dict:
         if not self.client:
@@ -173,8 +186,8 @@ class AgentSession:
 
         messages = list(history) if history else []
         messages.append({"role": "user", "content": user_message})
-        tools = get_active_tools()
 
+        tools = get_active_tools()
         steps: list[dict] = []
         max_iterations = 10
 
@@ -185,6 +198,7 @@ class AgentSession:
                 "system": self.system_prompt,
                 "messages": messages,
             }
+
             if tools:
                 kwargs["tools"] = tools
 
@@ -218,7 +232,7 @@ class AgentSession:
                     "tool": tool_use.name,
                     "input": tool_use.input,
                 })
-                log.info(f"🔧 Executing tool: {tool_use.name} with {tool_use.input}")
+                log.info(f"Executing tool: {tool_use.name} with {tool_use.input}")
 
                 try:
                     result = await execute_tool(tool_use.name, tool_use.input)
@@ -244,7 +258,7 @@ class AgentSession:
                 final_text = step["content"]
                 break
 
-        if not final_text and steps:
+        if not final_text:
             final_text = "已完成處理，但沒有文字回應。"
 
         return {
@@ -260,31 +274,31 @@ def get_session(session_id: str = "default") -> AgentSession:
     return agent_sessions[session_id]
 
 
-# ══════════════════════════════════════════
-# SKILL STORE API
-# ══════════════════════════════════════════
-
+# =========================================================
+# REMOTE REGISTRY
+# =========================================================
 async def fetch_remote_registry() -> list[dict]:
-    """從遠端抓取可用 skill 清單"""
     if not SKILL_REGISTRY_URL or "your-org" in SKILL_REGISTRY_URL:
-        log.warning("⚠️ SKILL_REGISTRY_URL is placeholder or empty, skip remote registry fetch.")
+        log.warning("SKILL_REGISTRY_URL is placeholder; skip remote registry fetch.")
         return []
 
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
             resp = await client.get(SKILL_REGISTRY_URL)
-            if resp.status_code == 200:
-                data = resp.json()
-                return data if isinstance(data, list) else []
-            log.warning(f"Cannot fetch remote registry: status={resp.status_code}")
+            if resp.status_code != 200:
+                log.warning(f"Remote registry HTTP {resp.status_code}")
+                return []
+
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            return []
     except Exception as e:
         log.warning(f"Cannot fetch remote registry: {e}")
-
-    return []
+        return []
 
 
 async def install_skill_from_url(skill_name: str, url: str) -> bool:
-    """從 URL 安裝 skill（下載 skill.json + handler.py）"""
     skill_dir = SKILLS_DIR / skill_name
     skill_dir.mkdir(parents=True, exist_ok=True)
 
@@ -293,22 +307,22 @@ async def install_skill_from_url(skill_name: str, url: str) -> bool:
             manifest_url = f"{url.rstrip('/')}/skill.json"
             handler_url = f"{url.rstrip('/')}/handler.py"
 
-            r = await client.get(manifest_url)
-            if r.status_code != 200:
-                log.error(f"Install skill failed: {manifest_url} -> {r.status_code}")
+            manifest_resp = await client.get(manifest_url)
+            if manifest_resp.status_code != 200:
+                log.error(f"Failed downloading skill.json: {manifest_resp.status_code}")
                 return False
 
-            manifest = r.json()
+            manifest = manifest_resp.json()
             manifest["installed_at"] = datetime.now().isoformat()
             manifest["enabled"] = True
 
             with open(skill_dir / "skill.json", "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=2, ensure_ascii=False)
 
-            r2 = await client.get(handler_url)
-            if r2.status_code == 200:
+            handler_resp = await client.get(handler_url)
+            if handler_resp.status_code == 200:
                 with open(skill_dir / "handler.py", "w", encoding="utf-8") as f:
-                    f.write(r2.text)
+                    f.write(handler_resp.text)
 
         load_all_skills()
         return True
@@ -318,10 +332,9 @@ async def install_skill_from_url(skill_name: str, url: str) -> bool:
         return False
 
 
-# ══════════════════════════════════════════
+# =========================================================
 # REQUEST MODELS
-# ══════════════════════════════════════════
-
+# =========================================================
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
@@ -341,12 +354,10 @@ class SkillManualCreate(BaseModel):
     handler_code: Optional[str] = None
 
 
-# ══════════════════════════════════════════
+# =========================================================
 # BUILTIN SKILLS
-# ══════════════════════════════════════════
-
+# =========================================================
 async def ensure_builtin_skills():
-    """確保內建 skills 已安裝"""
     builtin = {
         "web_search": {
             "name": "web_search",
@@ -378,7 +389,10 @@ async def ensure_builtin_skills():
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "expression": {"type": "string", "description": "數學表達式，如 2+2*3"}
+                        "expression": {
+                            "type": "string",
+                            "description": "數學表達式，如 2+2*3"
+                        }
                     },
                     "required": ["expression"]
                 }
@@ -396,7 +410,10 @@ async def ensure_builtin_skills():
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "symbol": {"type": "string", "description": "幣種，如 BTCUSDT"},
+                        "symbol": {
+                            "type": "string",
+                            "description": "幣種，如 BTCUSDT"
+                        },
                         "timeframe": {
                             "type": "string",
                             "description": "時間框架，如 15m, 1h",
@@ -462,6 +479,7 @@ def calculate(expression: str) -> str:
     except Exception as e:
         return f"計算錯誤: {e}"
 '''
+    (SKILLS_DIR / "calculator").mkdir(parents=True, exist_ok=True)
     with open(SKILLS_DIR / "calculator" / "handler.py", "w", encoding="utf-8") as f:
         f.write(calc_handler)
 
@@ -492,6 +510,7 @@ async def get_trading_signal(symbol: str, timeframe: str = "1h") -> str:
     except Exception as e:
         return f"無法取得 {symbol} 數據: {e}"
 '''
+    (SKILLS_DIR / "trading_signals").mkdir(parents=True, exist_ok=True)
     with open(SKILLS_DIR / "trading_signals" / "handler.py", "w", encoding="utf-8") as f:
         f.write(trading_handler)
 
@@ -530,28 +549,32 @@ async def web_search(query: str) -> str:
     except Exception as e:
         return f"搜尋錯誤: {e}"
 '''
+    (SKILLS_DIR / "web_search").mkdir(parents=True, exist_ok=True)
     with open(SKILLS_DIR / "web_search" / "handler.py", "w", encoding="utf-8") as f:
         f.write(search_handler)
 
 
-# ══════════════════════════════════════════
+# =========================================================
 # APP LIFESPAN
-# ══════════════════════════════════════════
-
+# =========================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_all_skills()
     await ensure_builtin_skills()
-    log.info("🚀 AI Agent started")
+    log.info("AI Agent started")
     yield
-    log.info("🛑 AI Agent stopped")
+    log.info("AI Agent stopped")
 
 
-# ══════════════════════════════════════════
+# =========================================================
 # APP
-# ══════════════════════════════════════════
+# =========================================================
+app = FastAPI(
+    title="AI Agent Skill Store",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
-app = FastAPI(title="AI Agent Skill Store", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -560,20 +583,16 @@ app.add_middleware(
 )
 
 
-# ══════════════════════════════════════════
-# API ROUTES
-# ══════════════════════════════════════════
-
-@app.post("/api/chat")
-async def chat(req: ChatRequest):
-    session = get_session(req.session_id)
-    result = await session.run(req.message, req.history.copy() if req.history else [])
-    return JSONResponse({
-        "response": result.get("response", ""),
-        "steps": result.get("steps", []),
-        "session_id": req.session_id,
-        "error": result.get("error"),
-    })
+# =========================================================
+# ROUTES
+# =========================================================
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "skills": len(skill_registry),
+        "time": datetime.now().isoformat(),
+    }
 
 
 @app.get("/api/skills")
@@ -591,6 +610,18 @@ async def list_skills():
             for name, info in skill_registry.items()
         ]
     }
+
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    session = get_session(req.session_id)
+    result = await session.run(req.message, req.history.copy() if req.history else [])
+    return JSONResponse({
+        "response": result.get("response", ""),
+        "steps": result.get("steps", []),
+        "session_id": req.session_id,
+        "error": result.get("error"),
+    })
 
 
 @app.post("/api/skills/install")
@@ -612,7 +643,10 @@ async def install_skill(req: InstallSkillRequest):
     if req.url:
         success = await install_skill_from_url(req.name, req.url)
         if success:
-            return {"success": True, "message": f"Skill '{req.name}' installed from {req.url}"}
+            return {
+                "success": True,
+                "message": f"Skill '{req.name}' installed from {req.url}"
+            }
         raise HTTPException(status_code=400, detail="Failed to install skill from URL")
 
     raise HTTPException(status_code=400, detail="Provide either manifest or url")
@@ -620,7 +654,6 @@ async def install_skill(req: InstallSkillRequest):
 
 @app.post("/api/skills/create")
 async def create_skill(req: SkillManualCreate):
-    """直接建立自定義 skill（含 handler code）"""
     skill_dir = SKILLS_DIR / req.name
     skill_dir.mkdir(parents=True, exist_ok=True)
 
@@ -644,17 +677,6 @@ async def create_skill(req: SkillManualCreate):
     return {"success": True, "skill": req.name}
 
 
-@app.delete("/api/skills/{skill_name}")
-async def uninstall_skill(skill_name: str):
-    skill_dir = SKILLS_DIR / skill_name
-    if skill_dir.exists():
-        shutil.rmtree(skill_dir)
-        load_all_skills()
-        return {"success": True}
-
-    raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
-
-
 @app.patch("/api/skills/{skill_name}/toggle")
 async def toggle_skill(skill_name: str):
     if skill_name not in skill_registry:
@@ -662,6 +684,9 @@ async def toggle_skill(skill_name: str):
 
     skill_dir = SKILLS_DIR / skill_name
     manifest_path = skill_dir / "skill.json"
+
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail="skill.json not found")
 
     with open(manifest_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
@@ -673,6 +698,17 @@ async def toggle_skill(skill_name: str):
 
     load_all_skills()
     return {"success": True, "enabled": manifest["enabled"]}
+
+
+@app.delete("/api/skills/{skill_name}")
+async def uninstall_skill(skill_name: str):
+    skill_dir = SKILLS_DIR / skill_name
+    if not skill_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+
+    shutil.rmtree(skill_dir)
+    load_all_skills()
+    return {"success": True}
 
 
 @app.get("/api/skills/store/browse")
@@ -688,16 +724,6 @@ async def browse_store():
     }
 
 
-@app.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "skills": len(skill_registry),
-        "time": datetime.now().isoformat(),
-    }
-
-
-# ─── Frontend ───
 @app.get("/", response_class=HTMLResponse)
 async def frontend():
     try:
@@ -715,9 +741,9 @@ async def frontend():
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>AI Agent Skill Store</title>
       <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#0b1020; color:#fff; padding:24px; }
-        .card { max-width:760px; margin:40px auto; background:#151b2f; border-radius:16px; padding:24px; }
-        a { color:#9ab0ff; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#081018; color:#fff; padding:24px; }
+        .card { max-width:760px; margin:40px auto; background:#111b25; border-radius:16px; padding:24px; }
+        a { color:#78f0dc; }
       </style>
     </head>
     <body>
@@ -732,10 +758,12 @@ async def frontend():
     """
 
 
-# ─── Global Error Handler ───
+# =========================================================
+# ERROR HANDLER
+# =========================================================
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    log.error(f"Unhandled error: {exc}\n{traceback.format_exc()}")
+async def global_exception_handler(request: Request, exc: Exception):
+    log.error(f"Unhandled error on {request.url.path}: {exc}\n{traceback.format_exc()}")
     return JSONResponse(
         status_code=500,
         content={
@@ -746,7 +774,9 @@ async def global_exception_handler(request, exc):
     )
 
 
-# ─── Entry Point ───
+# =========================================================
+# ENTRY
+# =========================================================
 if __name__ == "__main__":
     import uvicorn
 
