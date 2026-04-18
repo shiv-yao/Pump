@@ -1,0 +1,9 @@
+[
+  {
+    "id": "echo_tool",
+    "name": "Echo Tool",
+    "description": "\u6e2c\u8a66\u63d2\u4ef6",
+    "price": 0,
+    "url": "https://raw.githubusercontent.com/YOUR_REPO/main/plugins/echo_tool"
+  }
+]

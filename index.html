@@ -1,0 +1,16 @@
+<html>
+<body>
+<h2>AI Plugin Platform</h2>
+<input id="msg" />
+<button onclick="send()">Send</button>
+<pre id="out"></pre>
+<script>
+async function send(){
+ let m=document.getElementById("msg").value
+ let r=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:m})})
+ let d=await r.json()
+ document.getElementById("out").textContent += "\n> "+m+"\n"+d.response+"\n"
+}
+</script>
+</body>
+</html>

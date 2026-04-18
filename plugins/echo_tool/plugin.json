@@ -1,0 +1,23 @@
+{
+  "id": "echo_tool",
+  "name": "Echo Tool",
+  "version": "1.0.0",
+  "enabled": true,
+  "tools": [
+    {
+      "name": "echo_text",
+      "description": "\u56de\u50b3\u6587\u5b57",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    }
+  ]
+}
