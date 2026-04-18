@@ -2,12 +2,13 @@ import json
 import shutil
 from pathlib import Path
 
+from app.db import forget_installed_plugin
 from app.plugin_manager import (
-    plugin_registry,
     execute_tool,
+    get_store_registry,
     install_plugin_from_url,
     load_all_plugins,
-    get_store_registry,
+    plugin_registry,
 )
 from app.provider_status import (
     check_claude_status,
@@ -15,7 +16,6 @@ from app.provider_status import (
     check_trading_status,
 )
 from app.settings import PLUGINS_DIR
-from app.db import forget_installed_plugin
 
 
 def parse_command(command: str) -> dict:
@@ -39,7 +39,32 @@ async def execute_platform_command(command: str) -> dict:
         return {"success": False, "output": "空指令"}
 
     if cmd == "help":
-        return {"success": True, "output": "/help\n/skills\n/providers\n/store\n/install <name> <url>\n/enable <name>\n/disable <name>\n/remove <name>\n/price <symbol>\n/signal <symbol>\n/scan <symbol1> [symbol2]\n/balance\n/positions\n/orders\n/buy <symbol> <amount>\n/sell <symbol> <amount>\n/killswitch\n/start_arb_bot\n/stop_arb_bot\n/arb_status\n/clear"}
+        return {
+            "success": True,
+            "output": (
+                "/help\n"
+                "/skills\n"
+                "/providers\n"
+                "/store\n"
+                "/install <name> <url>\n"
+                "/enable <name>\n"
+                "/disable <name>\n"
+                "/remove <name>\n"
+                "/price <symbol>\n"
+                "/signal <symbol>\n"
+                "/scan <symbol1> [symbol2]\n"
+                "/balance\n"
+                "/positions\n"
+                "/orders\n"
+                "/buy <symbol> <amount>\n"
+                "/sell <symbol> <amount>\n"
+                "/killswitch\n"
+                "/start_arb_bot\n"
+                "/stop_arb_bot\n"
+                "/arb_status\n"
+                "/clear"
+            )
+        }
 
     if cmd == "skills":
         items = [f"{pid} [{'ON' if info['enabled'] else 'OFF'}]" for pid, info in plugin_registry.items()]
@@ -56,8 +81,7 @@ async def execute_platform_command(command: str) -> dict:
         }
 
     if cmd == "store":
-        data = get_store_registry()
-        return {"success": True, "output": json.dumps(data, ensure_ascii=False, indent=2)}
+        return {"success": True, "output": json.dumps(get_store_registry(), ensure_ascii=False, indent=2)}
 
     if cmd == "install":
         if len(args) < 2:
