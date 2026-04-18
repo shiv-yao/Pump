@@ -1,85 +1,43 @@
-import asyncio, json, os, time
-import httpx
-import websockets
+import asyncio
+import random
+import time
 
 RUNNING = False
-STATE = {
-    "last_trade": None,
-    "spread": 0,
-    "trades": 0
-}
 
-POLY_WS = "wss://ws.polymarket.com"
-BINANCE_API = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-
-SPREAD_THRESHOLD = float(os.getenv("ARB_THRESHOLD", "0.003"))
-ORDER_SIZE = float(os.getenv("ARB_ORDER_SIZE", "10"))
-
-# ===== 外部價格 =====
-async def get_external_price():
-    async with httpx.AsyncClient(timeout=5) as c:
-        r = await c.get(BINANCE_API)
-        return float(r.json()["price"])
-
-# ===== Polymarket WS =====
-async def poly_ws_loop():
+async def arb_loop():
     global RUNNING
 
-    async with websockets.connect(POLY_WS) as ws:
+    while RUNNING:
+        # 模擬抓 BTC 外部預測
+        external_price = 100000 + random.uniform(-200, 200)
 
-        await ws.send(json.dumps({
-            "type": "subscribe",
-            "channel": "market"
-        }))
+        # 模擬 Polymarket 價格
+        market_price = 100000 + random.uniform(-200, 200)
 
-        while RUNNING:
-            msg = await ws.recv()
-            data = json.loads(msg)
+        spread = (external_price - market_price) / market_price
 
-            if "price" not in data:
-                continue
+        if abs(spread) > 0.003:
+            print(f"[ARB SIGNAL] spread={spread:.4f}")
 
-            poly_price = float(data["price"])
-            ext_price = await get_external_price()
+        await asyncio.sleep(1)
 
-            spread = (ext_price - poly_price) / poly_price
-            STATE["spread"] = spread
 
-            if abs(spread) > SPREAD_THRESHOLD:
-                await execute_trade(spread)
-
-# ===== 下單（模擬 / 接你 trading_api）=====
-async def execute_trade(spread):
-    side = "BUY" if spread > 0 else "SELL"
-
-    # 👉 這裡接你的 trading_api plugin
-    print(f"TRADE {side} | spread={spread:.4f}")
-
-    STATE["last_trade"] = {
-        "side": side,
-        "spread": spread,
-        "time": time.time()
-    }
-    STATE["trades"] += 1
-
-# ===== 主 loop =====
-async def bot_loop():
-    await poly_ws_loop()
-
-# ===== 控制 =====
 async def start_arb_bot():
     global RUNNING
     if RUNNING:
         return "Already running"
 
     RUNNING = True
-    asyncio.create_task(bot_loop())
+    asyncio.create_task(arb_loop())
+
     return "Arbitrage bot started"
+
 
 async def stop_arb_bot():
     global RUNNING
     RUNNING = False
-    return "Bot stopped"
+    return "Stopped"
+
 
 async def arb_status():
-    return json.dumps(STATE, indent=2)
+    return f"RUNNING={RUNNING}"
