@@ -1,0 +1,33 @@
+{
+  "id": "polymarket_arb",
+  "name": "Polymarket Arbitrage",
+  "description": "BTC 預測 vs Polymarket 價差套利",
+  "version": "1.0.0",
+  "enabled": true,
+  "tools": [
+    {
+      "name": "start_arb_bot",
+      "description": "啟動套利機器人",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "stop_arb_bot",
+      "description": "停止套利機器人",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "arb_status",
+      "description": "查看狀態",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
