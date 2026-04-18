@@ -35,18 +35,47 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_plugin_db()
-    await ensure_builtin_plugins()
-    load_all_plugins()
-    await restore_installed_plugins()
-    load_all_plugins()
+    db_ok = True
+
+    # 1) DB 初始化：失敗也不要讓整個 app 掛掉
+    try:
+        init_plugin_db()
+        log.info("Plugin DB initialized")
+    except Exception as e:
+        db_ok = False
+        log.warning(f"Plugin DB init skipped: {e}")
+
+    # 2) 先保證內建 plugins 存在
+    try:
+        await ensure_builtin_plugins()
+        log.info("Built-in plugins ensured")
+    except Exception as e:
+        log.error(f"ensure_builtin_plugins failed: {e}")
+
+    # 3) 先載入本地 plugins
+    try:
+        load_all_plugins()
+        log.info(f"Loaded local plugins: {len(plugin_registry)}")
+    except Exception as e:
+        log.error(f"load_all_plugins failed: {e}")
+
+    # 4) 如果 DB 可用，嘗試 restore 動態安裝過的 plugins
+    if db_ok:
+        try:
+            await restore_installed_plugins()
+            load_all_plugins()
+            log.info(f"Restored plugins loaded: {len(plugin_registry)}")
+        except Exception as e:
+            log.warning(f"restore_installed_plugins skipped: {e}")
+    else:
+        log.warning("DB unavailable, skipping installed plugin restore")
 
     log.info("AI Plugin Terminal started")
     yield
     log.info("AI Plugin Terminal stopped")
 
 
-app = FastAPI(title="AI Plugin Terminal", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="AI Plugin Terminal", version="3.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -189,7 +218,10 @@ async def command(req: CommandRequest):
         return JSONResponse(result)
     except Exception as e:
         log.error(f"Command error: {e}")
-        return JSONResponse({"success": False, "output": f"Command error: {str(e)}"}, status_code=500)
+        return JSONResponse(
+            {"success": False, "output": f"Command error: {str(e)}"},
+            status_code=500,
+        )
 
 
 @app.exception_handler(Exception)
