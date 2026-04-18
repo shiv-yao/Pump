@@ -1,6 +1,7 @@
 """
 main.py - AI Agent with Plugin Skill Store
 Railway 可部署，支援動態安裝 / 管理 skills
+Claude 餘額不足時自動 fallback 到 GPT
 """
 
 import importlib.util
@@ -13,13 +14,14 @@ import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import anthropic
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 # =========================================================
@@ -51,12 +53,15 @@ SKILL_REGISTRY_URL = os.getenv(
     "https://raw.githubusercontent.com/your-org/skill-store/main/registry.json"
 )
 
-DEFAULT_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
+DEFAULT_CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
+DEFAULT_GPT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 DEFAULT_SYSTEM_PROMPT = os.getenv(
     "AGENT_SYSTEM_PROMPT",
     "你是一個強大的 AI Agent，擁有多種 skills 可以使用。"
     "根據用戶需求選擇合適的工具完成任務。使用繁體中文回應。"
 )
+
+ENABLE_OPENAI_FALLBACK = os.getenv("ENABLE_OPENAI", "true").lower() == "true"
 
 # =========================================================
 # SKILL LOADER
@@ -166,22 +171,76 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
 
 
 # =========================================================
+# MODEL HELPERS
+# =========================================================
+def flatten_history_to_text(history: Optional[list]) -> str:
+    if not history:
+        return ""
+
+    lines = []
+    for item in history:
+        role = item.get("role", "unknown")
+        content = item.get("content", "")
+        if isinstance(content, list):
+            content = json.dumps(content, ensure_ascii=False)
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def is_low_balance_error(message: str) -> bool:
+    msg = message.lower()
+    markers = [
+        "credit balance is too low",
+        "purchase credits",
+        "plans & billing",
+        "billing",
+        "insufficient credits",
+    ]
+    return any(m in msg for m in markers)
+
+
+def is_claude_retryable_or_fallback_error(message: str) -> bool:
+    msg = message.lower()
+    markers = [
+        "credit balance is too low",
+        "purchase credits",
+        "plans & billing",
+        "invalid api key",
+        "authentication",
+        "unauthorized",
+        "forbidden",
+        "model not found",
+        "not allowed",
+        "overloaded",
+        "rate limit",
+        "temporarily unavailable",
+    ]
+    return any(m in msg for m in markers)
+
+
+# =========================================================
 # AGENT CORE
 # =========================================================
 class AgentSession:
     def __init__(self):
-        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-        self.client = anthropic.AsyncAnthropic(api_key=api_key) if api_key else None
-        self.model = DEFAULT_MODEL
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+
+        self.claude_client = anthropic.AsyncAnthropic(api_key=anthropic_key) if anthropic_key else None
+        self.openai_client = AsyncOpenAI(api_key=openai_key) if openai_key else None
+
+        self.claude_model = DEFAULT_CLAUDE_MODEL
+        self.gpt_model = DEFAULT_GPT_MODEL
         self.system_prompt = DEFAULT_SYSTEM_PROMPT
 
-    async def run(self, user_message: str, history: Optional[list] = None) -> dict:
-        if not self.client:
+    async def _run_with_claude(self, user_message: str, history: Optional[list] = None) -> dict:
+        if not self.claude_client:
             return {
-                "response": "尚未設定 ANTHROPIC_API_KEY，請先在 Railway Variables 加上 ANTHROPIC_API_KEY。",
+                "response": "尚未設定 ANTHROPIC_API_KEY。",
                 "steps": [],
                 "messages": [],
                 "error": "missing_anthropic_api_key",
+                "provider": "claude",
             }
 
         messages = list(history) if history else []
@@ -193,7 +252,7 @@ class AgentSession:
 
         for _ in range(max_iterations):
             kwargs = {
-                "model": self.model,
+                "model": self.claude_model,
                 "max_tokens": 4096,
                 "system": self.system_prompt,
                 "messages": messages,
@@ -202,16 +261,7 @@ class AgentSession:
             if tools:
                 kwargs["tools"] = tools
 
-            try:
-                response = await self.client.messages.create(**kwargs)
-            except Exception:
-                return {
-                    "response": "Claude API 呼叫失敗。",
-                    "steps": steps + [{"type": "error", "content": traceback.format_exc()}],
-                    "messages": messages,
-                    "error": "anthropic_request_failed",
-                }
-
+            response = await self.claude_client.messages.create(**kwargs)
             messages.append({"role": "assistant", "content": response.content})
 
             tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
@@ -232,7 +282,7 @@ class AgentSession:
                     "tool": tool_use.name,
                     "input": tool_use.input,
                 })
-                log.info(f"Executing tool: {tool_use.name} with {tool_use.input}")
+                log.info(f"Claude executing tool: {tool_use.name} with {tool_use.input}")
 
                 try:
                     result = await execute_tool(tool_use.name, tool_use.input)
@@ -265,7 +315,156 @@ class AgentSession:
             "response": final_text,
             "steps": steps,
             "messages": messages,
+            "provider": "claude",
         }
+
+    async def _run_with_gpt(self, user_message: str, history: Optional[list] = None, reason: str = "") -> dict:
+        if not self.openai_client:
+            return {
+                "response": "Claude 無法使用，且尚未設定 OPENAI_API_KEY，無法 fallback 到 GPT。",
+                "steps": [],
+                "messages": history or [],
+                "error": "missing_openai_api_key",
+                "provider": "gpt",
+            }
+
+        # 這裡採用文字 fallback，不強行複刻 Claude tool loop。
+        # 若要做 GPT tool calling，可再另外擴充。
+        history_text = flatten_history_to_text(history)
+        prompt = (
+            f"{self.system_prompt}\n\n"
+            f"你目前是 Claude 的備援模型。"
+            f"若前面提到 Claude 失敗原因，請不要重複報錯，直接繼續幫使用者完成任務。\n"
+        )
+
+        if history_text:
+            prompt += f"\n以下是先前對話紀錄：\n{history_text}\n"
+
+        if reason:
+            prompt += f"\nClaude 失敗原因：{reason}\n"
+
+        prompt += f"\n使用者最新訊息：{user_message}\n"
+
+        resp = await self.openai_client.responses.create(
+            model=self.gpt_model,
+            input=prompt,
+        )
+
+        text = getattr(resp, "output_text", "") or "GPT 已接手，但沒有文字回應。"
+
+        steps = []
+        if reason:
+            steps.append({
+                "type": "fallback",
+                "content": f"Claude unavailable, fallback to GPT: {reason}"
+            })
+
+        return {
+            "response": text,
+            "steps": steps,
+            "messages": history or [],
+            "provider": "gpt",
+        }
+
+    async def _run_local_fallback(self, user_message: str, history: Optional[list] = None, reason: str = "") -> Optional[dict]:
+        # 最後一道 fallback：如果像數學算式，就直接用 calculator
+        lowered = user_message.strip()
+        if any(ch.isdigit() for ch in lowered) and any(op in lowered for op in ["+", "-", "*", "/", "%"]):
+            try:
+                result = await execute_tool("calculate", {"expression": lowered})
+                return {
+                    "response": f"雲端模型暫時不可用，已改用本地 calculator：\n{result}",
+                    "steps": [
+                        {
+                            "type": "fallback",
+                            "content": f"Local fallback because model unavailable: {reason}"
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool": "calculate",
+                            "result": result,
+                        }
+                    ],
+                    "messages": history or [],
+                    "provider": "local",
+                }
+            except Exception:
+                pass
+        return None
+
+    async def run(self, user_message: str, history: Optional[list] = None) -> dict:
+        history = list(history) if history else []
+
+        # 先試 Claude
+        try:
+            result = await self._run_with_claude(user_message, history)
+            if not result.get("error"):
+                return result
+
+            # 缺 key 也允許 fallback GPT
+            reason = result.get("response", result.get("error", "Claude unavailable"))
+            if ENABLE_OPENAI_FALLBACK:
+                try:
+                    return await self._run_with_gpt(user_message, history, reason=reason)
+                except Exception as gpt_err:
+                    local = await self._run_local_fallback(user_message, history, reason=str(gpt_err))
+                    if local:
+                        return local
+                    return {
+                        "response": f"Claude 無法使用，GPT fallback 也失敗：{str(gpt_err)}",
+                        "steps": [],
+                        "messages": history,
+                        "error": "all_models_failed",
+                        "provider": "none",
+                    }
+            return result
+
+        except Exception as e:
+            err_text = str(e)
+            log.error(f"Claude request failed: {err_text}\n{traceback.format_exc()}")
+
+            # Claude 餘額不足 / 權限問題 / 模型問題 → fallback GPT
+            if ENABLE_OPENAI_FALLBACK and is_claude_retryable_or_fallback_error(err_text):
+                try:
+                    return await self._run_with_gpt(user_message, history, reason=err_text)
+                except Exception as gpt_err:
+                    log.error(f"GPT fallback failed: {gpt_err}\n{traceback.format_exc()}")
+                    local = await self._run_local_fallback(user_message, history, reason=str(gpt_err))
+                    if local:
+                        return local
+
+                    if is_low_balance_error(err_text):
+                        return {
+                            "response": (
+                                "Claude API 無法使用：Anthropic 帳戶餘額不足。"
+                                f"已嘗試 fallback 到 GPT，但 GPT 也失敗：{str(gpt_err)}"
+                            ),
+                            "steps": [],
+                            "messages": history,
+                            "error": "anthropic_low_balance_and_gpt_failed",
+                            "provider": "none",
+                        }
+
+                    return {
+                        "response": f"Claude 失敗，且 GPT fallback 也失敗：{str(gpt_err)}",
+                        "steps": [],
+                        "messages": history,
+                        "error": "all_models_failed",
+                        "provider": "none",
+                    }
+
+            # 非預期錯誤：也嘗試本地 fallback
+            local = await self._run_local_fallback(user_message, history, reason=err_text)
+            if local:
+                return local
+
+            return {
+                "response": f"Claude API error: {err_text}",
+                "steps": [{"type": "error", "content": traceback.format_exc()}],
+                "messages": history,
+                "error": "anthropic_request_failed",
+                "provider": "claude",
+            }
 
 
 def get_session(session_id: str = "default") -> AgentSession:
@@ -592,6 +791,7 @@ async def health():
         "status": "ok",
         "skills": len(skill_registry),
         "time": datetime.now().isoformat(),
+        "openai_fallback_enabled": ENABLE_OPENAI_FALLBACK,
     }
 
 
@@ -621,6 +821,7 @@ async def chat(req: ChatRequest):
         "steps": result.get("steps", []),
         "session_id": req.session_id,
         "error": result.get("error"),
+        "provider": result.get("provider"),
     })
 
 
