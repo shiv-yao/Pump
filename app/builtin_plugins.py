@@ -64,11 +64,16 @@ def calculate(expression: str) -> str:
         pdir = PLUGINS_DIR / plugin_id
         pdir.mkdir(parents=True, exist_ok=True)
 
-        with open(pdir / "plugin.json", "w", encoding="utf-8") as f:
-            json.dump(data["plugin_json"], f, ensure_ascii=False, indent=2)
+        plugin_json_path = pdir / "plugin.json"
+        handler_path = pdir / "handler.py"
 
-        with open(pdir / "handler.py", "w", encoding="utf-8") as f:
-            f.write(data["handler"])
+        if not plugin_json_path.exists():
+            with open(plugin_json_path, "w", encoding="utf-8") as f:
+                json.dump(data["plugin_json"], f, ensure_ascii=False, indent=2)
+
+        if not handler_path.exists():
+            with open(handler_path, "w", encoding="utf-8") as f:
+                f.write(data["handler"])
 
     if not REGISTRY_FILE.exists():
         with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
