@@ -1,29 +1,28 @@
 import logging
-import json
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from app.settings import INDEX_HTML, ENABLE_CLAUDE, ENABLE_OPENAI
+from app.agent_runtime import get_session
+from app.builtin_plugins import ensure_builtin_plugins
+from app.command_router import execute_platform_command
+from app.db import forget_installed_plugin, init_plugin_db
 from app.models import ChatRequest, CommandRequest, InstallPluginRequest, PluginManualCreate
-from app.db import init_plugin_db
 from app.plugin_manager import (
-    load_all_plugins,
-    restore_installed_plugins,
-    plugin_registry,
     get_store_registry,
     install_plugin_from_url,
+    load_all_plugins,
+    plugin_registry,
+    restore_installed_plugins,
 )
 from app.provider_status import (
     check_claude_status,
     check_openai_status,
     check_trading_status,
 )
-from app.agent_runtime import get_session
-from app.command_router import execute_platform_command
-from app.builtin_plugins import ensure_builtin_plugins
+from app.settings import ENABLE_CLAUDE, ENABLE_OPENAI, INDEX_HTML, PLUGINS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -119,6 +118,41 @@ async def install_plugin(req: InstallPluginRequest):
 @app.post("/api/plugins/create")
 async def create_plugin(req: PluginManualCreate):
     return {"success": True, "plugin": req.name}
+
+
+@app.patch("/api/plugins/{plugin_id}/toggle")
+async def toggle_plugin(plugin_id: str):
+    import json
+    from pathlib import Path
+
+    if plugin_id not in plugin_registry:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+
+    plugin_json = Path(plugin_registry[plugin_id]["path"]) / "plugin.json"
+    with open(plugin_json, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    manifest["enabled"] = not manifest.get("enabled", True)
+
+    with open(plugin_json, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    load_all_plugins()
+    return {"success": True, "enabled": manifest["enabled"]}
+
+
+@app.delete("/api/plugins/{plugin_id}")
+async def remove_plugin(plugin_id: str):
+    import shutil
+
+    pdir = PLUGINS_DIR / plugin_id
+    if not pdir.exists():
+        raise HTTPException(status_code=404, detail="Plugin not found")
+
+    shutil.rmtree(pdir)
+    forget_installed_plugin(plugin_id)
+    load_all_plugins()
+    return {"success": True}
 
 
 @app.get("/api/status/providers")
