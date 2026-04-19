@@ -1,100 +1,127 @@
 import os
+import httpx
 import time
-from typing import Dict, Any
 
-# 官方 SDK
-from py_clob_client.client import ClobClient
-from py_clob_client.types import OrderArgs, OrderType
+BASE = os.getenv("POLYMARKET_API", "").rstrip("/")
+API_KEY = os.getenv("POLYMARKET_API_KEY", "")
 
-# ========= 環境 =========
-# 必填
-# POLY_PRIVATE_KEY: 你的錢包私鑰（0x...）
-# POLY_CHAIN_ID: 137 (Polygon) 或依官方
-# POLY_API_URL: https://clob.polymarket.com
-# 選填
-# POLY_SUBACCOUNT: 若你使用子帳戶
-
-API_URL = os.getenv("POLY_API_URL", "https://clob.polymarket.com")
-PRIVATE_KEY = os.getenv("POLY_PRIVATE_KEY", "")
-CHAIN_ID = int(os.getenv("POLY_CHAIN_ID", "137"))
-SUBACCOUNT = os.getenv("POLY_SUBACCOUNT", None)
-
-if not PRIVATE_KEY:
-    raise RuntimeError("POLY_PRIVATE_KEY not set")
-
-# ========= Client =========
-_client: ClobClient | None = None
-
-def get_client() -> ClobClient:
-    global _client
-    if _client is None:
-        _client = ClobClient(
-            host=API_URL,
-            key=PRIVATE_KEY,
-            chain_id=CHAIN_ID,
-            subaccount=SUBACCOUNT
-        )
-    return _client
+HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json"
+}
 
 
-# ========= 工具 =========
-
-def _side_to_enum(side: str):
-    s = side.lower()
-    if s in ("buy", "bid"):
-        return "buy"
-    if s in ("sell", "ask"):
-        return "sell"
-    raise ValueError(f"invalid side: {side}")
+def _check():
+    if not BASE:
+        return {"error": "POLYMARKET_API not set"}
+    if not API_KEY:
+        return {"error": "POLYMARKET_API_KEY not set"}
+    return None
 
 
-def pm_limit(asset_id: str, side: str, price: float, size: float, ioc: bool = False) -> Dict[str, Any]:
-    """
-    限價單（預設 maker），ioc=True 則為 IOC（taker）
-    price: 0~1 機率價格（YES token）
-    size: 數量（shares）
-    """
-    client = get_client()
-    side = _side_to_enum(side)
+# ========= 下單 =========
+async def pm_limit(asset_id, side, price, size, ioc=False):
+    err = _check()
+    if err:
+        return err
 
-    # OrderArgs 依 SDK 定義（名稱可能因版本略有差異）
-    order = OrderArgs(
-        asset_id=asset_id,
-        is_buy=(side == "buy"),
-        price=price,
-        size=size,
-        order_type=OrderType.IOC if ioc else OrderType.GTC
-    )
-
-    # 簽名並送出
-    resp = client.create_order(order)
-
-    return {
-        "ok": True,
-        "order_id": resp.get("orderID") or resp.get("id"),
-        "raw": resp
+    payload = {
+        "asset_id": str(asset_id),
+        "side": side,
+        "price": float(price),
+        "size": float(size),
+        "type": "IOC" if ioc else "LIMIT"
     }
 
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.post(f"{BASE}/order", json=payload, headers=HEADERS)
 
-def pm_cancel(order_id: str) -> Dict[str, Any]:
-    client = get_client()
-    resp = client.cancel_order(order_id)
-    return {"ok": True, "raw": resp}
+        if r.status_code != 200:
+            return {"error": f"order failed {r.status_code}", "text": r.text}
+
+        data = r.json()
+
+        return {
+            "order_id": data.get("id"),
+            "status": data.get("status", "submitted")
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
-def pm_get_order(order_id: str) -> Dict[str, Any]:
-    client = get_client()
-    resp = client.get_order(order_id)
-    return {"ok": True, "order": resp}
+# ========= 查單 =========
+async def pm_get_order(order_id):
+    err = _check()
+    if err:
+        return err
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{BASE}/order/{order_id}", headers=HEADERS)
+
+        if r.status_code != 200:
+            return {"error": f"get_order {r.status_code}"}
+
+        return {"order": r.json()}
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
-def pm_get_fills(limit: int = 50) -> Dict[str, Any]:
-    client = get_client()
-    resp = client.get_trades(limit=limit)
-    return {"ok": True, "fills": resp}
+# ========= 取消 =========
+async def pm_cancel(order_id):
+    err = _check()
+    if err:
+        return err
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.post(f"{BASE}/cancel", json={"order_id": order_id}, headers=HEADERS)
+
+        if r.status_code != 200:
+            return {"error": f"cancel failed {r.status_code}"}
+
+        return {"status": "cancelled"}
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
-def pm_balance() -> Dict[str, Any]:
-    client = get_client()
-    resp = client.get_balances()
-    return {"ok": True, "balances": resp}
+# ========= 成交 =========
+async def pm_get_fills(limit=20):
+    err = _check()
+    if err:
+        return err
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{BASE}/fills?limit={limit}", headers=HEADERS)
+
+        if r.status_code != 200:
+            return {"error": f"fills failed {r.status_code}"}
+
+        return {"fills": r.json()}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ========= 餘額 =========
+async def pm_balance():
+    err = _check()
+    if err:
+        return err
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{BASE}/balance", headers=HEADERS)
+
+        if r.status_code != 200:
+            return {"error": f"balance failed {r.status_code}"}
+
+        return r.json()
+
+    except Exception as e:
+        return {"error": str(e)}
