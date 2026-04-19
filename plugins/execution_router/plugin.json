@@ -1,0 +1,26 @@
+{
+  "id": "execution_router",
+  "name": "execution_router",
+  "description": "Route orders to polymarket or solana execution plugins",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "execution",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "route_order",
+      "description": "Route order to target venue",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "target": { "type": "string" },
+          "side": { "type": "string" },
+          "symbol": { "type": "string" },
+          "amount": { "type": "number" }
+        },
+        "required": ["target", "side", "symbol", "amount"]
+      }
+    }
+  ]
+}
