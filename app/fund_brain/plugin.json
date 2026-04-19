@@ -1,0 +1,27 @@
+{
+  "id": "fund_brain",
+  "name": "Fund Brain",
+  "description": "Multi-alpha fusion scoring for trade decisioning",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "allocator",
+  "price": 0,
+  "author": "fund_brain",
+  "tools": [
+    {
+      "name": "combine_alpha_signals",
+      "description": "Fuse multiple alpha signals into one decision",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "signals": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "signals"
+        ]
+      }
+    }
+  ]
+}

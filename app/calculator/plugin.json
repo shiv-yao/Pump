@@ -1,0 +1,27 @@
+{
+  "id": "calculator",
+  "name": "calculator",
+  "description": "數學計算工具",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "utility",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "calculate",
+      "description": "執行數學運算",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression"
+        ]
+      }
+    }
+  ]
+}
