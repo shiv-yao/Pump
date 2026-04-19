@@ -1,0 +1,34 @@
+{
+  "id": "auto_trader_v2",
+  "name": "auto_trader_v2",
+  "description": "Fund-style auto trader using alpha_engine, fund_brain_v2, risk_engine and execution_router",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "automation",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "run_fund",
+      "description": "Run auto trading loop",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "target": { "type": "string" },
+          "capital": { "type": "number" },
+          "loops": { "type": "integer" }
+        },
+        "required": ["symbol"]
+      }
+    },
+    {
+      "name": "stop_fund",
+      "description": "Stop auto trading loop",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
