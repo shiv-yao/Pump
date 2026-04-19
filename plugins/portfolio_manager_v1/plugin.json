@@ -1,0 +1,26 @@
+{
+  "id": "portfolio_manager_v1",
+  "name": "portfolio_manager_v1",
+  "description": "Portfolio decision engine for V9 fund brain",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "portfolio",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "run_portfolio_v1",
+      "description": "Generate portfolio-level trading decision",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": { "type": "string" },
+          "capital": { "type": "number" },
+          "orderbook_score": { "type": "number" },
+          "wallet_score": { "type": "number" }
+        },
+        "required": ["asset_id", "capital"]
+      }
+    }
+  ]
+}
