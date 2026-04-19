@@ -1,0 +1,9 @@
+{
+  "id": "polymarket_alpha",
+  "name": "polymarket_alpha",
+  "enabled": true,
+  "category": "alpha",
+  "tools": [
+    {"name": "get_polymarket_signal"}
+  ]
+}
