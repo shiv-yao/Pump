@@ -8,7 +8,11 @@ from typing import Optional
 
 import httpx
 
-from app.db import load_installed_plugin_records, remember_installed_plugin, forget_installed_plugin
+from app.db import (
+    load_installed_plugin_records,
+    remember_installed_plugin,
+    forget_installed_plugin,
+)
 from app.settings import PLUGINS_DIR, REGISTRY_FILE
 
 log = logging.getLogger(__name__)
@@ -46,8 +50,9 @@ def load_plugin_manifest(plugin_dir: Path) -> Optional[dict]:
 
 
 def load_all_plugins():
-    global plugin_registry
-    plugin_registry = {}
+    # ⚠️ 不能重新指派 plugin_registry = {}
+    # 要原地清空，不然其他模組 import 到的是舊 dict
+    plugin_registry.clear()
 
     PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -133,7 +138,8 @@ def get_store_registry():
         with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             return data if isinstance(data, list) else []
-    except Exception:
+    except Exception as e:
+        log.error(f"Failed to read store registry: {e}")
         return []
 
 
@@ -199,12 +205,13 @@ async def install_plugin_from_url(plugin_name: str, url: str, remember: bool = T
                 with open(plugin_dir / "handler.py", "w", encoding="utf-8") as f:
                     f.write(handler_resp.text)
 
-        load_all_plugins()
-
         if remember:
             remember_installed_plugin(plugin_name, url)
 
+        load_all_plugins()
+        log.info(f"Installed plugin from URL: {plugin_name}")
         return True
+
     except Exception as e:
         log.error(f"install_plugin_from_url error: {e}")
         return False
