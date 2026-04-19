@@ -1,0 +1,36 @@
+{
+  "id": "arb_engine_v5",
+  "name": "arb_engine_v5",
+  "description": "True cross-market arbitrage engine (multi-Polymarket)",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "alpha",
+  "tools": [
+    {
+      "name": "run_arb_v5",
+      "description": "Run multi-market arbitrage",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "markets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "asset_id": { "type": "string" },
+                "name": { "type": "string" }
+              }
+            }
+          },
+          "capital": { "type": "number" }
+        },
+        "required": ["markets"]
+      }
+    },
+    {
+      "name": "stop_arb_v5",
+      "description": "Stop arbitrage",
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  ]
+}
