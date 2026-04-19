@@ -128,8 +128,10 @@ async def execute_platform_command(command: str):
                 "/save_env_block {\"env_block\":\"...\",\"filename\":\"latest.env\"}\n"
                 "/auto_opt\n"
                 "/apply_env\n"
-                "/replay\n"
-                "/replay_opt\n"
+                "/replay [json]\n"
+                "/replay_opt [json]\n"
+                "/simulate_order {\"asset_id\":\"A\",\"side\":\"buy\",\"size\":1,\"book\":{...},\"order_type\":\"ioc\"}\n"
+                "/simulate_fill {\"asset_id\":\"A\",\"side\":\"buy\",\"size\":1,\"book\":{...}}\n"
                 "/clear\n"
             )
         }
@@ -146,7 +148,8 @@ async def execute_platform_command(command: str):
         lines = []
         for pid, info in plugin_registry.items():
             enabled = info.get("enabled", False)
-            lines.append(f"{pid} [{'ON' if enabled else 'OFF'}]")
+            tools = [t.get("name") for t in info.get("manifest", {}).get("tools", [])]
+            lines.append(f"{pid} [{'ON' if enabled else 'OFF'}]  tools={tools}")
 
         return {"success": True, "output": "\n".join(lines)}
 
@@ -267,6 +270,34 @@ async def execute_platform_command(command: str):
         if "_raw" in payload:
             payload = {}
         result = await _call_tool("replay_optimize", payload)
+        return {"success": True, "output": _format(result)}
+
+    # ========= EXECUTION SIMULATOR SHORTCUTS =========
+    if head == "simulate_order":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            return {
+                "success": False,
+                "output": (
+                    'Usage: /simulate_order {"asset_id":"A","side":"buy","size":1,'
+                    '"book":{"best_bid":0.49,"best_ask":0.51,"bids":[...],"asks":[...]},'
+                    '"order_type":"ioc","price":0.51}'
+                )
+            }
+        result = await _call_tool("simulate_order", payload)
+        return {"success": True, "output": _format(result)}
+
+    if head == "simulate_fill":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            return {
+                "success": False,
+                "output": (
+                    'Usage: /simulate_fill {"asset_id":"A","side":"buy","size":1,'
+                    '"book":{"best_bid":0.49,"best_ask":0.51,"bids":[...],"asks":[...]}}'
+                )
+            }
+        result = await _call_tool("simulate_fill", payload)
         return {"success": True, "output": _format(result)}
 
     # ========= GENERIC TOOL DISPATCH =========
