@@ -29,11 +29,11 @@ def load(tool):
             continue
 
         try:
-            data = json.loads(m.read_text())
+            data = json.loads(m.read_text(encoding="utf-8"))
         except Exception:
             continue
 
-        if not any(t["name"] == tool for t in data.get("tools", [])):
+        if not any(t.get("name") == tool for t in data.get("tools", [])):
             continue
 
         spec = importlib.util.spec_from_file_location("mod", h)
@@ -85,14 +85,12 @@ async def apply_fill(asset_id, side, price, size):
         pos["avg"] = (pos["avg"] * pos["size"] + px * qty) / max(new_size, 1e-9)
         pos["size"] = new_size
     else:
-        # 這裡是簡化版 realized pnl
         realized = (px - pos["avg"]) * qty
         PNL += realized
         pos["size"] -= qty
 
     POSITIONS[asset_id] = pos
 
-    # 同步 inventory controller
     await call("adjust_position", {
         "asset_id": asset_id,
         "size": qty,
@@ -111,8 +109,6 @@ async def apply_fill(asset_id, side, price, size):
 
 # ========= execution =========
 async def execute(asset_id, side, bid, ask, size):
-
-    # 價格由 orderbook_edge 決定
     limit_price = await call("get_limit_price", {
         "bid": bid,
         "ask": ask,
@@ -206,6 +202,55 @@ async def execute(asset_id, side, bid, ask, size):
     }
 
 
+# ========= alpha fusion =========
+async def get_fused_signal(asset_id):
+    # 1) orderbook alpha
+    alpha = await call("get_alpha_v2", {"asset_id": asset_id})
+    if not isinstance(alpha, dict) or "error" in alpha:
+        return {"error": "alpha_v2 failed"}
+
+    side = str(alpha.get("action", "hold")).lower().strip()
+    score = float(alpha.get("score", 0.0))
+
+    # 2) wallet alpha
+    wallet = await call("get_wallet_alpha", {"asset_id": asset_id})
+    if isinstance(wallet, dict) and "error" not in wallet:
+        w_side = str(wallet.get("action", "hold")).lower().strip()
+        w_score = float(wallet.get("score", 0.0))
+
+        # 強 wallet 直接覆蓋
+        if w_score > 0.7 and w_side != "hold":
+            side = w_side
+            score = w_score
+
+        # 中等 wallet 做融合
+        elif w_score > 0.4 and w_side != "hold":
+            if w_side == side:
+                score = max(score, w_score)
+            elif side != "hold":
+                score *= 0.5
+
+    # 3) 弱訊號直接 hold
+    if score < 0.55:
+        side = "hold"
+
+    # 4) signal filter
+    filtered = await call("filter_signal", {
+        "score": score,
+        "action": side
+    })
+
+    if isinstance(filtered, dict):
+        side = str(filtered.get("action", "hold")).lower().strip()
+    else:
+        side = str(filtered).lower().strip()
+
+    return {
+        "action": side,
+        "score": score
+    }
+
+
 # ========= main engine =========
 async def start_v6_engine(markets, capital=100):
     global RUNNING
@@ -214,31 +259,19 @@ async def start_v6_engine(markets, capital=100):
     await call("start_polymarket_book", {"asset_ids": markets})
 
     while RUNNING:
-
         for m in markets:
-            # ===== alpha =====
-            alpha = await call("get_alpha_v2", {"asset_id": m})
-            if not isinstance(alpha, dict) or "error" in alpha:
+            # ===== fused alpha =====
+            fused = await get_fused_signal(m)
+            if "error" in fused:
                 continue
 
-            side = alpha.get("action", "hold")
-            score = float(alpha.get("score", 0.0))
-
-            # ===== signal filter =====
-            filtered = await call("filter_signal", {
-                "score": score,
-                "action": side
-            })
-
-            if isinstance(filtered, dict):
-                filtered = filtered.get("action", "hold")
-
-            side = str(filtered).lower().strip()
+            side = fused["action"]
+            score = float(fused["score"])
 
             if side == "hold":
                 continue
 
-            # ===== book =====
+            # ===== orderbook =====
             book = await call("get_polymarket_book_cache", {"asset_id": m})
             if not isinstance(book, dict) or "error" in book:
                 continue
@@ -254,7 +287,6 @@ async def start_v6_engine(markets, capital=100):
 
             # ===== inventory reduce =====
             reduce_needed = await call("should_reduce", {"asset_id": m})
-
             if reduce_needed is True:
                 current = POSITIONS.get(m, {"size": 0.0})
                 if current["size"] > 0:
@@ -262,7 +294,7 @@ async def start_v6_engine(markets, capital=100):
                 elif current["size"] < 0:
                     side = "buy"
 
-            # ===== size 動態 =====
+            # ===== 動態 size =====
             size = capital * (0.01 + score * 0.02)
 
             if not risk_check(m, size, capital):
