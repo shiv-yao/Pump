@@ -67,3 +67,29 @@ async def route_order(target: str, side: str, symbol: str, amount: float):
     elif target == "solana":
         tool_name = "sol_buy" if side == "buy" else "sol_sell"
         fn = _load_tool(tool_name)
+        if not fn:
+            return {"error": f"{tool_name} not found. Is solana_exec installed and enabled?"}
+
+        if side == "buy":
+            payload = {"mint": symbol, "sol": amount}
+        else:
+            payload = {"mint": symbol}
+
+    else:
+        return {"error": f"unknown target: {target}"}
+
+    try:
+        if inspect.iscoroutinefunction(fn):
+            result = await fn(**payload)
+        else:
+            result = fn(**payload)
+
+        return {
+            "target": target,
+            "side": side,
+            "symbol": symbol,
+            "amount": amount,
+            "result": result
+        }
+    except Exception as e:
+        return {"error": f"route_order failed: {e}"}
