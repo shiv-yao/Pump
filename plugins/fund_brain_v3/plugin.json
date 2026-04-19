@@ -1,0 +1,49 @@
+{
+  "id": "fund_brain_v3",
+  "name": "fund_brain_v3",
+  "description": "Full portfolio auto trading fund brain (multi-market)",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "fund",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "run_portfolio",
+      "description": "Run full auto portfolio trading",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "markets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "asset_id": { "type": "string" },
+                "symbol": { "type": "string" }
+              }
+            }
+          },
+          "capital": { "type": "number" }
+        },
+        "required": ["markets"]
+      }
+    },
+    {
+      "name": "get_equity_curve",
+      "description": "Return equity history",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "stop_portfolio",
+      "description": "Stop trading",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
