@@ -1,12 +1,16 @@
 def get_limit_price(bid, ask, side):
-
+    bid = float(bid)
+    ask = float(ask)
     spread = ask - bid
 
-    # 太窄 → 不下單
     if spread < 0.01:
         return None
 
-    if side == "buy":
-        return bid + spread * 0.2   # 插隊
-    else:
+    s = side.lower().strip()
+
+    if s == "buy":
+        return bid + spread * 0.2
+    elif s == "sell":
         return ask - spread * 0.2
+
+    return None
