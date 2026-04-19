@@ -1,127 +1,53 @@
-import os
-import httpx
-import time
-
-BASE = os.getenv("POLYMARKET_API", "").rstrip("/")
-API_KEY = os.getenv("POLYMARKET_API_KEY", "")
-
-HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json"
-}
+from app.execution_gateway.router import (
+    route_place_order,
+    route_get_order,
+    route_cancel_order,
+    route_get_fills,
+    route_get_balance,
+)
 
 
-def _check():
-    if not BASE:
-        return {"error": "POLYMARKET_API not set"}
-    if not API_KEY:
-        return {"error": "POLYMARKET_API_KEY not set"}
-    return None
-
-
-# ========= 下單 =========
 async def pm_limit(asset_id, side, price, size, ioc=False):
-    err = _check()
-    if err:
-        return err
-
     payload = {
         "asset_id": str(asset_id),
-        "side": side,
+        "side": str(side),
         "price": float(price),
         "size": float(size),
-        "type": "IOC" if ioc else "LIMIT"
+        "type": "IOC" if ioc else "LIMIT",
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.post(f"{BASE}/order", json=payload, headers=HEADERS)
+    result = await route_place_order(payload)
 
-        if r.status_code != 200:
-            return {"error": f"order failed {r.status_code}", "text": r.text}
-
-        data = r.json()
-
+    if isinstance(result, dict):
         return {
-            "order_id": data.get("id"),
-            "status": data.get("status", "submitted")
+            "order_id": result.get("id") or result.get("order_id"),
+            "status": result.get("status", "submitted"),
+            "raw": result,
         }
 
-    except Exception as e:
-        return {"error": str(e)}
+    return {"error": "invalid route_place_order result"}
 
 
-# ========= 查單 =========
-async def pm_get_order(order_id):
-    err = _check()
-    if err:
-        return err
-
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(f"{BASE}/order/{order_id}", headers=HEADERS)
-
-        if r.status_code != 200:
-            return {"error": f"get_order {r.status_code}"}
-
-        return {"order": r.json()}
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# ========= 取消 =========
 async def pm_cancel(order_id):
-    err = _check()
-    if err:
-        return err
-
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.post(f"{BASE}/cancel", json={"order_id": order_id}, headers=HEADERS)
-
-        if r.status_code != 200:
-            return {"error": f"cancel failed {r.status_code}"}
-
-        return {"status": "cancelled"}
-
-    except Exception as e:
-        return {"error": str(e)}
+    result = await route_cancel_order(str(order_id))
+    return result
 
 
-# ========= 成交 =========
+async def pm_get_order(order_id):
+    result = await route_get_order(str(order_id))
+    if isinstance(result, dict):
+        return {"order": result}
+    return {"error": "invalid route_get_order result"}
+
+
 async def pm_get_fills(limit=20):
-    err = _check()
-    if err:
-        return err
-
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(f"{BASE}/fills?limit={limit}", headers=HEADERS)
-
-        if r.status_code != 200:
-            return {"error": f"fills failed {r.status_code}"}
-
-        return {"fills": r.json()}
-
-    except Exception as e:
-        return {"error": str(e)}
+    result = await route_get_fills(int(limit))
+    if isinstance(result, dict) and "fills" in result:
+        return result
+    if isinstance(result, list):
+        return {"fills": result}
+    return {"fills": [], "raw": result}
 
 
-# ========= 餘額 =========
 async def pm_balance():
-    err = _check()
-    if err:
-        return err
-
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(f"{BASE}/balance", headers=HEADERS)
-
-        if r.status_code != 200:
-            return {"error": f"balance failed {r.status_code}"}
-
-        return r.json()
-
-    except Exception as e:
-        return {"error": str(e)}
+    return await route_get_balance()
