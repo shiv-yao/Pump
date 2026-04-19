@@ -4,6 +4,9 @@
   "description": "Filter noisy alpha signals",
   "version": "1.0.0",
   "enabled": true,
+  "category": "alpha",
+  "price": 0,
+  "author": "system",
   "tools": [
     {
       "name": "filter_signal",
