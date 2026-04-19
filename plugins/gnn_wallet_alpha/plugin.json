@@ -1,0 +1,27 @@
+{
+  "id": "gnn_wallet_alpha",
+  "name": "GNN Wallet Alpha",
+  "description": "Detect smart money using wallet graph",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "alpha",
+  "price": 0,
+  "author": "fund_brain",
+  "tools": [
+    {
+      "name": "analyze_wallet_graph",
+      "description": "Analyze wallet graph and return alpha signal",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "transactions": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "transactions"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "trading_signals",
+  "name": "trading_signals",
+  "description": "加密貨幣交易信號分析",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "trading",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "get_trading_signal",
+      "description": "取得指定幣種的交易信號",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "timeframe": {
+            "type": "string",
+            "default": "1h"
+          }
+        },
+        "required": [
+          "symbol"
+        ]
+      }
+    }
+  ]
+}

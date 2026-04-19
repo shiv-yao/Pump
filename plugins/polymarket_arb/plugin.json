@@ -1,9 +1,12 @@
 {
   "id": "polymarket_arb",
   "name": "Polymarket Arbitrage",
-  "description": "BTC 預測 vs Polymarket 價差套利",
+  "description": "Paper/live-ready polymarket arb bot skeleton",
   "version": "1.0.0",
   "enabled": true,
+  "category": "trading",
+  "price": 0,
+  "author": "system",
   "tools": [
     {
       "name": "start_arb_bot",
@@ -23,7 +26,7 @@
     },
     {
       "name": "arb_status",
-      "description": "查看狀態",
+      "description": "查看套利機器人狀態",
       "input_schema": {
         "type": "object",
         "properties": {}
