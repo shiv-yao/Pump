@@ -59,11 +59,11 @@ async def call(tool, payload):
 def risk_check(asset_id, size, capital):
     pos = POSITIONS.get(asset_id, {"size": 0})
 
-    # 單筆不超過 2%
+    # 單筆 <= 2%
     if size > capital * 0.02:
         return False
 
-    # 單市場不超過 20%
+    # 單市場 <= 20%
     if abs(pos["size"]) > capital * 0.2:
         return False
 
@@ -91,9 +91,9 @@ def apply_fill(asset_id, side, price, size):
 # ========= 下單 =========
 async def execute(asset_id, side, bid, ask, size):
 
-    # ===== 1️⃣ LIMIT 掛單 =====
     price = bid if side == "buy" else ask
 
+    # ===== LIMIT =====
     res = await call("pm_limit", {
         "asset_id": asset_id,
         "side": side,
@@ -106,12 +106,11 @@ async def execute(asset_id, side, bid, ask, size):
     if not oid:
         return
 
-    # ===== 2️⃣ 等成交 =====
+    # ===== 等成交 =====
     filled = False
 
     for _ in range(10):
         od = await call("pm_get_order", {"order_id": oid})
-
         order = od.get("order", {})
         status = order.get("status")
 
@@ -126,7 +125,7 @@ async def execute(asset_id, side, bid, ask, size):
 
         await asyncio.sleep(0.1)
 
-    # ===== 3️⃣ fallback IOC =====
+    # ===== fallback IOC =====
     if not filled:
         await call("pm_cancel", {"order_id": oid})
 
@@ -138,7 +137,6 @@ async def execute(asset_id, side, bid, ask, size):
             "ioc": True
         })
 
-        # 再查成交
         await asyncio.sleep(0.2)
         fills = await call("pm_get_fills", {"limit": 5})
 
@@ -164,6 +162,19 @@ async def start_v6_engine(markets, capital=100):
 
         for m in markets:
 
+            # ===== 取得 alpha =====
+            alpha = await call("get_alpha_v2", {"asset_id": m})
+
+            if "error" in alpha:
+                continue
+
+            side = alpha.get("action")
+            score = alpha.get("score", 0)
+
+            if side == "hold":
+                continue
+
+            # ===== 取得 orderbook =====
             book = await call("get_polymarket_book_cache", {"asset_id": m})
             if "error" in book:
                 continue
@@ -174,18 +185,11 @@ async def start_v6_engine(markets, capital=100):
             if not bid or not ask:
                 continue
 
-            spread = ask - bid
-
-            # ===== edge =====
-            if spread < 0.02:
-                continue
-
-            size = capital * 0.01
+            # ===== size 動態 =====
+            size = capital * (0.01 + score * 0.02)
 
             if not risk_check(m, size, capital):
                 continue
-
-            side = "buy" if book.get("imbalance", 0) > 0 else "sell"
 
             await execute(m, side, bid, ask, size)
 
