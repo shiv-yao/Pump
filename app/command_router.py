@@ -1,12 +1,13 @@
 import json
+import inspect
+import importlib.util
+from pathlib import Path
 
 from app.plugin_manager import (
-    execute_tool,
-    get_store_registry,
-    install_plugin_from_url,
     plugin_registry,
-    set_plugin_enabled,
+    install_plugin_from_url,
     remove_plugin,
+    set_plugin_enabled,
 )
 from app.provider_status import (
     check_claude_status,
@@ -15,34 +16,106 @@ from app.provider_status import (
 )
 
 
-def parse_command(command: str) -> dict:
-    raw = command.strip()
-    if raw.startswith("/"):
-        raw = raw[1:].strip()
+def _find_plugins_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        candidate = parent.parent / "plugins" if parent.name == "app" else parent / "plugins"
+        if candidate.exists():
+            return candidate
+    return Path("plugins")
+
+
+def _load_tool(tool_name: str):
+    plugins_root = _find_plugins_root()
+
+    if not plugins_root.exists():
+        return None
+
+    for plugin_dir in plugins_root.iterdir():
+        if not plugin_dir.is_dir():
+            continue
+
+        manifest_path = plugin_dir / "plugin.json"
+        handler_path = plugin_dir / "handler.py"
+
+        if not manifest_path.exists() or not handler_path.exists():
+            continue
+
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        if not any(t.get("name") == tool_name for t in manifest.get("tools", [])):
+            continue
+
+        spec = importlib.util.spec_from_file_location(f"plugin_{plugin_dir.name}", handler_path)
+        if not spec or not spec.loader:
+            continue
+
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        if hasattr(mod, tool_name):
+            return getattr(mod, tool_name)
+
+    return None
+
+
+async def _call_tool(tool_name: str, payload: dict | None = None):
+    payload = payload or {}
+    fn = _load_tool(tool_name)
+
+    if not fn:
+        return {"error": f"tool not found: {tool_name}"}
+
+    if inspect.iscoroutinefunction(fn):
+        return await fn(**payload)
+    return fn(**payload)
+
+
+def _parse_payload(text: str):
+    text = (text or "").strip()
+    if not text:
+        return {}
+
+    # JSON payload
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            return json.loads(text)
+        except Exception:
+            return {"_raw": text}
+
+    return {"_raw": text}
+
+
+def _format(obj):
+    if obj is None:
+        return ""
+    if isinstance(obj, str):
+        return obj
+    try:
+        return json.dumps(obj, ensure_ascii=False, indent=2)
+    except Exception:
+        return str(obj)
+
+
+async def execute_platform_command(command: str):
+    raw = (command or "").strip()
 
     if not raw:
-        return {"cmd": "", "args": []}
+        return {"success": False, "output": "Empty command"}
 
-    parts = raw.split()
-    return {"cmd": parts[0].lower(), "args": parts[1:]}
+    # 允許不加 /
+    cmdline = raw[1:] if raw.startswith("/") else raw
 
+    # 先切第一個 token
+    parts = cmdline.split(maxsplit=1)
+    head = parts[0].strip()
+    tail = parts[1].strip() if len(parts) > 1 else ""
 
-async def execute_platform_command(command: str) -> dict:
-    parsed = parse_command(command)
-    cmd = parsed["cmd"]
-    args = parsed["args"]
-
-    aliases = {
-        "skill": "skills",
-        "plugin": "skills",
-        "plugins": "skills",
-    }
-    cmd = aliases.get(cmd, cmd)
-
-    if not cmd:
-        return {"success": False, "output": "空指令"}
-
-    if cmd == "help":
+    # ========= HELP =========
+    if head in {"help", "?"}:
         return {
             "success": True,
             "output": (
@@ -54,173 +127,136 @@ async def execute_platform_command(command: str) -> dict:
                 "/enable <name>\n"
                 "/disable <name>\n"
                 "/remove <name>\n"
-                "/price <symbol>\n"
-                "/ticker <symbol>\n"
-                "/signal <symbol>\n"
-                "/scan <symbol1> [symbol2]\n"
-                "/balance\n"
-                "/positions\n"
-                "/orders\n"
-                "/buy <symbol> <amount>\n"
-                "/sell <symbol> <amount>\n"
-                "/killswitch\n"
-                "/start_arb_bot\n"
-                "/stop_arb_bot\n"
-                "/arb_status\n"
-                "/clear"
-            ),
+                "/auto_optimize_env [json]\n"
+                "/auto_optimize_and_save_env [json]\n"
+                "/save_env_block {\"env_block\":\"...\",\"filename\":\"latest.env\"}\n"
+                "/clear\n"
+            )
         }
 
-    if cmd == "skills":
-        items = [
-            f"{pid} [{'ON' if info['enabled'] else 'OFF'}]"
-            for pid, info in plugin_registry.items()
-        ]
-        return {
-            "success": True,
-            "output": "\n".join(items) if items else "No plugins loaded",
-        }
-
-    if cmd == "providers":
-        return {
-            "success": True,
-            "output": json.dumps(
-                {
-                    "claude": await check_claude_status(),
-                    "openai": await check_openai_status(),
-                    "trading_api": check_trading_status(),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-        }
-
-    if cmd == "store":
-        return {
-            "success": True,
-            "output": json.dumps(
-                get_store_registry(),
-                ensure_ascii=False,
-                indent=2,
-            ),
-        }
-
-    if cmd == "install":
-        if len(args) < 2:
-            return {"success": False, "output": "用法：/install <plugin_name> <url>"}
-        ok = await install_plugin_from_url(args[0], args[1], remember=True)
-        return {
-            "success": ok,
-            "output": f"Installed: {args[0]}" if ok else f"Install failed: {args[0]}",
-        }
-
-    if cmd == "enable":
-        if len(args) < 1:
-            return {"success": False, "output": "用法：/enable <plugin_name>"}
-        ok = set_plugin_enabled(args[0], True)
-        return {
-            "success": ok,
-            "output": f"Enabled: {args[0]}" if ok else f"Plugin not found: {args[0]}",
-        }
-
-    if cmd == "disable":
-        if len(args) < 1:
-            return {"success": False, "output": "用法：/disable <plugin_name>"}
-        ok = set_plugin_enabled(args[0], False)
-        return {
-            "success": ok,
-            "output": f"Disabled: {args[0]}" if ok else f"Plugin not found: {args[0]}",
-        }
-
-    if cmd == "remove":
-        if len(args) < 1:
-            return {"success": False, "output": "用法：/remove <plugin_name>"}
-        ok = remove_plugin(args[0])
-        return {
-            "success": ok,
-            "output": f"Removed: {args[0]}" if ok else f"Plugin not found: {args[0]}",
-        }
-
-    if cmd == "price":
-        if len(args) < 1:
-            return {"success": False, "output": "用法：/price <symbol>"}
-        result = await execute_tool("get_spot_price", {"symbol": args[0].upper()})
-        return {"success": True, "output": str(result)}
-
-    if cmd == "ticker":
-        if len(args) < 1:
-            return {"success": False, "output": "用法：/ticker <symbol>"}
-        result = await execute_tool("get_ticker_24h", {"symbol": args[0].upper()})
-        return {"success": True, "output": str(result)}
-
-    if cmd == "signal":
-        if len(args) < 1:
-            return {"success": False, "output": "用法：/signal <symbol>"}
-        result = await execute_tool(
-            "get_trading_signal",
-            {"symbol": args[0].upper(), "timeframe": "1h"},
-        )
-        return {"success": True, "output": str(result)}
-
-    if cmd == "scan":
-        if len(args) < 1:
-            return {"success": False, "output": "用法：/scan <symbol1> [symbol2] ..."}
-        result = await execute_tool(
-            "scan_market",
-            {"symbols": [x.upper() for x in args]},
-        )
-        return {"success": True, "output": str(result)}
-
-    if cmd == "balance":
-        result = await execute_tool("get_balance", {})
-        return {"success": True, "output": str(result)}
-
-    if cmd == "positions":
-        result = await execute_tool("get_positions", {})
-        return {"success": True, "output": str(result)}
-
-    if cmd == "orders":
-        result = await execute_tool("get_orders", {})
-        return {"success": True, "output": str(result)}
-
-    if cmd == "buy":
-        if len(args) < 2:
-            return {"success": False, "output": "用法：/buy <symbol> <amount>"}
-        result = await execute_tool(
-            "buy_token",
-            {"symbol": args[0].upper(), "amount": float(args[1])},
-        )
-        return {"success": True, "output": str(result)}
-
-    if cmd == "sell":
-        if len(args) < 2:
-            return {"success": False, "output": "用法：/sell <symbol> <amount>"}
-        result = await execute_tool(
-            "sell_token",
-            {"symbol": args[0].upper(), "amount": float(args[1])},
-        )
-        return {"success": True, "output": str(result)}
-
-    if cmd == "killswitch":
-        result = await execute_tool("kill_switch", {})
-        return {"success": True, "output": str(result)}
-
-    if cmd == "start_arb_bot":
-        result = await execute_tool("start_arb_bot", {})
-        return {"success": True, "output": str(result)}
-
-    if cmd == "stop_arb_bot":
-        result = await execute_tool("stop_arb_bot", {})
-        return {"success": True, "output": str(result)}
-
-    if cmd == "arb_status":
-        result = await execute_tool("arb_status", {})
-        return {"success": True, "output": str(result)}
-
-    if cmd == "clear":
+    # ========= CLEAR =========
+    if head == "clear":
         return {"success": True, "output": "__CLEAR__"}
 
-    return {
-        "success": False,
-        "output": f"Unknown command: {cmd}",
-    }
+    # ========= SKILLS =========
+    if head in {"skills", "plugins"}:
+        if not plugin_registry:
+            return {"success": True, "output": "No plugins loaded"}
+
+        lines = []
+        for pid, info in plugin_registry.items():
+            enabled = info.get("enabled", False)
+            lines.append(f"{pid} [{'ON' if enabled else 'OFF'}]")
+
+        return {"success": True, "output": "\n".join(lines)}
+
+    # ========= PROVIDERS =========
+    if head in {"providers", "status"}:
+        claude = await check_claude_status()
+        openai = await check_openai_status()
+        trading = check_trading_status()
+
+        return {
+            "success": True,
+            "output": _format({
+                "claude": claude,
+                "openai": openai,
+                "trading_api": trading,
+            })
+        }
+
+    # ========= STORE =========
+    if head == "store":
+        items = []
+        for pid, info in plugin_registry.items():
+            items.append({
+                "id": pid,
+                "enabled": info.get("enabled", False),
+                "tools": [t.get("name") for t in info.get("manifest", {}).get("tools", [])]
+            })
+        return {"success": True, "output": _format(items)}
+
+    # ========= INSTALL =========
+    if head == "install":
+        if not tail:
+            return {"success": False, "output": "Usage: /install <name> <url>"}
+
+        try:
+            name, url = tail.split(maxsplit=1)
+        except ValueError:
+            return {"success": False, "output": "Usage: /install <name> <url>"}
+
+        ok = await install_plugin_from_url(name, url, remember=True)
+        if ok:
+            return {"success": True, "output": f"Installed: {name}"}
+        return {"success": False, "output": f"Install failed: {name}"}
+
+    # ========= ENABLE / DISABLE =========
+    if head == "enable":
+        if not tail:
+            return {"success": False, "output": "Usage: /enable <name>"}
+        ok = set_plugin_enabled(tail, True)
+        return {
+            "success": ok,
+            "output": f"{'Enabled' if ok else 'Enable failed'}: {tail}"
+        }
+
+    if head == "disable":
+        if not tail:
+            return {"success": False, "output": "Usage: /disable <name>"}
+        ok = set_plugin_enabled(tail, False)
+        return {
+            "success": ok,
+            "output": f"{'Disabled' if ok else 'Disable failed'}: {tail}"
+        }
+
+    # ========= REMOVE =========
+    if head in {"remove", "delete"}:
+        if not tail:
+            return {"success": False, "output": "Usage: /remove <name>"}
+        ok = remove_plugin(tail)
+        return {
+            "success": ok,
+            "output": f"{'Removed' if ok else 'Remove failed'}: {tail}"
+        }
+
+    # ========= ENV OPTIMIZER COMMANDS =========
+    if head == "auto_optimize_env":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
+        result = await _call_tool("auto_optimize_env", payload)
+        return {"success": True, "output": _format(result)}
+
+    if head == "auto_optimize_and_save_env":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
+        result = await _call_tool("auto_optimize_and_save_env", payload)
+        return {"success": True, "output": _format(result)}
+
+    if head == "save_env_block":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            return {
+                "success": False,
+                "output": 'Usage: /save_env_block {"env_block":"...","filename":"latest.env"}'
+            }
+        result = await _call_tool("save_env_block", payload)
+        return {"success": True, "output": _format(result)}
+
+    # ========= GENERIC TOOL DISPATCH =========
+    # 支援：
+    # /tool_name {"json":"payload"}
+    # 或
+    # tool_name {"json":"payload"}
+    payload = _parse_payload(tail)
+    if "_raw" in payload:
+        payload = {}
+
+    tool_fn = _load_tool(head)
+    if tool_fn:
+        result = await _call_tool(head, payload)
+        return {"success": True, "output": _format(result)}
+
+    return {"success": False, "output": f"Unknown command: {raw}"}
