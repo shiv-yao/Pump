@@ -1,4 +1,3 @@
-import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -10,7 +9,12 @@ from app.agent_runtime import get_session
 from app.builtin_plugins import ensure_builtin_plugins
 from app.command_router import execute_platform_command
 from app.db import init_plugin_db
-from app.models import ChatRequest, CommandRequest, InstallPluginRequest, PluginManualCreate
+from app.models import (
+    ChatRequest,
+    CommandRequest,
+    InstallPluginRequest,
+    PluginManualCreate,
+)
 from app.plugin_manager import (
     create_plugin_from_manifest,
     get_store_registry,
@@ -37,7 +41,6 @@ log = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     db_ok = True
 
-    # 1) DB 初始化：失敗也不要讓整個 app 掛掉
     try:
         init_plugin_db()
         log.info("Plugin DB initialized")
@@ -45,21 +48,18 @@ async def lifespan(app: FastAPI):
         db_ok = False
         log.warning(f"Plugin DB init skipped: {e}")
 
-    # 2) 先保證內建 plugins 存在
     try:
         await ensure_builtin_plugins()
         log.info("Built-in plugins ensured")
     except Exception as e:
         log.error(f"ensure_builtin_plugins failed: {e}")
 
-    # 3) 先載入本地 plugins
     try:
         load_all_plugins()
         log.info(f"Loaded local plugins: {len(plugin_registry)}")
     except Exception as e:
         log.error(f"load_all_plugins failed: {e}")
 
-    # 4) 如果 DB 可用，嘗試 restore 動態安裝過的 plugins
     if db_ok:
         try:
             await restore_installed_plugins()
@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
     log.info("AI Plugin Terminal stopped")
 
 
-app = FastAPI(title="AI Plugin Terminal", version="3.1.0", lifespan=lifespan)
+app = FastAPI(title="AI Plugin Terminal", version="3.1.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
