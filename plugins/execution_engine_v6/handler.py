@@ -7,9 +7,12 @@ from pathlib import Path
 
 RUNNING = False
 
-POSITIONS = {}   # asset_id -> {size, avg}
-PNL = 0.0
+POSITIONS = {}
+PNL = 0
 TRADES = []
+
+MAX_LATENCY = 0.1   # 100ms
+MIN_EDGE = 0.02
 
 
 # ========= loader =========
@@ -30,7 +33,7 @@ def load(tool):
 
         try:
             data = json.loads(m.read_text(encoding="utf-8"))
-        except Exception:
+        except:
             continue
 
         if not any(t.get("name") == tool for t in data.get("tools", [])):
@@ -56,266 +59,162 @@ async def call(tool, payload):
     return fn(**payload)
 
 
-# ========= risk =========
-def risk_check(asset_id, size, capital):
-    pos = POSITIONS.get(asset_id, {"size": 0.0})
+# ========= execution intelligence =========
 
-    # 單筆 <= 2%
-    if size > capital * 0.02:
-        return False
-
-    # 單市場 <= 20%
-    if abs(pos["size"]) > capital * 0.2:
-        return False
-
-    return True
+def calc_edge(bid, ask):
+    return abs(ask - bid)
 
 
-# ========= fill =========
-async def apply_fill(asset_id, side, price, size):
-    global PNL
+def predict_fill_probability(bids, asks):
+    bid_sz = sum(x["size"] for x in bids[:3])
+    ask_sz = sum(x["size"] for x in asks[:3])
 
-    px = float(price)
-    qty = float(size)
+    total = bid_sz + ask_sz
+    if total == 0:
+        return 0
 
-    pos = POSITIONS.get(asset_id, {"size": 0.0, "avg": 0.0})
-
-    if side == "buy":
-        new_size = pos["size"] + qty
-        pos["avg"] = (pos["avg"] * pos["size"] + px * qty) / max(new_size, 1e-9)
-        pos["size"] = new_size
-    else:
-        realized = (px - pos["avg"]) * qty
-        PNL += realized
-        pos["size"] -= qty
-
-    POSITIONS[asset_id] = pos
-
-    await call("adjust_position", {
-        "asset_id": asset_id,
-        "size": qty,
-        "side": side
-    })
-
-    TRADES.append({
-        "time": time.time(),
-        "asset_id": asset_id,
-        "side": side,
-        "price": px,
-        "size": qty,
-        "pnl": PNL
-    })
+    imbalance = abs(bid_sz - ask_sz) / total
+    return imbalance
 
 
-# ========= execution =========
-async def execute(asset_id, side, bid, ask, size):
-    limit_price = await call("get_limit_price", {
-        "bid": bid,
-        "ask": ask,
-        "side": side
-    })
+def is_fake_liquidity(bids, asks):
+    if not bids or not asks:
+        return True
 
-    if isinstance(limit_price, dict) and "error" in limit_price:
-        return limit_price
+    # 大單突然跳出 → fake
+    if bids[0]["size"] > bids[1]["size"] * 10:
+        return True
 
-    if not limit_price:
-        return {"skipped": "spread too narrow"}
+    if asks[0]["size"] > asks[1]["size"] * 10:
+        return True
 
-    price = float(limit_price)
+    return False
 
-    # ===== 1) LIMIT =====
+
+async def smart_execute(asset_id, side, book, size):
+    bid = float(book["best_bid"])
+    ask = float(book["best_ask"])
+    bids = book.get("bids", [])
+    asks = book.get("asks", [])
+
+    # ===== 1️⃣ edge =====
+    edge = calc_edge(bid, ask)
+    if edge < MIN_EDGE:
+        return {"skipped": "low edge"}
+
+    # ===== 2️⃣ fake liquidity =====
+    if is_fake_liquidity(bids, asks):
+        return {"skipped": "fake liquidity"}
+
+    # ===== 3️⃣ fill probability =====
+    fill_prob = predict_fill_probability(bids, asks)
+
+    # ===== 4️⃣ routing =====
+    use_ioc = False
+
+    if fill_prob < 0.3:
+        use_ioc = True
+
+    if edge > 0.05:
+        use_ioc = False
+
+    price = ask if side == "buy" else bid
+
+    # ===== 5️⃣ 下單 =====
     res = await call("pm_limit", {
         "asset_id": asset_id,
         "side": side,
         "price": price,
         "size": size,
-        "ioc": False
+        "ioc": use_ioc
     })
 
-    if isinstance(res, dict) and "error" in res:
+    if "error" in res:
         return res
 
     oid = res.get("order_id")
+
     if not oid:
-        return {"error": "no order_id returned"}
+        return {"error": "no order id"}
 
-    # ===== 2) 等成交 =====
-    filled = False
-
-    for _ in range(10):
+    # ===== 6️⃣ 等成交 =====
+    for _ in range(6):
         od = await call("pm_get_order", {"order_id": oid})
 
-        if isinstance(od, dict) and "error" in od:
-            await asyncio.sleep(0.1)
+        if "error" in od:
             continue
 
         order = od.get("order", {})
         status = str(order.get("status", "")).lower()
 
         if status in ("filled", "partially_filled"):
-            avg = float(order.get("avgPrice", price))
-            qty = float(order.get("filledSize", size))
-            await apply_fill(asset_id, side, avg, qty)
-            filled = True
-            break
+            return {"filled": True}
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
 
-    # ===== 3) fallback IOC =====
-    if not filled:
-        await call("pm_cancel", {"order_id": oid})
+    # ===== 7️⃣ fallback =====
+    await call("pm_cancel", {"order_id": oid})
 
-        res2 = await call("pm_limit", {
-            "asset_id": asset_id,
-            "side": side,
-            "price": ask if side == "buy" else bid,
-            "size": size,
-            "ioc": True
-        })
-
-        if isinstance(res2, dict) and "error" in res2:
-            return res2
-
-        await asyncio.sleep(0.2)
-
-        fills = await call("pm_get_fills", {"limit": 10})
-        if isinstance(fills, dict):
-            for f in fills.get("fills", []):
-                if str(f.get("asset_id")) == str(asset_id):
-                    try:
-                        await apply_fill(
-                            asset_id,
-                            side,
-                            float(f.get("price")),
-                            float(f.get("size"))
-                        )
-                        filled = True
-                        break
-                    except Exception:
-                        continue
-
-    return {
+    res2 = await call("pm_limit", {
         "asset_id": asset_id,
         "side": side,
+        "price": price,
         "size": size,
-        "filled": filled
-    }
-
-
-# ========= alpha fusion =========
-async def get_fused_signal(asset_id):
-    # 1) orderbook alpha
-    alpha = await call("get_alpha_v2", {"asset_id": asset_id})
-    if not isinstance(alpha, dict) or "error" in alpha:
-        return {"error": "alpha_v2 failed"}
-
-    side = str(alpha.get("action", "hold")).lower().strip()
-    score = float(alpha.get("score", 0.0))
-
-    # 2) wallet alpha
-    wallet = await call("get_wallet_alpha", {"asset_id": asset_id})
-    if isinstance(wallet, dict) and "error" not in wallet:
-        w_side = str(wallet.get("action", "hold")).lower().strip()
-        w_score = float(wallet.get("score", 0.0))
-
-        # 強 wallet 直接覆蓋
-        if w_score > 0.7 and w_side != "hold":
-            side = w_side
-            score = w_score
-
-        # 中等 wallet 做融合
-        elif w_score > 0.4 and w_side != "hold":
-            if w_side == side:
-                score = max(score, w_score)
-            elif side != "hold":
-                score *= 0.5
-
-    # 3) 弱訊號直接 hold
-    if score < 0.55:
-        side = "hold"
-
-    # 4) signal filter
-    filtered = await call("filter_signal", {
-        "score": score,
-        "action": side
+        "ioc": True
     })
 
-    if isinstance(filtered, dict):
-        side = str(filtered.get("action", "hold")).lower().strip()
-    else:
-        side = str(filtered).lower().strip()
-
-    return {
-        "action": side,
-        "score": score
-    }
+    return res2
 
 
-# ========= main engine =========
-async def start_v6_engine(markets, capital=100):
+# ========= main =========
+
+async def start_v7_engine(markets, capital=100):
     global RUNNING
     RUNNING = True
 
     await call("start_polymarket_book", {"asset_ids": markets})
 
     while RUNNING:
+
+        loop_start = time.time()
+
         for m in markets:
-            # ===== fused alpha =====
-            fused = await get_fused_signal(m)
-            if "error" in fused:
+
+            t0 = time.time()
+
+            # ===== alpha =====
+            alpha = await call("get_alpha_v2", {"asset_id": m})
+            if "error" in alpha:
                 continue
 
-            side = fused["action"]
-            score = float(fused["score"])
+            side = alpha["action"]
+            score = float(alpha["score"])
 
-            if side == "hold":
+            wallet = await call("get_wallet_alpha", {"asset_id": m})
+            if "error" not in wallet:
+                if wallet["score"] > 0.7:
+                    side = wallet["action"]
+                    score = wallet["score"]
+
+            if score < 0.55:
+                continue
+
+            # ===== latency guard =====
+            if time.time() - t0 > MAX_LATENCY:
                 continue
 
             # ===== orderbook =====
             book = await call("get_polymarket_book_cache", {"asset_id": m})
-            if not isinstance(book, dict) or "error" in book:
+            if "error" in book:
                 continue
 
-            bid = book.get("best_bid")
-            ask = book.get("best_ask")
-
-            if not bid or not ask:
-                continue
-
-            bid = float(bid)
-            ask = float(ask)
-
-            # ===== inventory reduce =====
-            reduce_needed = await call("should_reduce", {"asset_id": m})
-            if reduce_needed is True:
-                current = POSITIONS.get(m, {"size": 0.0})
-                if current["size"] > 0:
-                    side = "sell"
-                elif current["size"] < 0:
-                    side = "buy"
-
-            # ===== 動態 size =====
             size = capital * (0.01 + score * 0.02)
 
-            if not risk_check(m, size, capital):
-                continue
+            await smart_execute(m, side, book, size)
 
-            await execute(m, side, bid, ask, size)
-
-        await asyncio.sleep(0.2)
-
-    return "stopped"
+        await asyncio.sleep(max(0.2 - (time.time() - loop_start), 0))
 
 
-def stop_v6_engine():
+def stop_v7_engine():
     global RUNNING
     RUNNING = False
-    return "stopped"
-
-
-def get_state():
-    return {
-        "positions": POSITIONS,
-        "pnl": PNL,
-        "trades": TRADES[-20:]
-    }
