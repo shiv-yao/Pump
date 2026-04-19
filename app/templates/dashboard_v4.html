@@ -13,1008 +13,636 @@
       --card:#0c1824;
       --line:#183446;
       --cyan:#25e4c6;
-      --cyan2:#18c8aa;
       --text:#e8f7ff;
       --muted:#7f9aac;
       --danger:#ff7373;
       --warn:#ffd166;
       --ok:#23d3a6;
-      --violet:#9e8cff;
       --radius:18px;
-      --shadow:0 10px 30px rgba(0,0,0,.25);
     }
-
     *{box-sizing:border-box}
     html,body{
-      margin:0;
-      padding:0;
-      height:100%;
-      background:
-        radial-gradient(circle at top right, rgba(37,228,198,.08), transparent 28%),
-        linear-gradient(180deg,#060c12,#081018);
+      margin:0;padding:0;height:100%;
+      background:linear-gradient(180deg,#060c12,#081018);
       color:var(--text);
-      font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family:Inter, ui-sans-serif, system-ui, sans-serif;
     }
     body{overflow:hidden}
-
-    .app{
-      height:100vh;
-      display:flex;
-      flex-direction:column;
-    }
-
+    .app{height:100vh;display:flex;flex-direction:column}
     .topbar{
-      height:64px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding:0 16px;
-      border-bottom:1px solid var(--line);
-      background:rgba(6,12,18,.92);
-      backdrop-filter: blur(12px);
-      flex-shrink:0;
+      height:64px;display:flex;align-items:center;justify-content:space-between;
+      padding:0 16px;border-bottom:1px solid var(--line);
+      background:rgba(6,12,18,.92);flex-shrink:0;
     }
-
-    .brand{
-      display:flex;
-      align-items:center;
-      gap:12px;
-      min-width:0;
-    }
-
-    .brand-mark{
-      width:12px;
-      height:12px;
-      border-radius:999px;
-      background:var(--ok);
-      box-shadow:0 0 14px rgba(35,211,166,.75);
-      flex-shrink:0;
-    }
-
-    .brand-title{
-      font-size:18px;
-      font-weight:900;
-      letter-spacing:.08em;
-      color:var(--cyan);
-      white-space:nowrap;
-    }
-
-    .top-meta{
-      display:flex;
-      align-items:center;
-      gap:8px;
-      flex-wrap:wrap;
-      justify-content:flex-end;
-    }
-
+    .brand{display:flex;align-items:center;gap:12px}
+    .brand-mark{width:12px;height:12px;border-radius:999px;background:var(--ok);box-shadow:0 0 14px rgba(35,211,166,.75)}
+    .brand-title{font-size:18px;font-weight:900;letter-spacing:.08em;color:var(--cyan)}
+    .top-meta{display:flex;gap:8px;flex-wrap:wrap}
     .pill{
-      border:1px solid var(--line);
-      background:rgba(12,23,34,.88);
-      color:var(--muted);
-      border-radius:999px;
-      padding:8px 12px;
-      font-size:12px;
-      white-space:nowrap;
+      border:1px solid var(--line);background:rgba(12,23,34,.88);color:var(--muted);
+      border-radius:999px;padding:8px 12px;font-size:12px;
     }
-
     .pill strong{color:var(--cyan)}
 
     .statusbar{
-      display:flex;
-      gap:8px;
-      flex-wrap:wrap;
-      padding:10px 16px;
-      border-bottom:1px solid var(--line);
-      background:rgba(8,16,24,.84);
-      flex-shrink:0;
+      display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);
+      background:rgba(8,16,24,.84);flex-shrink:0;
     }
-
     .status{
-      border:1px solid var(--line);
-      border-radius:999px;
-      padding:7px 10px;
-      font-size:12px;
-      color:var(--muted);
-      background:#0a141d;
+      border:1px solid var(--line);border-radius:999px;padding:7px 10px;font-size:12px;color:var(--muted);background:#0a141d;
     }
-    .status.ok{
-      border-color:rgba(35,211,166,.32);
-      color:#baf6ea;
-    }
-    .status.warn{
-      border-color:rgba(255,209,102,.32);
-      color:#ffe6a5;
-    }
-    .status.err{
-      border-color:rgba(255,115,115,.32);
-      color:#ffd2d2;
-    }
+    .status.ok{border-color:rgba(35,211,166,.32);color:#baf6ea}
+    .status.warn{border-color:rgba(255,209,102,.32);color:#ffe6a5}
+    .status.err{border-color:rgba(255,115,115,.32);color:#ffd2d2}
 
-    .layout{
-      flex:1;
-      min-height:0;
-      display:grid;
-      grid-template-columns:320px minmax(0,1fr) 320px;
-    }
-
+    .layout{flex:1;min-height:0;display:grid;grid-template-columns:320px minmax(0,1fr) 320px}
+    .side,.center{min-height:0}
     .side{
-      min-height:0;
-      display:flex;
-      flex-direction:column;
-      background:rgba(8,16,24,.58);
+      display:flex;flex-direction:column;background:rgba(8,16,24,.58);
       border-right:1px solid var(--line);
     }
-
-    .side.right{
-      border-right:none;
-      border-left:1px solid var(--line);
-    }
-
-    .center{
-      min-height:0;
-      display:flex;
-      flex-direction:column;
-      background:rgba(7,14,21,.42);
-    }
+    .side.right{border-right:none;border-left:1px solid var(--line)}
+    .center{display:flex;flex-direction:column;background:rgba(7,14,21,.42)}
 
     .pane-head{
-      padding:14px 16px;
-      border-bottom:1px solid var(--line);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      flex-shrink:0;
+      padding:14px 16px;border-bottom:1px solid var(--line);
+      display:flex;align-items:center;justify-content:space-between;flex-shrink:0;
     }
-
-    .pane-title{
-      color:var(--cyan);
-      font-size:13px;
-      font-weight:800;
-      letter-spacing:.08em;
-    }
-
-    .pane-body{
-      flex:1;
-      min-height:0;
-      overflow:auto;
-      padding:16px;
-    }
+    .pane-title{color:var(--cyan);font-size:13px;font-weight:800;letter-spacing:.08em}
+    .pane-body{flex:1;min-height:0;overflow:auto;padding:16px}
 
     .section{
-      border:1px solid var(--line);
-      background:linear-gradient(180deg,rgba(13,25,36,.94),rgba(9,19,29,.88));
-      border-radius:18px;
-      padding:14px;
-      margin-bottom:14px;
-      box-shadow:var(--shadow);
+      border:1px solid var(--line);background:linear-gradient(180deg,rgba(13,25,36,.94),rgba(9,19,29,.88));
+      border-radius:18px;padding:14px;margin-bottom:14px;
     }
-
-    .section-title{
-      color:var(--cyan);
-      font-size:12px;
-      font-weight:800;
-      letter-spacing:.08em;
-      margin-bottom:12px;
-    }
-
+    .section-title{color:var(--cyan);font-size:12px;font-weight:800;letter-spacing:.08em;margin-bottom:12px}
     .field{
-      width:100%;
-      border:1px solid var(--line);
-      background:#08131d;
-      color:var(--text);
-      border-radius:14px;
-      padding:12px 14px;
-      outline:none;
-      margin-bottom:10px;
-      font-size:14px;
+      width:100%;border:1px solid var(--line);background:#08131d;color:var(--text);
+      border-radius:14px;padding:12px 14px;outline:none;margin-bottom:10px;font-size:14px;
     }
-
     .btn{
-      border:1px solid var(--line);
-      background:#0d1a26;
-      color:var(--text);
-      border-radius:12px;
-      padding:10px 14px;
-      cursor:pointer;
-      font-size:13px;
-      transition:.15s ease;
+      border:1px solid var(--line);background:#0d1a26;color:var(--text);border-radius:12px;
+      padding:10px 14px;cursor:pointer;font-size:13px;
     }
-    .btn:hover{
-      border-color:var(--cyan);
-      transform:translateY(-1px);
-    }
-
-    .btn-primary{
-      background:linear-gradient(180deg,#1dd7b0,#11c4a0);
-      color:#06251f;
-      border:none;
-      font-weight:900;
-    }
-
-    .btn-danger{
-      background:rgba(255,115,115,.08);
-      color:#ffb0b0;
-      border-color:rgba(255,115,115,.28);
-    }
-
-    .btn-row{
-      display:flex;
-      gap:8px;
-      flex-wrap:wrap;
-    }
+    .btn-primary{background:linear-gradient(180deg,#1dd7b0,#11c4a0);color:#06251f;border:none;font-weight:900}
+    .btn-danger{background:rgba(255,115,115,.08);color:#ffb0b0;border-color:rgba(255,115,115,.28)}
+    .btn-row{display:flex;gap:8px;flex-wrap:wrap}
 
     .kpi-grid{
-      display:grid;
-      grid-template-columns:repeat(6, minmax(0,1fr));
-      gap:12px;
-      padding:14px 16px 0 16px;
-      flex-shrink:0;
+      display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;padding:14px 16px 0 16px;flex-shrink:0;
     }
-
     .kpi{
-      border:1px solid var(--line);
-      background:linear-gradient(180deg,rgba(12,24,36,.95),rgba(8,18,28,.9));
-      border-radius:18px;
-      padding:14px;
-      box-shadow:var(--shadow);
+      border:1px solid var(--line);background:linear-gradient(180deg,rgba(12,24,36,.95),rgba(8,18,28,.9));
+      border-radius:18px;padding:14px;
     }
+    .kpi-label{color:var(--muted);font-size:12px;margin-bottom:8px}
+    .kpi-value{font-size:24px;font-weight:900;line-height:1}
+    .kpi-sub{margin-top:8px;color:var(--muted);font-size:11px}
 
-    .kpi-label{
-      color:var(--muted);
-      font-size:12px;
-      margin-bottom:8px;
+    .core-scroll{flex:1;min-height:0;overflow:auto;padding:16px}
+    .grid-2{display:grid;grid-template-columns:1.2fr .8fr;gap:14px;margin-bottom:14px}
+    .grid-2-equal{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+
+    .card{
+      border:1px solid var(--line);background:linear-gradient(180deg,rgba(13,25,36,.96),rgba(9,19,29,.9));
+      border-radius:18px;padding:14px;min-height:220px;
     }
-
-    .kpi-value{
-      color:var(--text);
-      font-size:24px;
-      font-weight:900;
-      line-height:1;
-    }
-
-    .kpi-sub{
-      margin-top:8px;
-      color:var(--muted);
-      font-size:11px;
-    }
-
-    .core-scroll{
-      flex:1;
-      min-height:0;
-      overflow:auto;
-      padding:16px;
-    }
-
-    .grid-2{
-      display:grid;
-      grid-template-columns:1.2fr .8fr;
-      gap:14px;
-      margin-bottom:14px;
-    }
-
-    .grid-2-equal{
-      display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:14px;
-      margin-bottom:14px;
-    }
-
-    .chart-card,
-    .table-card{
-      border:1px solid var(--line);
-      background:linear-gradient(180deg,rgba(13,25,36,.96),rgba(9,19,29,.9));
-      border-radius:18px;
-      padding:14px;
-      box-shadow:var(--shadow);
-      min-height:280px;
-    }
-
     .card-title{
-      color:var(--cyan);
-      font-size:12px;
-      font-weight:800;
-      letter-spacing:.08em;
-      margin-bottom:12px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:10px;
-      flex-wrap:wrap;
+      color:var(--cyan);font-size:12px;font-weight:800;letter-spacing:.08em;
+      margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
     }
-
-    .chart-placeholder{
-      height:220px;
-      border:1px dashed rgba(127,154,172,.22);
-      border-radius:14px;
-      background:
-        linear-gradient(180deg, rgba(37,228,198,.06), rgba(37,228,198,0)),
-        repeating-linear-gradient(
-          0deg,
-          rgba(255,255,255,.02),
-          rgba(255,255,255,.02) 1px,
-          transparent 1px,
-          transparent 32px
-        );
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      color:var(--muted);
-      font-size:13px;
+    .chart{
+      height:220px;border:1px dashed rgba(127,154,172,.22);border-radius:14px;
+      background:rgba(255,255,255,.02);padding:8px;
     }
-
-    table{
-      width:100%;
-      border-collapse:collapse;
-      font-size:13px;
-    }
-
-    th, td{
-      padding:10px 8px;
-      border-bottom:1px solid rgba(127,154,172,.12);
-      text-align:left;
-      vertical-align:top;
-    }
-
-    th{
-      color:var(--muted);
-      font-weight:700;
-      font-size:12px;
-    }
-
-    .mono{
-      font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    }
-
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th,td{padding:10px 8px;border-bottom:1px solid rgba(127,154,172,.12);text-align:left;vertical-align:top}
+    th{color:var(--muted);font-weight:700;font-size:12px}
     .tag{
-      display:inline-flex;
-      align-items:center;
-      gap:6px;
-      border-radius:999px;
-      padding:6px 10px;
-      font-size:11px;
-      border:1px solid var(--line);
-      color:var(--muted);
-      background:#09131c;
-      white-space:nowrap;
+      display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-size:11px;
+      border:1px solid var(--line);color:var(--muted);background:#09131c;white-space:nowrap;
     }
-
-    .tag.ok{
-      color:#baf6ea;
-      border-color:rgba(35,211,166,.28);
+    .tag.ok{color:#baf6ea;border-color:rgba(35,211,166,.28)}
+    .tag.warn{color:#ffe8af;border-color:rgba(255,209,102,.28)}
+    .tag.err{color:#ffd2d2;border-color:rgba(255,115,115,.28)}
+    .split{display:flex;gap:8px;flex-wrap:wrap}
+    .env-box,.log-console{
+      background:#04101a;border:1px solid rgba(37,228,198,.12);border-radius:14px;padding:12px;
+      min-height:120px;max-height:240px;overflow:auto;font-size:12px;white-space:pre-wrap;line-height:1.65;
     }
+    .log-console{min-height:180px}
 
-    .tag.warn{
-      color:#ffe8af;
-      border-color:rgba(255,209,102,.28);
+    @media (max-width:1100px){
+      .kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+      .grid-2,.grid-2-equal{grid-template-columns:1fr}
     }
-
-    .tag.err{
-      color:#ffd2d2;
-      border-color:rgba(255,115,115,.28);
-    }
-
-    .split{
-      display:flex;
-      gap:8px;
-      flex-wrap:wrap;
-    }
-
-    .mini-list{
-      display:grid;
-      gap:8px;
-    }
-
-    .mini-item{
-      border:1px solid var(--line);
-      background:#08131d;
-      border-radius:14px;
-      padding:10px 12px;
-    }
-
-    .mini-top{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:8px;
-      margin-bottom:6px;
-    }
-
-    .mini-title{
-      color:var(--text);
-      font-size:13px;
-      font-weight:700;
-    }
-
-    .mini-sub{
-      color:var(--muted);
-      font-size:12px;
-    }
-
-    .log-console{
-      background:#04101a;
-      border:1px solid rgba(37,228,198,.12);
-      border-radius:14px;
-      padding:12px;
-      min-height:200px;
-      max-height:320px;
-      overflow:auto;
-      font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size:12px;
-      line-height:1.65;
-      color:#cdefff;
-      white-space:pre-wrap;
-    }
-
-    .env-box{
-      background:#04101a;
-      border:1px solid rgba(37,228,198,.12);
-      border-radius:14px;
-      padding:12px;
-      min-height:120px;
-      max-height:240px;
-      overflow:auto;
-      color:#d7f6ff;
-      font-size:12px;
-      white-space:pre-wrap;
-      line-height:1.65;
-    }
-
-    .small-note{
-      color:var(--muted);
-      font-size:11px;
-      line-height:1.55;
-      margin-top:8px;
-    }
-
-    .mobile-bar{
-      display:none;
-    }
-
-    @media (max-width: 1100px){
-      .kpi-grid{
-        grid-template-columns:repeat(3, minmax(0,1fr));
-      }
-      .grid-2,.grid-2-equal{
-        grid-template-columns:1fr;
-      }
-    }
-
-    @media (max-width: 900px){
-      .layout{
-        grid-template-columns:1fr;
-      }
-      .side.left,
-      .side.right{
-        display:none;
-      }
-      .kpi-grid{
-        grid-template-columns:repeat(2, minmax(0,1fr));
-        padding-bottom:0;
-      }
-      .mobile-bar{
-        display:grid;
-        grid-template-columns:1fr 1fr 1fr 1.2fr;
-        height:60px;
-        border-top:1px solid var(--line);
-        position:fixed;
-        left:0;right:0;bottom:0;
-        z-index:100;
-        background:rgba(8,16,24,.98);
-      }
-      .mobile-bar button{
-        border:none;
-        background:transparent;
-        color:var(--muted);
-        font-size:12px;
-      }
-      .mobile-bar .run{
-        background:linear-gradient(180deg,#1dd7b0,#11c4a0);
-        color:#06251f;
-        font-weight:900;
-      }
-      .core-scroll{
-        padding-bottom:76px;
-      }
+    @media (max-width:900px){
+      .layout{grid-template-columns:1fr}
+      .side.left,.side.right{display:none}
+      .kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .core-scroll{padding-bottom:72px}
     }
   </style>
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark"></div>
-        <div class="brand-title">AI-FUND V4</div>
-      </div>
-      <div class="top-meta">
-        <div class="pill">Engine: <strong>RUNNING</strong></div>
-        <div class="pill">Mode: <strong>PAPER</strong></div>
-        <div class="pill">Session: <strong>default</strong></div>
-        <div class="pill">Plugins: <strong>16</strong></div>
-      </div>
-    </header>
-
-    <div class="statusbar">
-      <div class="status ok">Claude: healthy</div>
-      <div class="status ok">GPT: healthy</div>
-      <div class="status ok">Trading API: connected</div>
-      <div class="status ok">Wallet Feed WS: live</div>
-      <div class="status warn">Market Book WS: latency elevated</div>
-      <button class="btn">Check APIs</button>
-      <button class="btn">Reconnect WS</button>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-title">AI-FUND V4</div>
     </div>
+    <div class="top-meta">
+      <div class="pill">Engine: <strong id="topRunning">-</strong></div>
+      <div class="pill">Mode: <strong id="topMode">-</strong></div>
+      <div class="pill">Positions: <strong id="topPositions">-</strong></div>
+      <div class="pill">Trades: <strong id="topTrades">-</strong></div>
+    </div>
+  </header>
 
-    <main class="layout">
-      <aside class="side left">
-        <div class="pane-head">
-          <div class="pane-title">CONTROL</div>
-          <button class="btn">Refresh</button>
-        </div>
-        <div class="pane-body">
-          <div class="section">
-            <div class="section-title">ENGINE CONTROL</div>
-            <input class="field" placeholder="Markets: A,B,C" value="A,B" />
-            <input class="field" placeholder="Capital" value="100" />
-            <div class="btn-row">
-              <button class="btn btn-primary">Start Engine</button>
-              <button class="btn btn-danger">Stop Engine</button>
-              <button class="btn">Restart</button>
-            </div>
-            <div class="btn-row" style="margin-top:8px">
-              <button class="btn btn-danger">Emergency Kill</button>
-            </div>
-          </div>
-
-          <div class="section">
-            <div class="section-title">REPLAY / OPTIMIZER</div>
-            <div class="btn-row">
-              <button class="btn btn-primary">Replay</button>
-              <button class="btn">Replay Optimize</button>
-              <button class="btn">Auto Optimize</button>
-              <button class="btn">Apply Env</button>
-            </div>
-            <div class="small-note">
-              用最近交易重播、調參、生成 latest.env，再套用到執行引擎。
-            </div>
-          </div>
-
-          <div class="section">
-            <div class="section-title">SIMULATION</div>
-            <input class="field" placeholder="asset_id" value="TEST" />
-            <input class="field" placeholder="side" value="buy" />
-            <input class="field" placeholder="size" value="1" />
-            <div class="btn-row">
-              <button class="btn btn-primary">Simulate Order</button>
-              <button class="btn">Simulate Fill</button>
-            </div>
-          </div>
-
-          <div class="section">
-            <div class="section-title">MANUAL TRADE</div>
-            <input class="field" placeholder="asset_id" value="A" />
-            <input class="field" placeholder="size" value="1" />
-            <div class="btn-row">
-              <button class="btn btn-primary">Buy</button>
-              <button class="btn btn-danger">Sell</button>
-            </div>
-          </div>
-
-          <div class="section">
-            <div class="section-title">STRATEGY SWITCHES</div>
-            <div class="mini-list">
-              <div class="mini-item">
-                <div class="mini-top">
-                  <div class="mini-title">wallet_alpha_v3</div>
-                  <span class="tag ok">ENABLED</span>
-                </div>
-                <div class="mini-sub">Allocation: 46%</div>
-              </div>
-              <div class="mini-item">
-                <div class="mini-top">
-                  <div class="mini-title">orderbook_alpha_v2</div>
-                  <span class="tag ok">ENABLED</span>
-                </div>
-                <div class="mini-sub">Allocation: 32%</div>
-              </div>
-              <div class="mini-item">
-                <div class="mini-top">
-                  <div class="mini-title">fusion_alpha_v1</div>
-                  <span class="tag warn">COOLDOWN</span>
-                </div>
-                <div class="mini-sub">Allocation: 22%</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      <section class="center">
-        <div class="kpi-grid">
-          <div class="kpi">
-            <div class="kpi-label">Total PnL</div>
-            <div class="kpi-value">$1,284.42</div>
-            <div class="kpi-sub">+3.82% today</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi-label">Unrealized PnL</div>
-            <div class="kpi-value">$148.11</div>
-            <div class="kpi-sub">3 open positions</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi-label">Winrate</div>
-            <div class="kpi-value">61.3%</div>
-            <div class="kpi-sub">last 100 trades</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi-label">Trades</div>
-            <div class="kpi-value">248</div>
-            <div class="kpi-sub">active period</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi-label">Drawdown</div>
-            <div class="kpi-value">4.9%</div>
-            <div class="kpi-sub">max 7d</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi-label">Exposure</div>
-            <div class="kpi-value">18.2%</div>
-            <div class="kpi-sub">under limit</div>
-          </div>
-        </div>
-
-        <div class="core-scroll">
-          <div class="grid-2">
-            <div class="chart-card">
-              <div class="card-title">
-                <span>📈 EQUITY CURVE</span>
-                <div class="split">
-                  <span class="tag ok">1D</span>
-                  <span class="tag">7D</span>
-                  <span class="tag">ALL</span>
-                </div>
-              </div>
-              <div class="chart-placeholder">資金曲線圖佔位區（接 ledger / trades API）</div>
-            </div>
-
-            <div class="chart-card">
-              <div class="card-title">
-                <span>📉 DRAWDOWN</span>
-                <div class="split">
-                  <span class="tag warn">Current 2.1%</span>
-                  <span class="tag err">Max 4.9%</span>
-                </div>
-              </div>
-              <div class="chart-placeholder">回撤曲線圖佔位區</div>
-            </div>
-          </div>
-
-          <div class="grid-2">
-            <div class="table-card">
-              <div class="card-title">
-                <span>🧠 STRATEGY ATTRIBUTION</span>
-                <div class="split">
-                  <span class="tag ok">allocator_v3</span>
-                  <span class="tag ok">strategy_manager_v2</span>
-                </div>
-              </div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>strategy</th>
-                    <th>PnL</th>
-                    <th>winrate</th>
-                    <th>drawdown</th>
-                    <th>trades</th>
-                    <th>status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td class="mono">wallet_alpha_v3</td>
-                    <td>+842.19</td>
-                    <td>68.2%</td>
-                    <td>2.1%</td>
-                    <td>102</td>
-                    <td><span class="tag ok">enabled</span></td>
-                  </tr>
-                  <tr>
-                    <td class="mono">orderbook_alpha_v2</td>
-                    <td>+311.88</td>
-                    <td>56.7%</td>
-                    <td>3.7%</td>
-                    <td>88</td>
-                    <td><span class="tag ok">enabled</span></td>
-                  </tr>
-                  <tr>
-                    <td class="mono">fusion_alpha_v1</td>
-                    <td>+130.35</td>
-                    <td>48.1%</td>
-                    <td>4.9%</td>
-                    <td>58</td>
-                    <td><span class="tag warn">cooldown</span></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="chart-card">
-              <div class="card-title">
-                <span>💰 STRATEGY ALLOCATION</span>
-                <div class="split">
-                  <span class="tag ok">rebalance 60s</span>
-                </div>
-              </div>
-              <div class="chart-placeholder">allocation pie / bar chart 佔位區</div>
-            </div>
-          </div>
-
-          <div class="grid-2-equal">
-            <div class="table-card">
-              <div class="card-title">📦 POSITION BLOTTER</div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>asset</th>
-                    <th>size</th>
-                    <th>avg</th>
-                    <th>mark</th>
-                    <th>PnL</th>
-                    <th>strategy</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td class="mono">A</td>
-                    <td>12</td>
-                    <td>0.41</td>
-                    <td>0.47</td>
-                    <td>+0.72</td>
-                    <td>wallet_alpha_v3</td>
-                  </tr>
-                  <tr>
-                    <td class="mono">B</td>
-                    <td>8</td>
-                    <td>0.58</td>
-                    <td>0.55</td>
-                    <td>-0.24</td>
-                    <td>orderbook_alpha_v2</td>
-                  </tr>
-                  <tr>
-                    <td class="mono">C</td>
-                    <td>4</td>
-                    <td>0.33</td>
-                    <td>0.39</td>
-                    <td>+0.18</td>
-                    <td>fusion_alpha_v1</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="table-card">
-              <div class="card-title">💵 ASSET PnL / EXPOSURE</div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>asset</th>
-                    <th>realized</th>
-                    <th>unrealized</th>
-                    <th>exposure</th>
-                    <th>source</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td class="mono">A</td>
-                    <td>+431.8</td>
-                    <td>+72.1</td>
-                    <td>6.2%</td>
-                    <td>wallet</td>
-                  </tr>
-                  <tr>
-                    <td class="mono">B</td>
-                    <td>+119.3</td>
-                    <td>-24.6</td>
-                    <td>4.8%</td>
-                    <td>orderbook</td>
-                  </tr>
-                  <tr>
-                    <td class="mono">C</td>
-                    <td>+87.4</td>
-                    <td>+18.3</td>
-                    <td>2.7%</td>
-                    <td>fusion</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="table-card">
-            <div class="card-title">
-              <span>📜 RECENT TRADES</span>
-              <div class="split">
-                <span class="tag">filter: all</span>
-                <span class="tag">asset: all</span>
-                <span class="tag">strategy: all</span>
-              </div>
-            </div>
-            <table>
-              <thead>
-                <tr>
-                  <th>time</th>
-                  <th>asset</th>
-                  <th>side</th>
-                  <th>price</th>
-                  <th>size</th>
-                  <th>fee</th>
-                  <th>pnl_delta</th>
-                  <th>strategy</th>
-                  <th>mode</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td class="mono">21:04:18</td>
-                  <td>A</td>
-                  <td>buy</td>
-                  <td>0.47</td>
-                  <td>3</td>
-                  <td>0.01</td>
-                  <td>+0.13</td>
-                  <td>wallet_alpha_v3</td>
-                  <td>ioc</td>
-                </tr>
-                <tr>
-                  <td class="mono">21:03:51</td>
-                  <td>B</td>
-                  <td>sell</td>
-                  <td>0.55</td>
-                  <td>2</td>
-                  <td>0.01</td>
-                  <td>-0.05</td>
-                  <td>orderbook_alpha_v2</td>
-                  <td>limit</td>
-                </tr>
-                <tr>
-                  <td class="mono">21:03:09</td>
-                  <td>C</td>
-                  <td>buy</td>
-                  <td>0.39</td>
-                  <td>1</td>
-                  <td>0.00</td>
-                  <td>+0.02</td>
-                  <td>fusion_alpha_v1</td>
-                  <td>ioc_fallback</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <aside class="side right">
-        <div class="pane-head">
-          <div class="pane-title">RISK / INTELLIGENCE</div>
-          <button class="btn">Refresh</button>
-        </div>
-        <div class="pane-body">
-          <div class="section">
-            <div class="section-title">RISK PANEL</div>
-            <div class="mini-list">
-              <div class="mini-item">
-                <div class="mini-top">
-                  <div class="mini-title">Current Exposure</div>
-                  <span class="tag ok">18.2%</span>
-                </div>
-                <div class="mini-sub">Limit: 30%</div>
-              </div>
-              <div class="mini-item">
-                <div class="mini-top">
-                  <div class="mini-title">Correlation Pressure</div>
-                  <span class="tag warn">0.68</span>
-                </div>
-                <div class="mini-sub">接近同向集中風險</div>
-              </div>
-              <div class="mini-item">
-                <div class="mini-top">
-                  <div class="mini-title">Kill Switch</div>
-                  <span class="tag ok">inactive</span>
-                </div>
-                <div class="mini-sub">Max DD threshold not reached</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="section">
-            <div class="section-title">ALLOCATOR PANEL</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>strategy</th>
-                  <th>weight</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr><td>wallet_alpha_v3</td><td>46%</td></tr>
-                <tr><td>orderbook_alpha_v2</td><td>32%</td></tr>
-                <tr><td>fusion_alpha_v1</td><td>22%</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div class="section">
-            <div class="section-title">SMART MONEY LEADERS</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>wallet</th>
-                  <th>score</th>
-                  <th>cluster</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td class="mono">0xA91...D2</td>
-                  <td>1.84</td>
-                  <td>cluster_7</td>
-                </tr>
-                <tr>
-                  <td class="mono">0xC11...8F</td>
-                  <td>1.52</td>
-                  <td>cluster_3</td>
-                </tr>
-                <tr>
-                  <td class="mono">0xEF0...77</td>
-                  <td>1.21</td>
-                  <td>leader</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div class="section">
-            <div class="section-title">OPTIMIZER PANEL</div>
-            <div class="split" style="margin-bottom:10px">
-              <span class="tag ok">source: replay</span>
-              <span class="tag">best_score: 87.2</span>
-            </div>
-            <div class="env-box">ENTRY_THRESHOLD=0.55
-RISK_SCALE=0.7
-SIZE_MULT=1.0
-MAX_TOTAL_EXPOSURE=0.3
-MAX_POSITION_PER_TRADE=0.05
-ALPHA_WEIGHT_WALLET=0.9
-ALPHA_WEIGHT_ORDERBOOK=0.5
-ALLOCATOR_MAX_WEIGHT=0.6
-CORRELATION_PENALTY=0.7
-BASE_SIZE=0.02</div>
-            <div class="btn-row" style="margin-top:10px">
-              <button class="btn btn-primary">Generate</button>
-              <button class="btn">Apply</button>
-              <button class="btn">Download</button>
-            </div>
-          </div>
-
-          <div class="section">
-            <div class="section-title">LOGS / ALERTS</div>
-            <div class="log-console">[21:04:18] wallet_feed_ws connected
-[21:04:18] strategy wallet_alpha_v3 allocation=0.46
-[21:04:19] replay_optimize best_score=87.2
-[21:04:21] latest.env generated
-[21:04:24] risk monitor warning: correlation pressure 0.68
-[21:04:27] execution_engine_v7 filled order asset=A size=3
-[21:04:31] ledger_v2 equity snapshot updated</div>
-          </div>
-        </div>
-      </aside>
-    </main>
-
-    <nav class="mobile-bar">
-      <button>總覽</button>
-      <button>交易</button>
-      <button>風險</button>
-      <button class="run">Run</button>
-    </nav>
+  <div class="statusbar">
+    <div id="stClaude" class="status">Claude: ...</div>
+    <div id="stOpenAI" class="status">GPT: ...</div>
+    <div id="stTrading" class="status">Trading API: ...</div>
+    <div id="stWalletWS" class="status ok">Wallet Feed WS: scaffold</div>
+    <div id="stBookWS" class="status warn">Market Book WS: scaffold</div>
+    <button class="btn" onclick="refreshAll()">Refresh</button>
   </div>
+
+  <main class="layout">
+    <aside class="side left">
+      <div class="pane-head">
+        <div class="pane-title">CONTROL</div>
+      </div>
+      <div class="pane-body">
+        <div class="section">
+          <div class="section-title">ENGINE CONTROL</div>
+          <input id="engineMarkets" class="field" value="A,B" />
+          <input id="engineCapital" class="field" value="100" />
+          <div class="btn-row">
+            <button class="btn btn-primary" onclick="startEngine()">Start</button>
+            <button class="btn btn-danger" onclick="stopEngine()">Stop</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">REPLAY / OPTIMIZER</div>
+          <div class="btn-row">
+            <button class="btn btn-primary" onclick="replayRun()">Replay</button>
+            <button class="btn" onclick="replayOpt()">Replay Opt</button>
+            <button class="btn" onclick="optimizerAuto()">Auto Optimize</button>
+            <button class="btn" onclick="optimizerApply()">Apply Env</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">SIMULATION</div>
+          <input id="simAsset" class="field" value="A" />
+          <input id="simSide" class="field" value="buy" />
+          <input id="simSize" class="field" value="1" />
+          <div class="btn-row">
+            <button class="btn btn-primary" onclick="simulateOrder()">Simulate Order</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <section class="center">
+      <div class="kpi-grid">
+        <div class="kpi"><div class="kpi-label">Total PnL</div><div id="kpiPnl" class="kpi-value">-</div><div class="kpi-sub">state.pnl</div></div>
+        <div class="kpi"><div class="kpi-label">Unrealized</div><div id="kpiUnrealized" class="kpi-value">-</div><div class="kpi-sub">state.unrealized_pnl</div></div>
+        <div class="kpi"><div class="kpi-label">Winrate</div><div id="kpiWinrate" class="kpi-value">-</div><div class="kpi-sub">state.winrate</div></div>
+        <div class="kpi"><div class="kpi-label">Trades</div><div id="kpiTrades" class="kpi-value">-</div><div class="kpi-sub">state.trades_count</div></div>
+        <div class="kpi"><div class="kpi-label">Drawdown</div><div id="kpiDrawdown" class="kpi-value">-</div><div class="kpi-sub">state.drawdown</div></div>
+        <div class="kpi"><div class="kpi-label">Exposure</div><div id="kpiExposure" class="kpi-value">-</div><div class="kpi-sub">state.total_exposure</div></div>
+      </div>
+
+      <div class="core-scroll">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title"><span>📈 EQUITY CURVE</span></div>
+            <div class="chart"><canvas id="equityCanvas" width="800" height="220"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-title"><span>📉 DRAWDOWN</span></div>
+            <div class="chart"><canvas id="ddCanvas" width="520" height="220"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title"><span>🧠 STRATEGY ATTRIBUTION</span></div>
+            <table>
+              <thead>
+              <tr>
+                <th>strategy</th>
+                <th>PnL</th>
+                <th>winrate</th>
+                <th>drawdown</th>
+                <th>trades</th>
+                <th>status</th>
+              </tr>
+              </thead>
+              <tbody id="strategyTable"></tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <div class="card-title"><span>💰 STRATEGY ALLOCATION</span></div>
+            <table>
+              <thead>
+              <tr>
+                <th>strategy</th>
+                <th>weight</th>
+                <th>budget</th>
+              </tr>
+              </thead>
+              <tbody id="allocationTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid-2-equal">
+          <div class="card">
+            <div class="card-title"><span>📦 POSITION BLOTTER</span></div>
+            <table>
+              <thead>
+              <tr>
+                <th>asset</th>
+                <th>size</th>
+                <th>avg</th>
+                <th>mark</th>
+                <th>PnL</th>
+                <th>strategy</th>
+              </tr>
+              </thead>
+              <tbody id="positionTable"></tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <div class="card-title"><span>💵 ASSET PnL / EXPOSURE</span></div>
+            <table>
+              <thead>
+              <tr>
+                <th>asset</th>
+                <th>realized</th>
+                <th>unrealized</th>
+                <th>exposure</th>
+              </tr>
+              </thead>
+              <tbody id="assetTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span>📜 RECENT TRADES</span></div>
+          <table>
+            <thead>
+            <tr>
+              <th>time</th>
+              <th>asset</th>
+              <th>side</th>
+              <th>price</th>
+              <th>size</th>
+              <th>fee</th>
+              <th>pnl_delta</th>
+              <th>strategy</th>
+              <th>mode</th>
+            </tr>
+            </thead>
+            <tbody id="tradeTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side right">
+      <div class="pane-head">
+        <div class="pane-title">RISK / INTELLIGENCE</div>
+      </div>
+      <div class="pane-body">
+        <div class="section">
+          <div class="section-title">RISK PANEL</div>
+          <div id="riskBox" class="env-box">loading...</div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">SMART MONEY LEADERS</div>
+          <table>
+            <thead>
+            <tr>
+              <th>wallet</th>
+              <th>score</th>
+              <th>cluster</th>
+            </tr>
+            </thead>
+            <tbody id="leaderTable"></tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <div class="section-title">OPTIMIZER PANEL</div>
+          <div id="optimizerMeta" class="env-box">No optimizer result yet</div>
+          <div class="btn-row" style="margin-top:10px">
+            <button class="btn btn-primary" onclick="optimizerAuto()">Generate</button>
+            <button class="btn" onclick="optimizerApply()">Apply</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">LOGS / ALERTS</div>
+          <div id="logBox" class="log-console">loading...</div>
+        </div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script>
+const api = {
+  async get(url){
+    const r = await fetch(url);
+    return await r.json();
+  },
+  async post(url, body={}){
+    const r = await fetch(url, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    return await r.json();
+  }
+};
+
+function fmt(n, d=2){
+  if(n == null || Number.isNaN(Number(n))) return "-";
+  return Number(n).toFixed(d);
+}
+
+function pct(n, d=1){
+  if(n == null || Number.isNaN(Number(n))) return "-";
+  return (Number(n) * 100).toFixed(d) + "%";
+}
+
+function tsToTime(ts){
+  try{
+    return new Date(ts * 1000).toLocaleTimeString("zh-TW");
+  }catch{
+    return "-";
+  }
+}
+
+function setProvider(el, label, item){
+  const node = document.getElementById(el);
+  const ok = !!item?.ok;
+  node.className = "status " + (ok ? "ok" : "err");
+  node.textContent = `${label}: ${item?.message || "unknown"}`;
+}
+
+function drawSimpleLine(canvasId, arr, key){
+  const c = document.getElementById(canvasId);
+  if(!c) return;
+  const ctx = c.getContext("2d");
+  const w = c.width, h = c.height;
+  ctx.clearRect(0,0,w,h);
+
+  ctx.strokeStyle = "rgba(127,154,172,.25)";
+  ctx.strokeRect(0,0,w,h);
+
+  if(!arr || arr.length < 2){
+    ctx.fillStyle = "#7f9aac";
+    ctx.fillText("No data", 20, 30);
+    return;
+  }
+
+  const vals = arr.map(x => Number(x[key] || 0));
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const range = Math.max(1e-9, max - min);
+
+  ctx.beginPath();
+  vals.forEach((v, i) => {
+    const x = (i / (vals.length - 1)) * (w - 20) + 10;
+    const y = h - (((v - min) / range) * (h - 20) + 10);
+    if(i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = "#25e4c6";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+async function loadProviders(){
+  const res = await api.get("/api/status/providers");
+  const p = res.providers || {};
+  setProvider("stClaude", "Claude", p.claude);
+  setProvider("stOpenAI", "GPT", p.openai);
+  setProvider("stTrading", "Trading API", p.trading_api);
+}
+
+async function loadState(){
+  const res = await api.get("/api/state");
+  const d = res.data || {};
+
+  document.getElementById("topRunning").textContent = d.running ? "RUNNING" : "STOPPED";
+  document.getElementById("topMode").textContent = d.mode || "PAPER";
+  document.getElementById("topPositions").textContent = d.positions_count ?? 0;
+  document.getElementById("topTrades").textContent = d.trades_count ?? 0;
+
+  document.getElementById("kpiPnl").textContent = fmt(d.pnl);
+  document.getElementById("kpiUnrealized").textContent = fmt(d.unrealized_pnl);
+  document.getElementById("kpiWinrate").textContent = pct(d.winrate);
+  document.getElementById("kpiTrades").textContent = d.trades_count ?? 0;
+  document.getElementById("kpiDrawdown").textContent = fmt(d.drawdown, 4);
+  document.getElementById("kpiExposure").textContent = fmt(d.total_exposure, 4);
+
+  const posBody = document.getElementById("positionTable");
+  posBody.innerHTML = (d.positions || []).map(p => `
+    <tr>
+      <td>${p.asset_id}</td>
+      <td>${fmt(p.size, 4)}</td>
+      <td>${fmt(p.avg, 4)}</td>
+      <td>${fmt(p.mark, 4)}</td>
+      <td>${fmt(p.pnl, 4)}</td>
+      <td>${p.strategy_id || "unknown"}</td>
+    </tr>
+  `).join("");
+
+  const tradeBody = document.getElementById("tradeTable");
+  tradeBody.innerHTML = (d.recent_trades || []).slice(-20).reverse().map(t => `
+    <tr>
+      <td>${tsToTime(t.time)}</td>
+      <td>${t.asset_id || ""}</td>
+      <td>${t.side || ""}</td>
+      <td>${fmt(t.price, 4)}</td>
+      <td>${fmt(t.size, 4)}</td>
+      <td>${fmt(t.fee, 4)}</td>
+      <td>${fmt(t.pnl_delta, 4)}</td>
+      <td>${t.strategy_id || ""}</td>
+      <td>${t.mode || ""}</td>
+    </tr>
+  `).join("");
+}
+
+async function loadLedger(){
+  const res = await api.get("/api/ledger?range=all");
+  const d = res.data || {};
+
+  drawSimpleLine("equityCanvas", d.equity_curve || [], "equity");
+  drawSimpleLine("ddCanvas", d.drawdown_curve || [], "drawdown");
+
+  const assetBody = document.getElementById("assetTable");
+  assetBody.innerHTML = (d.asset_pnl || []).map(a => `
+    <tr>
+      <td>${a.asset_id}</td>
+      <td>${fmt(a.realized, 4)}</td>
+      <td>${fmt(a.unrealized, 4)}</td>
+      <td>${fmt(a.exposure, 4)}</td>
+    </tr>
+  `).join("");
+}
+
+async function loadStrategies(){
+  const res = await api.get("/api/strategies");
+  const d = res.data || [];
+
+  const body = document.getElementById("strategyTable");
+  body.innerHTML = d.map(s => `
+    <tr>
+      <td>${s.strategy_id}</td>
+      <td>${fmt(s.pnl, 4)}</td>
+      <td>${pct(s.winrate)}</td>
+      <td>${fmt(s.drawdown, 4)}</td>
+      <td>${s.trades}</td>
+      <td>${s.enabled ? '<span class="tag ok">enabled</span>' : '<span class="tag warn">cooldown</span>'}</td>
+    </tr>
+  `).join("");
+}
+
+async function loadAllocation(){
+  const res = await api.get("/api/allocation?capital=1000");
+  const d = res.data || {};
+  const body = document.getElementById("allocationTable");
+  body.innerHTML = (d.weights || []).map(w => `
+    <tr>
+      <td>${w.strategy_id}</td>
+      <td>${pct(w.weight)}</td>
+      <td>${fmt(w.budget, 2)}</td>
+    </tr>
+  `).join("");
+}
+
+async function loadRisk(){
+  const res = await api.get("/api/risk");
+  const d = res.data || {};
+  const alerts = (d.alerts || []).map(a => `[${a.level}] ${a.code}: ${a.message}`).join("\n");
+
+  document.getElementById("riskBox").textContent =
+`current_exposure=${fmt(d.current_exposure, 4)}
+max_total_exposure=${fmt(d.max_total_exposure, 4)}
+max_position_per_trade=${fmt(d.max_position_per_trade, 4)}
+correlation_pressure=${fmt(d.correlation_pressure, 4)}
+risk_scale=${fmt(d.risk_scale, 4)}
+kill_switch_active=${d.kill_switch_active ? "true" : "false"}
+
+alerts:
+${alerts || "none"}`;
+}
+
+async function loadLeaders(){
+  const res = await api.get("/api/wallet/leaders");
+  const d = res.data || [];
+  document.getElementById("leaderTable").innerHTML = d.map(x => `
+    <tr>
+      <td>${x.wallet}</td>
+      <td>${fmt(x.score, 4)}</td>
+      <td>${x.cluster || ""}</td>
+    </tr>
+  `).join("");
+}
+
+async function loadLogs(){
+  const res = await api.get("/api/logs?type=all&limit=50");
+  const d = res.data || [];
+  document.getElementById("logBox").textContent = d.map(x =>
+    `[${tsToTime(x.ts)}] ${x.type}/${x.level} ${x.message}`
+  ).join("\n");
+}
+
+async function startEngine(){
+  const markets = document.getElementById("engineMarkets").value.split(",").map(x => x.trim()).filter(Boolean);
+  const capital = Number(document.getElementById("engineCapital").value || 100);
+  await api.post("/api/engine/start", {markets, capital});
+  await refreshAll();
+}
+
+async function stopEngine(){
+  await api.post("/api/engine/stop", {});
+  await refreshAll();
+}
+
+async function replayRun(){
+  const res = await api.post("/api/replay", {sample_size: 200});
+  const d = res.data || {};
+  document.getElementById("optimizerMeta").textContent = JSON.stringify(d, null, 2);
+}
+
+async function replayOpt(){
+  const res = await api.post("/api/replay_opt", {sample_size: 200, num_candidates: 30});
+  const d = res.data || {};
+  document.getElementById("optimizerMeta").textContent = JSON.stringify(d, null, 2);
+}
+
+async function optimizerAuto(){
+  const res = await api.post("/api/optimizer/auto", {sample_size: 200, num_candidates: 30});
+  const d = res.data || {};
+  document.getElementById("optimizerMeta").textContent = JSON.stringify(d, null, 2);
+}
+
+async function optimizerApply(){
+  const res = await api.post("/api/optimizer/apply", {});
+  const d = res.data || {};
+  document.getElementById("optimizerMeta").textContent = JSON.stringify(d, null, 2);
+}
+
+async function simulateOrder(){
+  const asset_id = document.getElementById("simAsset").value || "A";
+  const side = document.getElementById("simSide").value || "buy";
+  const size = Number(document.getElementById("simSize").value || 1);
+
+  const res = await api.post("/api/simulate_order", {
+    asset_id,
+    side,
+    size,
+    order_type: "ioc",
+    book: {
+      best_bid: 0.49,
+      best_ask: 0.51,
+      bids: [{price: 0.49, size: 10}],
+      asks: [{price: 0.51, size: 10}]
+    }
+  });
+
+  const d = res.data || {};
+  document.getElementById("optimizerMeta").textContent = JSON.stringify(d, null, 2);
+}
+
+async function refreshAll(){
+  await Promise.all([
+    loadProviders(),
+    loadState(),
+    loadLedger(),
+    loadStrategies(),
+    loadAllocation(),
+    loadRisk(),
+    loadLeaders(),
+    loadLogs()
+  ]);
+}
+
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
 </body>
 </html>
