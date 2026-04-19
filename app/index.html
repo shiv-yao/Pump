@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>AI Plugin Platform Terminal</title>
+  <title>AI Fund Control Panel</title>
   <meta name="theme-color" content="#071018" />
   <style>
     :root{
@@ -21,7 +21,8 @@
     }
     *{box-sizing:border-box}
     html,body{
-      margin:0;padding:0;background:linear-gradient(180deg,#060c12,#081018);
+      margin:0;padding:0;
+      background:linear-gradient(180deg,#060c12,#081018);
       color:var(--text);
       font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
       height:100%;
@@ -94,7 +95,7 @@
       flex:1;
       min-height:0;
       display:grid;
-      grid-template-columns:320px minmax(0,1fr) 300px;
+      grid-template-columns:320px minmax(0,1fr) 320px;
     }
     .panel{
       min-height:0;
@@ -172,6 +173,14 @@
       border-color:rgba(255,115,115,.28);
     }
     .btn-row{display:flex;gap:10px;flex-wrap:wrap}
+
+    .quick-actions{
+      padding:10px 14px;
+      border-bottom:1px solid var(--line);
+      display:flex;gap:8px;flex-wrap:wrap;
+      background:rgba(7,14,21,.9);
+      flex-shrink:0;
+    }
 
     .plugin-card{
       border:1px solid rgba(37,228,198,.45);
@@ -286,8 +295,63 @@
     .logs-list .time{color:var(--muted);font-size:12px}
     .logs-list .text{color:#d7eef8;font-size:13px;line-height:1.55;margin-top:4px;white-space:pre-wrap}
 
+    .env-block{
+      background:#020617;
+      border:1px solid rgba(37,228,198,.16);
+      border-radius:12px;
+      padding:12px;
+      color:#d9f7ff;
+      font-size:12px;
+      white-space:pre-wrap;
+      word-break:break-word;
+      line-height:1.6;
+      min-height:72px;
+    }
+    .stats-grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:8px;
+      margin-top:10px;
+    }
+    .stat{
+      border:1px solid var(--line);
+      border-radius:12px;
+      padding:10px;
+      background:#08131d;
+    }
+    .stat-label{
+      color:var(--muted);
+      font-size:11px;
+      margin-bottom:4px;
+    }
+    .stat-value{
+      color:var(--text);
+      font-size:14px;
+      font-weight:800;
+    }
+
     .mobile-nav{
       display:none;
+    }
+
+    .modal{
+      position:fixed;
+      inset:0;
+      background:rgba(0,0,0,.7);
+      display:none;
+      z-index:999;
+    }
+    .modal-card{
+      position:absolute;
+      top:50%;
+      left:50%;
+      transform:translate(-50%,-50%);
+      width:92%;
+      max-width:520px;
+      background:#0c1722;
+      border:1px solid var(--line);
+      border-radius:18px;
+      padding:20px;
     }
 
     @media (max-width: 900px){
@@ -324,17 +388,10 @@
       .terminal{
         padding-bottom:60px;
       }
-      .mobile-sheet{
-        position:fixed;
-        top:108px;
-        bottom:60px;
-        left:0;right:0;
-        background:rgba(6,12,18,.98);
-        z-index:40;
-        overflow:auto;
-        display:none;
+      .quick-actions{
+        overflow-x:auto;
+        white-space:nowrap;
       }
-      .mobile-sheet.active{display:block}
     }
   </style>
 </head>
@@ -342,7 +399,7 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <div class="logo">AI-AGENT</div>
+        <div class="logo">AI-FUND</div>
         <div class="dot"></div>
       </div>
       <div class="topbar-right">
@@ -373,6 +430,38 @@
           </div>
 
           <div class="section">
+            <div class="section-title">ENV OPTIMIZER</div>
+            <div class="btn-row">
+              <button class="btn btn-primary" onclick="runQuick('/auto_opt')">Auto Optimize</button>
+              <button class="btn" onclick="runQuick('/apply_env')">Apply Env</button>
+            </div>
+            <div class="btn-row" style="margin-top:10px">
+              <button class="btn btn-primary" onclick="generateLatestEnv()">Generate latest.env</button>
+              <button class="btn" onclick="downloadLatestEnv()">Download latest.env</button>
+            </div>
+            <div class="stats-grid">
+              <div class="stat">
+                <div class="stat-label">Trades</div>
+                <div class="stat-value" id="envTradeCount">-</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Winrate</div>
+                <div class="stat-value" id="envWinrate">-</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Avg PnL</div>
+                <div class="stat-value" id="envAvgPnl">-</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Drawdown</div>
+                <div class="stat-value" id="envDrawdown">-</div>
+              </div>
+            </div>
+            <div style="margin-top:10px" class="section-title">LATEST ENV</div>
+            <div id="envBlock" class="env-block">尚未生成 latest.env</div>
+          </div>
+
+          <div class="section">
             <div class="section-title">MARKETPLACE</div>
             <button class="btn" style="width:100%" onclick="refreshStore()">Load Store</button>
             <div id="storeList" style="margin-top:12px"></div>
@@ -392,6 +481,16 @@
           </div>
         </div>
 
+        <div class="quick-actions">
+          <button class="btn btn-primary" onclick="runQuick('/replay')">▶ Replay</button>
+          <button class="btn" onclick="runQuick('/replay_opt')">🧠 Replay Optimize</button>
+          <button class="btn" onclick="runQuick('/auto_opt')">⚡ Auto Optimize</button>
+          <button class="btn" onclick="runQuick('/apply_env')">📦 Apply Env</button>
+          <button class="btn" onclick="openSimModal()">📊 Simulate Order</button>
+          <button class="btn" onclick="runQuick('/get_state')">📈 Get State</button>
+          <button class="btn" onclick="runQuick('/wa_get_leaders')">🐋 Wallet Leaders</button>
+        </div>
+
         <div class="terminal">
           <div id="terminalOutput" class="terminal-output"></div>
 
@@ -399,7 +498,7 @@
             <form onsubmit="submitInput(event)">
               <div class="terminal-bar">
                 <span class="prompt" id="promptSymbol">&gt;</span>
-                <input id="terminalInput" class="terminal-input" autocomplete="off" placeholder="輸入 /help、/skills、/start_arb_bot，或直接聊天..." />
+                <input id="terminalInput" class="terminal-input" autocomplete="off" placeholder="輸入 /help、/skills、/start_v7_engine，或直接聊天..." />
                 <button class="btn btn-primary" type="submit">Run</button>
               </div>
             </form>
@@ -418,15 +517,25 @@
       </section>
     </main>
 
-    <div id="mobileStore" class="mobile-sheet"></div>
-    <div id="mobileLogs" class="mobile-sheet"></div>
-
     <nav class="mobile-nav">
-      <button onclick="showMobile('terminal')">Chat</button>
-      <button onclick="showMobile('store')">Store</button>
-      <button onclick="showMobile('logs')">Logs</button>
+      <button onclick="focusInput()">Chat</button>
+      <button onclick="runQuick('/replay')">Replay</button>
+      <button onclick="runQuick('/auto_opt')">Optimize</button>
       <button class="run" onclick="focusInput()">Run</button>
     </nav>
+  </div>
+
+  <div id="simModal" class="modal">
+    <div class="modal-card">
+      <h3 style="color:var(--cyan);margin-top:0">Simulate Order</h3>
+      <input id="simAsset" class="field" placeholder="asset_id" value="TEST" />
+      <input id="simSide" class="field" placeholder="side (buy/sell)" value="buy" />
+      <input id="simSize" class="field" placeholder="size" value="1" />
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="runSim()">Run Simulation</button>
+        <button class="btn" onclick="closeSim()">Close</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -476,7 +585,6 @@
         </div>
       `).join("");
       document.getElementById("logsList").innerHTML = html || `<div class="text">No logs</div>`;
-      document.getElementById("mobileLogs").innerHTML = `<div style="padding:14px">${html || `<div class="text">No logs</div>`}</div>`;
     }
 
     function clearLogs(){
@@ -513,22 +621,18 @@
       appendTerminalBlock("help", `/help
 /skills
 /providers
-/status
 /store
 /install <name> <url>
 /enable <name>
 /disable <name>
 /remove <name>
-/price BTCUSDT
-/balance
-/positions
-/orders
-/buy BTCUSDT 10
-/sell BTCUSDT 10
-/scan BTCUSDT SOLUSDT
-/start_arb_bot
-/stop_arb_bot
-/arb_status
+
+/auto_opt
+/apply_env
+/replay
+/replay_opt
+/simulate_order {...}
+/simulate_fill {...}
 
 非 / 開頭會走 AI chat`);
     }
@@ -538,7 +642,7 @@
       modeLabel.textContent = state.commandMode ? "Mode: Command" : "Mode: Chat";
       promptSymbol.textContent = state.commandMode ? ">" : "AI>";
       terminalInput.placeholder = state.commandMode
-        ? "輸入 /help、/skills、/start_arb_bot..."
+        ? "輸入 /help、/skills、/start_v7_engine..."
         : "直接問 AI...";
       addLog(`mode switched to ${state.commandMode ? "command" : "chat"}`);
     }
@@ -598,16 +702,14 @@
     }
 
     async function togglePlugin(id){
-      const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/toggle`, {method:"PATCH"});
-      const data = await res.json();
+      await fetch(`/api/plugins/${encodeURIComponent(id)}/toggle`, {method:"PATCH"});
       addLog(`toggle plugin ${id}`);
       await refreshPlugins();
     }
 
     async function removePlugin(id){
       if(!confirm(`Remove plugin ${id}?`)) return;
-      const res = await fetch(`/api/plugins/${encodeURIComponent(id)}`, {method:"DELETE"});
-      const data = await res.json();
+      await fetch(`/api/plugins/${encodeURIComponent(id)}`, {method:"DELETE"});
       addLog(`remove plugin ${id}`);
       await refreshPlugins();
     }
@@ -620,12 +722,11 @@
         return;
       }
 
-      const res = await fetch("/api/plugins/install", {
+      await fetch("/api/plugins/install", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body: JSON.stringify({name, url})
       });
-      const data = await res.json();
       addLog(`install plugin ${name}`);
       await refreshPlugins();
     }
@@ -657,16 +758,14 @@
       `).join("");
 
       document.getElementById("storeList").innerHTML = html || `<div class="text">No store items</div>`;
-      document.getElementById("mobileStore").innerHTML = `<div style="padding:14px">${html || `<div class="text">No store items</div>`}</div>`;
     }
 
     async function quickInstall(id, url){
-      const res = await fetch("/api/plugins/install", {
+      await fetch("/api/plugins/install", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body: JSON.stringify({name:id, url})
       });
-      const data = await res.json();
       addLog(`store install ${id}`);
       await refreshPlugins();
       await refreshStore();
@@ -712,6 +811,124 @@
       }
     }
 
+    async function runQuick(cmd){
+      appendTerminalLine("> " + cmd, "cmd");
+
+      const res = await fetch("/api/command", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          command: cmd,
+          session_id: state.sessionId
+        })
+      });
+
+      const data = await res.json();
+      appendTerminalBlock("system", data.output || "");
+      addLog(`quick: ${cmd}`);
+    }
+
+    async function generateLatestEnv(){
+      try{
+        const res = await fetch("/api/command", {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({
+            command: "/auto_opt"
+          })
+        });
+
+        const data = await res.json();
+        let output = data.output;
+
+        if (typeof output === "string") {
+          try { output = JSON.parse(output); } catch {}
+        }
+
+        if (!output || output.error) {
+          addLog("generate latest.env failed");
+          alert("Generate latest.env failed");
+          return;
+        }
+
+        const stats = output.replay_stats || {};
+        const envBlock = output.env_preview || "No env block";
+
+        document.getElementById("envTradeCount").textContent = stats.executed ?? "-";
+        document.getElementById("envWinrate").textContent =
+          stats.winrate != null ? (stats.winrate * 100).toFixed(1) + "%" : "-";
+        document.getElementById("envAvgPnl").textContent =
+          output.best_score != null ? Number(output.best_score).toFixed(2) : "-";
+        document.getElementById("envDrawdown").textContent =
+          stats.drawdown != null ? Number(stats.drawdown).toFixed(4) : "-";
+
+        document.getElementById("envBlock").textContent = envBlock;
+
+        appendTerminalBlock("env optimizer", envBlock);
+        addLog("latest.env generated");
+      }catch(err){
+        addLog("generate latest.env failed");
+        alert("Generate failed: " + err);
+      }
+    }
+
+    async function downloadLatestEnv(){
+      try{
+        const res = await fetch("/api/env/latest");
+
+        if (!res.ok) {
+          alert("latest.env not found，請先 Generate");
+          return;
+        }
+
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "latest.env";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+
+        addLog("latest.env downloaded");
+      }catch(err){
+        addLog("download latest.env failed");
+        alert("Download failed: " + err);
+      }
+    }
+
+    function openSimModal(){
+      document.getElementById("simModal").style.display = "block";
+    }
+
+    function closeSim(){
+      document.getElementById("simModal").style.display = "none";
+    }
+
+    async function runSim(){
+      const asset = document.getElementById("simAsset").value;
+      const side = document.getElementById("simSide").value;
+      const size = parseFloat(document.getElementById("simSize").value || "1");
+
+      const cmd = `/simulate_order ${JSON.stringify({
+        asset_id: asset,
+        side: side,
+        size: size,
+        book: {
+          best_bid: 0.49,
+          best_ask: 0.51,
+          bids: [{price:0.49,size:10}],
+          asks: [{price:0.51,size:10}]
+        },
+        order_type: "ioc"
+      })}`;
+
+      closeSim();
+      runQuick(cmd);
+    }
+
     terminalInput.addEventListener("keydown", (e)=>{
       if(e.key === "ArrowUp"){
         if(state.history.length === 0) return;
@@ -727,20 +944,12 @@
       }
     });
 
-    function showMobile(view){
-      document.getElementById("mobileStore").classList.remove("active");
-      document.getElementById("mobileLogs").classList.remove("active");
-      if(view === "store") document.getElementById("mobileStore").classList.add("active");
-      if(view === "logs") document.getElementById("mobileLogs").classList.add("active");
-    }
-
     function focusInput(){
-      showMobile("terminal");
       terminalInput.focus();
     }
 
     async function bootstrap(){
-      appendTerminalLine("AI Plugin Platform Terminal ready.", "info");
+      appendTerminalLine("AI Fund Control Panel ready.", "info");
       appendTerminalLine("Type /help to see available commands.", "dim");
       await refreshProviderStatus();
       await refreshPlugins();
