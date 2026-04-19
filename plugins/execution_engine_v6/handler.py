@@ -49,7 +49,9 @@ def load(tool):
     return None
 
 
-async def call(tool, payload):
+async def call(tool, payload=None):
+    payload = payload or {}
+
     fn = load(tool)
     if not fn:
         return {"error": f"{tool} not found"}
@@ -112,16 +114,16 @@ async def apply_fill(asset_id, side, price, size, strategy_id="fusion_alpha_v1")
         "strategy_id": strategy_id
     })
 
-    # 回寫到 fund_brain_v8
+    # 回寫 fund_brain_v8
     await call("fb_record_trade", {"pnl": pnl_delta})
 
-    # 回寫到 strategy_manager_v1
+    # 回寫 strategy_manager_v1
     await call("strategy_record_trade", {
         "strategy_id": strategy_id,
         "pnl": pnl_delta
     })
 
-    # 回寫到 ledger_v2（如果有裝）
+    # 回寫 ledger_v2（如果已安裝）
     await call("ledger_record_fill", {
         "asset_id": asset_id,
         "side": side,
@@ -399,7 +401,7 @@ async def start_v7_engine(markets, capital=100):
             if base_side == "hold":
                 continue
 
-            # ===== wallet alpha 再取一次，提供 portfolio manager 融合 =====
+            # ===== wallet alpha again for allocator / portfolio =====
             wallet = await call("get_wallet_alpha", {"asset_id": m})
             wallet_score = 0.0
             if isinstance(wallet, dict) and "error" not in wallet:
@@ -419,10 +421,23 @@ async def start_v7_engine(markets, capital=100):
             if isinstance(strategy_decision, dict) and not strategy_decision.get("trade", True):
                 continue
 
-            # ===== V9 portfolio manager =====
+            # ===== allocator v2 =====
+            alloc = await call("allocator_get_budget", {
+                "strategy_id": strategy_id,
+                "capital": capital
+            })
+
+            if not isinstance(alloc, dict) or "error" in alloc:
+                continue
+
+            strategy_budget = float(alloc.get("budget", 0.0))
+            if strategy_budget <= 0:
+                continue
+
+            # ===== portfolio manager =====
             pm = await call("run_portfolio_v1", {
                 "asset_id": m,
-                "capital": capital,
+                "capital": strategy_budget,
                 "orderbook_score": base_score,
                 "wallet_score": wallet_score
             })
@@ -459,7 +474,7 @@ async def start_v7_engine(markets, capital=100):
             if not bid or not ask:
                 continue
 
-            # ===== max position per trade =====
+            # ===== cap single trade size =====
             size = min(size, max_position_per_trade)
 
             await smart_execute(
