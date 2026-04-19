@@ -1,0 +1,57 @@
+{
+  "id": "polymarket_alpha_ws",
+  "name": "polymarket_alpha_ws",
+  "description": "Polymarket websocket orderbook alpha with REST fallback",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "alpha",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "start_polymarket_book",
+      "description": "Start Polymarket market websocket stream for asset IDs",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["asset_ids"]
+      }
+    },
+    {
+      "name": "stop_polymarket_book",
+      "description": "Stop Polymarket market websocket stream",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_polymarket_signal_ws",
+      "description": "Compute orderbook alpha signal from websocket cache with REST fallback",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": { "type": "string" },
+          "symbol": { "type": "string" }
+        },
+        "required": ["asset_id", "symbol"]
+      }
+    },
+    {
+      "name": "get_polymarket_book_cache",
+      "description": "Return cached websocket book for one asset",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": { "type": "string" }
+        },
+        "required": ["asset_id"]
+      }
+    }
+  ]
+}
