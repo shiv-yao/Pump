@@ -1,128 +1,79 @@
+import json
 import random
-import math
+import inspect
+import importlib.util
 from pathlib import Path
 
 
 # ===== param space =====
 PARAM_SPACE = {
-    "ENTRY_THRESHOLD": [0.5, 0.55, 0.6, 0.65],
-    "RISK_SCALE": [0.5, 0.7, 1.0],
-    "SIZE_MULT": [0.5, 1.0, 1.5],
+    "ENTRY_THRESHOLD": [0.50, 0.55, 0.60, 0.65],
+    "RISK_SCALE": [0.50, 0.70, 1.00],
+    "SIZE_MULT": [0.50, 1.00, 1.50],
 }
 
 
-# ===== load trades =====
-def load_trades():
-    try:
-        from execution_engine_v7 import handler as eng
-        return eng.TRADES[-200:]
-    except:
-        return []
+# ===== plugin tool loader =====
+def _plugins_root() -> Path:
+    cur = Path(__file__).resolve()
+    for p in cur.parents:
+        if (p / "plugins").exists():
+            return p / "plugins"
+    return Path(__file__).resolve().parent.parent
 
 
-# ===== replay core =====
-def replay_once(trades, cfg):
-    pnl = 0
-    wins = 0
-    losses = 0
+def _load_tool(tool_name: str):
+    plugins_root = _plugins_root()
 
-    eq = 0
-    peak = 0
-    max_dd = 0
-
-    for t in trades:
-        score = random.random()  # 模擬 signal score
-
-        if score < cfg["ENTRY_THRESHOLD"]:
+    for plugin_dir in plugins_root.iterdir():
+        if not plugin_dir.is_dir():
             continue
 
-        pnl_delta = float(t.get("pnl_delta", 0))
+        manifest_path = plugin_dir / "plugin.json"
+        handler_path = plugin_dir / "handler.py"
 
-        # ===== risk scaling =====
-        pnl_delta *= cfg["RISK_SCALE"]
+        if not manifest_path.exists() or not handler_path.exists():
+            continue
 
-        # ===== position scaling =====
-        pnl_delta *= cfg["SIZE_MULT"]
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
 
-        pnl += pnl_delta
+        if not any(t.get("name") == tool_name for t in manifest.get("tools", [])):
+            continue
 
-        if pnl_delta > 0:
-            wins += 1
-        else:
-            losses += 1
+        spec = importlib.util.spec_from_file_location(f"plugin_{plugin_dir.name}", handler_path)
+        if not spec or not spec.loader:
+            continue
 
-        eq += pnl_delta
-        peak = max(peak, eq)
-        max_dd = max(max_dd, peak - eq)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
 
-    n = wins + losses
-    winrate = wins / n if n else 0
+        if hasattr(mod, tool_name):
+            return getattr(mod, tool_name)
 
-    return {
-        "pnl": pnl,
-        "winrate": winrate,
-        "drawdown": max_dd
-    }
+    return None
 
 
-# ===== scoring =====
-def score_result(r):
-    return (
-        r["pnl"] * 1.0 +
-        r["winrate"] * 50 -
-        r["drawdown"] * 2
-    )
+async def _call_tool(tool_name: str, payload: dict | None = None):
+    payload = payload or {}
+    fn = _load_tool(tool_name)
+
+    if not fn:
+        return {"error": f"tool not found: {tool_name}"}
+
+    if inspect.iscoroutinefunction(fn):
+        return await fn(**payload)
+    return fn(**payload)
 
 
-# ===== optimize =====
-async def replay_optimize():
-    trades = load_trades()
-
-    if not trades:
-        return {"error": "no trades"}
-
-    best_score = -999999
-    best_cfg = None
-    best_result = None
-
-    for _ in range(30):
-        cfg = {
-            k: random.choice(v)
-            for k, v in PARAM_SPACE.items()
-        }
-
-        result = replay_once(trades, cfg)
-        s = score_result(result)
-
-        if s > best_score:
-            best_score = s
-            best_cfg = cfg
-            best_result = result
-
-    return {
-        "best_score": best_score,
-        "config": best_cfg,
-        "result": best_result
-    }
-
-
-# ===== single run =====
-async def replay_run(config=None):
-    trades = load_trades()
-
-    if not trades:
-        return {"error": "no trades"}
-
-    if not config:
-        config = {
-            "ENTRY_THRESHOLD": 0.55,
-            "RISK_SCALE": 1.0,
-            "SIZE_MULT": 1.0
-        }
-
-    result = replay_once(trades, config)
-
-    return {
-        "config": config,
-        "result": result
-    }
+# ===== data loader =====
+def _load_recent_trades(sample_size=200):
+    """
+    Reads recent trades from execution_engine_v7 source file namespace.
+    """
+    try:
+        plugins_dir = _plugins_root()
+        engine_file = plugins_dir / "execution_engine_v7" / "handler.py"
+        if not engine_file.exists():
