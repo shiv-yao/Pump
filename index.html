@@ -286,6 +286,41 @@
     .logs-list .time{color:var(--muted);font-size:12px}
     .logs-list .text{color:#d7eef8;font-size:13px;line-height:1.55;margin-top:4px;white-space:pre-wrap}
 
+    .env-block{
+      background:#020617;
+      border:1px solid rgba(37,228,198,.16);
+      border-radius:12px;
+      padding:12px;
+      color:#d9f7ff;
+      font-size:12px;
+      white-space:pre-wrap;
+      word-break:break-word;
+      line-height:1.6;
+      min-height:72px;
+    }
+    .stats-grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:8px;
+      margin-top:10px;
+    }
+    .stat{
+      border:1px solid var(--line);
+      border-radius:12px;
+      padding:10px;
+      background:#08131d;
+    }
+    .stat-label{
+      color:var(--muted);
+      font-size:11px;
+      margin-bottom:4px;
+    }
+    .stat-value{
+      color:var(--text);
+      font-size:14px;
+      font-weight:800;
+    }
+
     .mobile-nav{
       display:none;
     }
@@ -370,6 +405,34 @@
             <input id="installName" class="field" placeholder="Plugin name" />
             <input id="installUrl" class="field" placeholder="https://.../plugin-folder" />
             <button class="btn btn-primary" style="width:100%" onclick="installPluginFromUrl()">Install Plugin</button>
+          </div>
+
+          <div class="section">
+            <div class="section-title">ENV OPTIMIZER</div>
+            <div class="btn-row">
+              <button class="btn btn-primary" onclick="generateLatestEnv()">Generate latest.env</button>
+              <button class="btn" onclick="downloadLatestEnv()">Download latest.env</button>
+            </div>
+            <div class="stats-grid">
+              <div class="stat">
+                <div class="stat-label">Trades</div>
+                <div class="stat-value" id="envTradeCount">-</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Winrate</div>
+                <div class="stat-value" id="envWinrate">-</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Avg PnL</div>
+                <div class="stat-value" id="envAvgPnl">-</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Drawdown</div>
+                <div class="stat-value" id="envDrawdown">-</div>
+              </div>
+            </div>
+            <div style="margin-top:10px" class="section-title">LATEST ENV</div>
+            <div id="envBlock" class="env-block">尚未生成 latest.env</div>
           </div>
 
           <div class="section">
@@ -598,16 +661,14 @@
     }
 
     async function togglePlugin(id){
-      const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/toggle`, {method:"PATCH"});
-      const data = await res.json();
+      await fetch(`/api/plugins/${encodeURIComponent(id)}/toggle`, {method:"PATCH"});
       addLog(`toggle plugin ${id}`);
       await refreshPlugins();
     }
 
     async function removePlugin(id){
       if(!confirm(`Remove plugin ${id}?`)) return;
-      const res = await fetch(`/api/plugins/${encodeURIComponent(id)}`, {method:"DELETE"});
-      const data = await res.json();
+      await fetch(`/api/plugins/${encodeURIComponent(id)}`, {method:"DELETE"});
       addLog(`remove plugin ${id}`);
       await refreshPlugins();
     }
@@ -620,12 +681,11 @@
         return;
       }
 
-      const res = await fetch("/api/plugins/install", {
+      await fetch("/api/plugins/install", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body: JSON.stringify({name, url})
       });
-      const data = await res.json();
       addLog(`install plugin ${name}`);
       await refreshPlugins();
     }
@@ -661,12 +721,11 @@
     }
 
     async function quickInstall(id, url){
-      const res = await fetch("/api/plugins/install", {
+      await fetch("/api/plugins/install", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body: JSON.stringify({name:id, url})
       });
-      const data = await res.json();
       addLog(`store install ${id}`);
       await refreshPlugins();
       await refreshStore();
@@ -709,6 +768,78 @@
         const data = await res.json();
         appendTerminalBlock(data.provider || "agent", data.response || "");
         addLog(`chat: ${text}`);
+      }
+    }
+
+    async function generateLatestEnv(){
+      try{
+        const res = await fetch("/api/command", {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({
+            command: "auto_optimize_and_save_env"
+          })
+        });
+
+        const data = await res.json();
+        let output = data.output;
+
+        if (typeof output === "string") {
+          try { output = JSON.parse(output); } catch {}
+        }
+
+        if (!output || output.error) {
+          addLog("generate latest.env failed");
+          alert("Generate latest.env failed");
+          return;
+        }
+
+        const stats = output.stats || {};
+        const params = output.params || {};
+        const envBlock = output.env_block || "No env block";
+
+        document.getElementById("envTradeCount").textContent = stats.count ?? "-";
+        document.getElementById("envWinrate").textContent =
+          stats.winrate != null ? (stats.winrate * 100).toFixed(1) + "%" : "-";
+        document.getElementById("envAvgPnl").textContent =
+          stats.avg_pnl != null ? Number(stats.avg_pnl).toFixed(4) : "-";
+        document.getElementById("envDrawdown").textContent =
+          stats.max_drawdown != null ? Number(stats.max_drawdown).toFixed(4) : "-";
+
+        document.getElementById("envBlock").textContent = envBlock;
+
+        appendTerminalBlock("env optimizer", envBlock);
+        addLog("latest.env generated");
+      }catch(err){
+        addLog("generate latest.env failed");
+        alert("Generate failed: " + err);
+      }
+    }
+
+    async function downloadLatestEnv(){
+      try{
+        const res = await fetch("/api/env/latest");
+
+        if (!res.ok) {
+          alert("latest.env not found，請先 Generate");
+          return;
+        }
+
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "latest.env";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+
+        addLog("latest.env downloaded");
+      }catch(err){
+        addLog("download latest.env failed");
+        alert("Download failed: " + err);
       }
     }
 
