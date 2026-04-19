@@ -16,7 +16,7 @@ DEFAULTS = {
     "MAX_DAILY_LOSS": 0.15,
     "WALLET_ALPHA_WINDOW": 50,
     "WALLET_DECAY": 0.95,
-    "ENGINE_LOOP_INTERVAL": 0.20,
+    "ENGINE_LOOP_INTERVAL": 0.20
 }
 
 
@@ -61,6 +61,7 @@ def _stats(trades: List[Dict[str, Any]]) -> Dict[str, float]:
 
 def suggest_env_params(trades: List[Dict[str, Any]], current: Dict[str, Any] | None = None):
     params = dict(DEFAULTS)
+
     if current:
         for k, v in current.items():
             if k in params:
@@ -80,7 +81,7 @@ def suggest_env_params(trades: List[Dict[str, Any]], current: Dict[str, Any] | N
     total_pnl = s["total_pnl"]
     drawdown = s["max_drawdown"]
 
-    # 1) entry threshold
+    # 1. entry threshold
     if winrate < 0.40 or avg_pnl < 0:
         params["FB_THRESHOLD_MIN"] = round(_clamp(float(params["FB_THRESHOLD_MIN"]) + 0.03, 0.50, 0.75), 4)
         params["MIN_EDGE"] = round(_clamp(float(params["MIN_EDGE"]) + 0.005, 0.01, 0.08), 4)
@@ -88,7 +89,7 @@ def suggest_env_params(trades: List[Dict[str, Any]], current: Dict[str, Any] | N
         params["FB_THRESHOLD_MIN"] = round(_clamp(float(params["FB_THRESHOLD_MIN"]) - 0.02, 0.45, 0.75), 4)
         params["MIN_EDGE"] = round(_clamp(float(params["MIN_EDGE"]) - 0.003, 0.005, 0.08), 4)
 
-    # 2) risk sizing
+    # 2. sizing / risk
     if drawdown > abs(total_pnl) * 0.8 and drawdown > 0:
         params["FB_BASE_SIZE"] = round(_clamp(float(params["FB_BASE_SIZE"]) * 0.8, 0.003, 0.03), 4)
         params["MAX_POSITION_PER_TRADE"] = round(_clamp(float(params["MAX_POSITION_PER_TRADE"]) * 0.85, 0.01, 0.10), 4)
@@ -97,14 +98,14 @@ def suggest_env_params(trades: List[Dict[str, Any]], current: Dict[str, Any] | N
         params["FB_BASE_SIZE"] = round(_clamp(float(params["FB_BASE_SIZE"]) * 1.08, 0.003, 0.03), 4)
         params["MAX_POSITION_PER_TRADE"] = round(_clamp(float(params["MAX_POSITION_PER_TRADE"]) * 1.05, 0.01, 0.10), 4)
 
-    # 3) execution behavior
+    # 3. execution behavior
     if winrate < 0.45:
         params["FILL_PROB_THRESHOLD"] = round(_clamp(float(params["FILL_PROB_THRESHOLD"]) + 0.05, 0.20, 0.80), 4)
         params["EDGE_STRONG_THRESHOLD"] = round(_clamp(float(params["EDGE_STRONG_THRESHOLD"]) + 0.01, 0.03, 0.12), 4)
     elif winrate > 0.60:
         params["FILL_PROB_THRESHOLD"] = round(_clamp(float(params["FILL_PROB_THRESHOLD"]) - 0.03, 0.20, 0.80), 4)
 
-    # 4) wallet alpha memory
+    # 4. wallet alpha memory
     if winrate > 0.55:
         params["WALLET_ALPHA_WINDOW"] = int(_clamp(int(params["WALLET_ALPHA_WINDOW"]) + 10, 20, 200))
         params["WALLET_DECAY"] = round(_clamp(float(params["WALLET_DECAY"]) + 0.01, 0.85, 0.995), 4)
@@ -112,13 +113,13 @@ def suggest_env_params(trades: List[Dict[str, Any]], current: Dict[str, Any] | N
         params["WALLET_ALPHA_WINDOW"] = int(_clamp(int(params["WALLET_ALPHA_WINDOW"]) - 5, 20, 200))
         params["WALLET_DECAY"] = round(_clamp(float(params["WALLET_DECAY"]) - 0.01, 0.85, 0.995), 4)
 
-    # 5) engine speed
+    # 5. loop interval
     if winrate < 0.45:
         params["ENGINE_LOOP_INTERVAL"] = round(_clamp(float(params["ENGINE_LOOP_INTERVAL"]) + 0.05, 0.05, 1.0), 4)
     elif winrate > 0.60 and total_pnl > 0:
         params["ENGINE_LOOP_INTERVAL"] = round(_clamp(float(params["ENGINE_LOOP_INTERVAL"]) - 0.02, 0.05, 1.0), 4)
 
-    # 6) daily loss guard
+    # 6. daily loss guard
     if drawdown > 0 and total_pnl < 0:
         params["MAX_DAILY_LOSS"] = round(_clamp(float(params["MAX_DAILY_LOSS"]) * 0.9, 0.03, 0.30), 4)
 
