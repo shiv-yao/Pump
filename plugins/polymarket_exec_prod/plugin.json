@@ -1,0 +1,62 @@
+{
+  "id": "polymarket_exec_prod",
+  "name": "polymarket_exec_prod",
+  "description": "Polymarket production execution via py-clob-client",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "execution",
+  "tools": [
+    {
+      "name": "pm_limit",
+      "description": "Place limit order",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": { "type": "string" },
+          "side": { "type": "string" },
+          "price": { "type": "number" },
+          "size": { "type": "number },
+          "ioc": { "type": "boolean" }
+        },
+        "required": ["asset_id", "side", "price", "size"]
+      }
+    },
+    {
+      "name": "pm_cancel",
+      "description": "Cancel order by id",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "order_id": { "type": "string" }
+        },
+        "required": ["order_id"]
+      }
+    },
+    {
+      "name": "pm_get_order",
+      "description": "Get order status",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "order_id": { "type": "string" }
+        },
+        "required": ["order_id"]
+      }
+    },
+    {
+      "name": "pm_get_fills",
+      "description": "Get recent fills",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "pm_balance",
+      "description": "Get balances",
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  ]
+}
