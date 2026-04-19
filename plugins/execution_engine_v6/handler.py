@@ -7,8 +7,9 @@ from pathlib import Path
 
 RUNNING = False
 
-POSITIONS = {}   # asset_id → {size, avg}
-PNL = 0
+POSITIONS = {}   # asset_id -> {size, avg}
+PNL = 0.0
+TRADES = []
 
 
 # ========= loader =========
@@ -29,7 +30,7 @@ def load(tool):
 
         try:
             data = json.loads(m.read_text())
-        except:
+        except Exception:
             continue
 
         if not any(t["name"] == tool for t in data.get("tools", [])):
@@ -55,9 +56,9 @@ async def call(tool, payload):
     return fn(**payload)
 
 
-# ========= 風控 =========
+# ========= risk =========
 def risk_check(asset_id, size, capital):
-    pos = POSITIONS.get(asset_id, {"size": 0})
+    pos = POSITIONS.get(asset_id, {"size": 0.0})
 
     # 單筆 <= 2%
     if size > capital * 0.02:
@@ -70,30 +71,63 @@ def risk_check(asset_id, size, capital):
     return True
 
 
-# ========= 成交 =========
-def apply_fill(asset_id, side, price, size):
+# ========= fill =========
+async def apply_fill(asset_id, side, price, size):
     global PNL
 
-    pos = POSITIONS.get(asset_id, {"size": 0, "avg": 0})
+    px = float(price)
+    qty = float(size)
+
+    pos = POSITIONS.get(asset_id, {"size": 0.0, "avg": 0.0})
 
     if side == "buy":
-        new_size = pos["size"] + size
-        pos["avg"] = (pos["avg"] * pos["size"] + price * size) / max(new_size, 1)
+        new_size = pos["size"] + qty
+        pos["avg"] = (pos["avg"] * pos["size"] + px * qty) / max(new_size, 1e-9)
         pos["size"] = new_size
     else:
-        pnl = (price - pos["avg"]) * size
-        PNL += pnl
-        pos["size"] -= size
+        # 這裡是簡化版 realized pnl
+        realized = (px - pos["avg"]) * qty
+        PNL += realized
+        pos["size"] -= qty
 
     POSITIONS[asset_id] = pos
 
+    # 同步 inventory controller
+    await call("adjust_position", {
+        "asset_id": asset_id,
+        "size": qty,
+        "side": side
+    })
 
-# ========= 下單 =========
+    TRADES.append({
+        "time": time.time(),
+        "asset_id": asset_id,
+        "side": side,
+        "price": px,
+        "size": qty,
+        "pnl": PNL
+    })
+
+
+# ========= execution =========
 async def execute(asset_id, side, bid, ask, size):
 
-    price = bid if side == "buy" else ask
+    # 價格由 orderbook_edge 決定
+    limit_price = await call("get_limit_price", {
+        "bid": bid,
+        "ask": ask,
+        "side": side
+    })
 
-    # ===== LIMIT =====
+    if isinstance(limit_price, dict) and "error" in limit_price:
+        return limit_price
+
+    if not limit_price:
+        return {"skipped": "spread too narrow"}
+
+    price = float(limit_price)
+
+    # ===== 1) LIMIT =====
     res = await call("pm_limit", {
         "asset_id": asset_id,
         "side": side,
@@ -102,30 +136,36 @@ async def execute(asset_id, side, bid, ask, size):
         "ioc": False
     })
 
+    if isinstance(res, dict) and "error" in res:
+        return res
+
     oid = res.get("order_id")
     if not oid:
-        return
+        return {"error": "no order_id returned"}
 
-    # ===== 等成交 =====
+    # ===== 2) 等成交 =====
     filled = False
 
     for _ in range(10):
         od = await call("pm_get_order", {"order_id": oid})
+
+        if isinstance(od, dict) and "error" in od:
+            await asyncio.sleep(0.1)
+            continue
+
         order = od.get("order", {})
-        status = order.get("status")
+        status = str(order.get("status", "")).lower()
 
         if status in ("filled", "partially_filled"):
-
             avg = float(order.get("avgPrice", price))
             qty = float(order.get("filledSize", size))
-
-            apply_fill(asset_id, side, avg, qty)
+            await apply_fill(asset_id, side, avg, qty)
             filled = True
             break
 
         await asyncio.sleep(0.1)
 
-    # ===== fallback IOC =====
+    # ===== 3) fallback IOC =====
     if not filled:
         await call("pm_cancel", {"order_id": oid})
 
@@ -137,22 +177,37 @@ async def execute(asset_id, side, bid, ask, size):
             "ioc": True
         })
 
+        if isinstance(res2, dict) and "error" in res2:
+            return res2
+
         await asyncio.sleep(0.2)
-        fills = await call("pm_get_fills", {"limit": 5})
 
-        for f in fills.get("fills", []):
-            if f.get("asset_id") == asset_id:
-                apply_fill(
-                    asset_id,
-                    side,
-                    float(f.get("price")),
-                    float(f.get("size"))
-                )
+        fills = await call("pm_get_fills", {"limit": 10})
+        if isinstance(fills, dict):
+            for f in fills.get("fills", []):
+                if str(f.get("asset_id")) == str(asset_id):
+                    try:
+                        await apply_fill(
+                            asset_id,
+                            side,
+                            float(f.get("price")),
+                            float(f.get("size"))
+                        )
+                        filled = True
+                        break
+                    except Exception:
+                        continue
+
+    return {
+        "asset_id": asset_id,
+        "side": side,
+        "size": size,
+        "filled": filled
+    }
 
 
-# ========= 主引擎 =========
+# ========= main engine =========
 async def start_v6_engine(markets, capital=100):
-
     global RUNNING
     RUNNING = True
 
@@ -161,22 +216,31 @@ async def start_v6_engine(markets, capital=100):
     while RUNNING:
 
         for m in markets:
-
-            # ===== 取得 alpha =====
+            # ===== alpha =====
             alpha = await call("get_alpha_v2", {"asset_id": m})
-
-            if "error" in alpha:
+            if not isinstance(alpha, dict) or "error" in alpha:
                 continue
 
-            side = alpha.get("action")
-            score = alpha.get("score", 0)
+            side = alpha.get("action", "hold")
+            score = float(alpha.get("score", 0.0))
+
+            # ===== signal filter =====
+            filtered = await call("filter_signal", {
+                "score": score,
+                "action": side
+            })
+
+            if isinstance(filtered, dict):
+                filtered = filtered.get("action", "hold")
+
+            side = str(filtered).lower().strip()
 
             if side == "hold":
                 continue
 
-            # ===== 取得 orderbook =====
+            # ===== book =====
             book = await call("get_polymarket_book_cache", {"asset_id": m})
-            if "error" in book:
+            if not isinstance(book, dict) or "error" in book:
                 continue
 
             bid = book.get("best_bid")
@@ -184,6 +248,19 @@ async def start_v6_engine(markets, capital=100):
 
             if not bid or not ask:
                 continue
+
+            bid = float(bid)
+            ask = float(ask)
+
+            # ===== inventory reduce =====
+            reduce_needed = await call("should_reduce", {"asset_id": m})
+
+            if reduce_needed is True:
+                current = POSITIONS.get(m, {"size": 0.0})
+                if current["size"] > 0:
+                    side = "sell"
+                elif current["size"] < 0:
+                    side = "buy"
 
             # ===== size 動態 =====
             size = capital * (0.01 + score * 0.02)
@@ -207,5 +284,6 @@ def stop_v6_engine():
 def get_state():
     return {
         "positions": POSITIONS,
-        "pnl": PNL
+        "pnl": PNL,
+        "trades": TRADES[-20:]
     }
