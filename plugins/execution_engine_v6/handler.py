@@ -1,15 +1,14 @@
 import asyncio
-import json
 import time
+import json
 import importlib.util
 import inspect
 from pathlib import Path
 
 RUNNING = False
 
-INVENTORY = {}      # {asset_id: position}
-PENDING = {}        # order_id → state
-EQUITY = []
+POSITIONS = {}   # asset_id → {size, avg}
+PNL = 0
 
 
 # ========= loader =========
@@ -56,67 +55,101 @@ async def call(tool, payload):
     return fn(**payload)
 
 
-# ========= 限價單 =========
-async def place_limit(asset_id, side, price, size):
-    # TODO: 接 polymarket_exec limit order
-    return {
-        "order_id": f"order_{time.time()}",
-        "status": "placed",
-        "price": price,
-        "size": size,
-        "side": side
-    }
+# ========= 風控 =========
+def risk_check(asset_id, size, capital):
+    pos = POSITIONS.get(asset_id, {"size": 0})
+
+    # 單筆不超過 2%
+    if size > capital * 0.02:
+        return False
+
+    # 單市場不超過 20%
+    if abs(pos["size"]) > capital * 0.2:
+        return False
+
+    return True
 
 
-# ========= IOC fallback =========
-async def place_ioc(asset_id, side, size):
-    return await call("route_order", {
-        "target": "polymarket",
-        "side": side,
-        "symbol": asset_id,
-        "amount": size
-    })
+# ========= 成交 =========
+def apply_fill(asset_id, side, price, size):
+    global PNL
 
-
-# ========= 成交追蹤 =========
-def update_inventory(asset_id, side, size):
-    pos = INVENTORY.get(asset_id, 0)
+    pos = POSITIONS.get(asset_id, {"size": 0, "avg": 0})
 
     if side == "buy":
-        pos += size
+        new_size = pos["size"] + size
+        pos["avg"] = (pos["avg"] * pos["size"] + price * size) / max(new_size, 1)
+        pos["size"] = new_size
     else:
-        pos -= size
+        pnl = (price - pos["avg"]) * size
+        PNL += pnl
+        pos["size"] -= size
 
-    INVENTORY[asset_id] = pos
+    POSITIONS[asset_id] = pos
 
 
-# ========= 核心事件 =========
-async def on_book_update(asset_id, book):
+# ========= 下單 =========
+async def execute(asset_id, side, bid, ask, size):
 
-    mid = book["mid_price"]
-    imbalance = book["imbalance"]
+    # ===== 1️⃣ LIMIT 掛單 =====
+    price = bid if side == "buy" else ask
 
-    # 簡單套利條件
-    if abs(imbalance) < 0.1:
+    res = await call("pm_limit", {
+        "asset_id": asset_id,
+        "side": side,
+        "price": price,
+        "size": size,
+        "ioc": False
+    })
+
+    oid = res.get("order_id")
+    if not oid:
         return
 
-    size = 1
+    # ===== 2️⃣ 等成交 =====
+    filled = False
 
-    # ===== maker 優先 =====
-    if imbalance > 0:
-        # 買方強 → 掛 bid
-        price = mid - 0.01
-        order = await place_limit(asset_id, "buy", price, size)
-        PENDING[order["order_id"]] = order
+    for _ in range(10):
+        od = await call("pm_get_order", {"order_id": oid})
 
-    else:
-        price = mid + 0.01
-        order = await place_limit(asset_id, "sell", price, size)
-        PENDING[order["order_id"]] = order
+        order = od.get("order", {})
+        status = order.get("status")
 
-    # ===== fallback IOC =====
-    if len(PENDING) > 5:
-        await place_ioc(asset_id, "buy", size)
+        if status in ("filled", "partially_filled"):
+
+            avg = float(order.get("avgPrice", price))
+            qty = float(order.get("filledSize", size))
+
+            apply_fill(asset_id, side, avg, qty)
+            filled = True
+            break
+
+        await asyncio.sleep(0.1)
+
+    # ===== 3️⃣ fallback IOC =====
+    if not filled:
+        await call("pm_cancel", {"order_id": oid})
+
+        res2 = await call("pm_limit", {
+            "asset_id": asset_id,
+            "side": side,
+            "price": ask if side == "buy" else bid,
+            "size": size,
+            "ioc": True
+        })
+
+        # 再查成交
+        await asyncio.sleep(0.2)
+        fills = await call("pm_get_fills", {"limit": 5})
+
+        for f in fills.get("fills", []):
+            if f.get("asset_id") == asset_id:
+                apply_fill(
+                    asset_id,
+                    side,
+                    float(f.get("price")),
+                    float(f.get("size"))
+                )
 
 
 # ========= 主引擎 =========
@@ -125,30 +158,38 @@ async def start_v6_engine(markets, capital=100):
     global RUNNING
     RUNNING = True
 
-    # 啟動 WS
     await call("start_polymarket_book", {"asset_ids": markets})
 
     while RUNNING:
 
         for m in markets:
 
-            book = await call("get_polymarket_book_cache", {
-                "asset_id": m
-            })
-
+            book = await call("get_polymarket_book_cache", {"asset_id": m})
             if "error" in book:
                 continue
 
-            await on_book_update(m, book)
+            bid = book.get("best_bid")
+            ask = book.get("best_ask")
 
-        # ===== PnL（簡化）=====
-        equity = sum(INVENTORY.values())
-        EQUITY.append({
-            "time": time.time(),
-            "equity": equity
-        })
+            if not bid or not ask:
+                continue
 
-        await asyncio.sleep(0.1)  # 接近 event-driven
+            spread = ask - bid
+
+            # ===== edge =====
+            if spread < 0.02:
+                continue
+
+            size = capital * 0.01
+
+            if not risk_check(m, size, capital):
+                continue
+
+            side = "buy" if book.get("imbalance", 0) > 0 else "sell"
+
+            await execute(m, side, bid, ask, size)
+
+        await asyncio.sleep(0.2)
 
     return "stopped"
 
@@ -159,9 +200,8 @@ def stop_v6_engine():
     return "stopped"
 
 
-def get_inventory():
-    return INVENTORY
-
-
-def get_equity():
-    return EQUITY
+def get_state():
+    return {
+        "positions": POSITIONS,
+        "pnl": PNL
+    }
