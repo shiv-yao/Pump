@@ -33,16 +33,15 @@ def strategy_record_trade(strategy_id, pnl):
     else:
         s["losses"] += 1
 
-    # equity curve
-    eq = (s["equity"][-1] if s["equity"] else 0) + pnl
+    eq = (s["equity"][-1] if s["equity"] else 0.0) + pnl
     s["equity"].append(eq)
 
     return {"ok": True}
 
 
 def _drawdown(eq):
-    peak = 0
-    max_dd = 0
+    peak = 0.0
+    max_dd = 0.0
     for v in eq:
         if v > peak:
             peak = v
@@ -59,14 +58,14 @@ def strategy_get_stats():
         trades = s["trades"]
         n = len(trades)
 
-        winrate = s["wins"] / n if n else 0
+        winrate = s["wins"] / n if n else 0.0
         dd = _drawdown(s["equity"])
 
         out[k] = {
-            "pnl": s["pnl"],
+            "pnl": round(s["pnl"], 6),
             "trades": n,
             "winrate": round(winrate, 4),
-            "drawdown": round(dd, 4),
+            "drawdown": round(dd, 6),
             "enabled": s["enabled"]
         }
 
@@ -98,7 +97,6 @@ def strategy_should_trade(strategy_id):
     winrate = s["wins"] / n
     dd = _drawdown(s["equity"])
 
-    # 停用條件（核心）
     if winrate < 0.35 and n > 20:
         s["enabled"] = False
         return {"trade": False, "reason": "low winrate"}
