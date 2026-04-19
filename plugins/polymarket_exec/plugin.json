@@ -1,0 +1,13 @@
+{
+  "id": "polymarket_exec",
+  "name": "polymarket_exec",
+  "description": "Polymarket execution layer",
+  "enabled": true,
+  "category": "trading",
+  "tools": [
+    {"name": "pm_balance"},
+    {"name": "pm_positions"},
+    {"name": "pm_buy"},
+    {"name": "pm_sell"}
+  ]
+}
