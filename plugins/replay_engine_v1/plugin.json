@@ -1,0 +1,18 @@
+{
+  "id": "replay_engine_v1",
+  "name": "replay_engine_v1",
+  "description": "Trade-level replay engine for parameter evaluation",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "backtest",
+  "tools": [
+    {
+      "name": "replay_run",
+      "description": "run replay with config"
+    },
+    {
+      "name": "replay_optimize",
+      "description": "find best config using replay"
+    }
+  ]
+}
