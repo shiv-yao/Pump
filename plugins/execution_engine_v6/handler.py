@@ -63,10 +63,6 @@ async def call(tool, payload=None):
 
 # ========= wallet alpha resolver =========
 async def get_best_wallet_alpha(asset_id):
-    """
-    Prefer wallet_alpha_v3, then v2, then v1.
-    Returns normalized dict: {"action": "...", "score": ...}
-    """
     for tool_name in ("get_wallet_alpha_v3", "get_wallet_alpha_v2", "get_wallet_alpha"):
         result = await call(tool_name, {"asset_id": asset_id})
         if isinstance(result, dict) and "error" not in result:
@@ -94,11 +90,9 @@ async def get_best_wallet_alpha(asset_id):
 def risk_check(asset_id, size, capital):
     pos = POSITIONS.get(asset_id, {"size": 0.0})
 
-    # 單筆 <= 2%
     if size > capital * 0.02:
         return False
 
-    # 單市場 <= 20%
     if abs(pos["size"]) > capital * 0.2:
         return False
 
@@ -143,16 +137,13 @@ async def apply_fill(asset_id, side, price, size, strategy_id="fusion_alpha_v1")
         "strategy_id": strategy_id
     })
 
-    # fund_brain_v8
     await call("fb_record_trade", {"pnl": pnl_delta})
 
-    # strategy manager
     await call("strategy_record_trade", {
         "strategy_id": strategy_id,
         "pnl": pnl_delta
     })
 
-    # ledger_v2
     await call("ledger_record_fill", {
         "asset_id": asset_id,
         "side": side,
@@ -161,7 +152,6 @@ async def apply_fill(asset_id, side, price, size, strategy_id="fusion_alpha_v1")
     })
 
     # wallet alpha feed
-    # 真資料版本之後可把 wallet 改成實際地址
     await call("wa_record_trade", {
         "wallet": "market_wallet",
         "asset_id": asset_id,
@@ -175,7 +165,6 @@ async def apply_fill(asset_id, side, price, size, strategy_id="fusion_alpha_v1")
 
 # ========= alpha fusion =========
 async def get_fused_signal(asset_id):
-    # 1) orderbook alpha
     alpha = await call("get_alpha_v2", {"asset_id": asset_id})
     if not isinstance(alpha, dict) or "error" in alpha:
         return {"error": "alpha_v2 failed"}
@@ -183,12 +172,10 @@ async def get_fused_signal(asset_id):
     side = str(alpha.get("action", "hold")).lower().strip()
     score = float(alpha.get("score", 0.0))
 
-    # 2) wallet alpha (v3 -> v2 -> v1)
     wallet = await get_best_wallet_alpha(asset_id)
     w_side = wallet["action"]
     w_score = float(wallet["score"])
 
-    # 強融合版
     if w_score > 0.75 and w_side != "hold":
         side = w_side
         score = max(score, w_score)
@@ -199,11 +186,9 @@ async def get_fused_signal(asset_id):
     elif w_side != side and w_side != "hold":
         score *= 0.4
 
-    # 3) 弱訊號直接 hold
     if score < 0.55:
         side = "hold"
 
-    # 4) signal filter
     filtered = await call("filter_signal", {
         "score": score,
         "action": side
@@ -259,22 +244,17 @@ async def smart_execute(asset_id, side, book, size, capital, strategy_id="fusion
     bids = book.get("bids", [])
     asks = book.get("asks", [])
 
-    # 1) edge 檢查
     edge = calc_edge(bid, ask)
     if edge < 0.02:
         return {"skipped": "low edge"}
 
-    # 2) fake liquidity 過濾
     if is_fake_liquidity(bids, asks):
         return {"skipped": "fake liquidity"}
 
-    # 3) fill probability
     fill_prob = predict_fill_probability(bids, asks)
 
-    # 4) 依 fill probability 動態縮放 size
     size *= max(0.3, min(1.0, fill_prob * 2.0))
 
-    # 5) inventory reduce
     reduce_needed = await call("should_reduce", {"asset_id": asset_id})
     if reduce_needed is True:
         current = POSITIONS.get(asset_id, {"size": 0.0})
@@ -283,7 +263,6 @@ async def smart_execute(asset_id, side, book, size, capital, strategy_id="fusion
         elif current["size"] < 0:
             side = "buy"
 
-    # 6) price selection
     limit_price = await call("get_limit_price", {
         "bid": bid,
         "ask": ask,
@@ -298,11 +277,9 @@ async def smart_execute(asset_id, side, book, size, capital, strategy_id="fusion
 
     price = float(limit_price)
 
-    # 7) 風控
     if not risk_check(asset_id, size, capital):
         return {"skipped": "risk blocked"}
 
-    # 8) routing
     use_ioc = False
     if fill_prob < 0.3:
         use_ioc = True
@@ -315,7 +292,6 @@ async def smart_execute(asset_id, side, book, size, capital, strategy_id="fusion
         else price
     )
 
-    # 9) 下單
     res = await call("pm_limit", {
         "asset_id": asset_id,
         "side": side,
@@ -331,7 +307,6 @@ async def smart_execute(asset_id, side, book, size, capital, strategy_id="fusion
     if not oid:
         return {"error": "no order_id returned"}
 
-    # 10) 等成交
     for _ in range(10 if not use_ioc else 4):
         od = await call("pm_get_order", {"order_id": oid})
 
@@ -359,7 +334,6 @@ async def smart_execute(asset_id, side, book, size, capital, strategy_id="fusion
 
         await asyncio.sleep(0.05 if use_ioc else 0.1)
 
-    # 11) maker 未成交 → cancel → IOC fallback
     if not use_ioc:
         await call("pm_cancel", {"order_id": oid})
 
@@ -410,9 +384,17 @@ async def smart_execute(asset_id, side, book, size, capital, strategy_id="fusion
 # ========= main engine =========
 async def start_v7_engine(markets, capital=100):
     global RUNNING
+
+    if RUNNING:
+        return {"ok": True, "message": "engine already running"}
+
     RUNNING = True
 
+    # 自動啟動 market book
     await call("start_polymarket_book", {"asset_ids": markets})
+
+    # 自動啟動 wallet feed ws
+    await call("start_wallet_feed_ws", {"asset_ids": markets})
 
     while RUNNING:
         loop_start = time.time()
@@ -530,18 +512,23 @@ async def start_v7_engine(markets, capital=100):
 
         await asyncio.sleep(max(0.2 - (time.time() - loop_start), 0))
 
-    return "stopped"
+    return {"ok": True, "message": "engine stopped"}
 
 
-def stop_v7_engine():
+async def stop_v7_engine():
     global RUNNING
     RUNNING = False
-    return "stopped"
+
+    # 自動停止 wallet feed
+    await call("stop_wallet_feed_ws", {})
+
+    return {"ok": True, "message": "engine + wallet feed stopped"}
 
 
 def get_state():
     return {
         "positions": POSITIONS,
         "pnl": PNL,
-        "trades": TRADES[-20:]
+        "trades": TRADES[-20:],
+        "running": RUNNING
     }
