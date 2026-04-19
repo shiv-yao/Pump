@@ -7,8 +7,6 @@ from pathlib import Path
 RUNNING = False
 
 
-# ========= 通用工具 loader =========
-
 def _find_plugins_root() -> Path:
     current = Path(__file__).resolve()
     for parent in current.parents:
@@ -54,17 +52,15 @@ def _load_tool(tool_name: str):
     return None
 
 
-async def _call(tool, payload):
-    fn = _load_tool(tool)
+async def _call(tool_name: str, payload: dict):
+    fn = _load_tool(tool_name)
     if not fn:
-        return {"error": f"{tool} not found"}
+        return {"error": f"{tool_name} not found"}
 
     if inspect.iscoroutinefunction(fn):
         return await fn(**payload)
     return fn(**payload)
 
-
-# ========= 核心：Polymarket 自動交易 =========
 
 async def run_polymarket_fund(
     asset_id: str,
@@ -73,108 +69,120 @@ async def run_polymarket_fund(
     loops: int = 999,
 ):
     """
-    asset_id: Polymarket token id
-    symbol: 外部對應 (BTCUSDT)
+    asset_id: Polymarket token/asset id
+    symbol: external market symbol used by alpha model, e.g. BTCUSDT
     """
 
     global RUNNING
     RUNNING = True
-
     logs = []
 
-    # 啟動 WS（如果還沒）
-    await _call("start_polymarket_book", {"asset_ids": [asset_id]})
+    # 1) start websocket book stream
+    start_result = await _call("start_polymarket_book", {"asset_ids": [asset_id]})
+    logs.append({"stage": "start_ws", "result": start_result})
 
     for i in range(int(loops)):
         if not RUNNING:
             break
 
         try:
-            # ===== 1. 取得 alpha =====
+            # 2) alpha from websocket cache + REST fallback
             alpha = await _call("get_polymarket_signal_ws", {
                 "asset_id": asset_id,
-                "symbol": symbol
+                "symbol": symbol,
             })
 
             if isinstance(alpha, str):
                 try:
                     alpha = json.loads(alpha)
-                except:
+                except Exception:
                     alpha = {"error": alpha}
 
             if "error" in alpha:
-                logs.append(f"[{i}] alpha error: {alpha}")
+                logs.append({"loop": i, "stage": "alpha", "error": alpha})
                 await asyncio.sleep(1)
                 continue
 
-            score = float(alpha.get("combined_score", 0))
             action = alpha.get("action", "hold")
+            confidence = float(alpha.get("confidence", 0.0))
+            combined_score = float(alpha.get("combined_score", 0.0))
 
-            # ===== 2. 風控 =====
+            # 3) risk gate
             can = await _call("can_trade", {})
             if can is not True:
-                logs.append(f"[{i}] blocked by risk")
+                logs.append({"loop": i, "stage": "risk", "status": "blocked"})
                 await asyncio.sleep(1)
                 continue
 
-            # ===== 3. 倉位 =====
+            # 4) dynamic size from fund brain
             size = await _call("position_size", {
-                "score": abs(score),
-                "capital": capital
+                "score": abs(combined_score),
+                "capital": float(capital),
             })
 
             try:
                 size = float(size)
-            except:
-                size = capital * 0.1
+            except Exception:
+                size = float(capital) * 0.1
 
-            # ===== 4. 決策 =====
             if action == "hold":
-                logs.append(f"[{i}] HOLD {score:.4f}")
+                logs.append({
+                    "loop": i,
+                    "stage": "decision",
+                    "action": "hold",
+                    "score": combined_score,
+                    "confidence": confidence,
+                })
                 await asyncio.sleep(1)
                 continue
 
-            # YES / NO mapping
+            # 5) map Polymarket alpha -> execution router
             if action == "buy_yes":
                 side = "buy"
-                market_symbol = asset_id  # YES token
             elif action == "buy_no":
                 side = "sell"
-                market_symbol = asset_id
             else:
+                logs.append({
+                    "loop": i,
+                    "stage": "decision",
+                    "error": f"unsupported action: {action}",
+                })
                 await asyncio.sleep(1)
                 continue
 
-            # ===== 5. 下單 =====
             result = await _call("route_order", {
                 "target": "polymarket",
                 "side": side,
-                "symbol": market_symbol,
-                "amount": size
+                "symbol": asset_id,
+                "amount": size,
             })
 
             logs.append({
                 "loop": i,
-                "score": score,
+                "stage": "execution",
+                "score": combined_score,
+                "confidence": confidence,
                 "action": action,
                 "size": size,
-                "result": result
+                "result": result,
             })
 
-            # ===== 6. 更新風控 =====
-            await _call("check_risk", {"pnl": 0})
+            # 6) risk accounting placeholder
+            await _call("check_risk", {"pnl": 0.0})
 
         except Exception as e:
-            logs.append(f"[{i}] ERROR {e}")
+            logs.append({"loop": i, "stage": "exception", "error": str(e)})
 
         await asyncio.sleep(1)
 
     return logs
 
 
-# ========= 停止 =========
-
 async def stop_fund():
     global RUNNING
     RUNNING = False
+    try:
+        await _call("stop_polymarket_book", {})
+    except Exception:
+        pass
     return "stopped"
