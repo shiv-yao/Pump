@@ -9,6 +9,8 @@ from app.agent_runtime import get_session
 from app.builtin_plugins import ensure_builtin_plugins
 from app.command_router import execute_platform_command
 from app.db import init_plugin_db
+from fastapi.responses import FileResponse
+from pathlib import Path
 from app.models import (
     ChatRequest,
     CommandRequest,
@@ -230,6 +232,19 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={"success": False, "error": str(exc), "path": str(request.url.path)},
+    )
+
+@app.get("/api/env/latest")
+async def download_latest_env():
+    env_path = Path("latest.env")
+
+    if not env_path.exists():
+        raise HTTPException(status_code=404, detail="latest.env not found")
+
+    return FileResponse(
+        path=str(env_path),
+        media_type="text/plain",
+        filename="latest.env"
     )
 
 
