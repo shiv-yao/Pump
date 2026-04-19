@@ -1,0 +1,24 @@
+{
+  "id": "meta_allocator_v1",
+  "name": "meta_allocator_v1",
+  "description": "Allocate capital across strategies",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "portfolio",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "allocate_capital_v1",
+      "description": "Allocate capital to strategies",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "strategies": { "type": "object" },
+          "capital": { "type": "number" }
+        },
+        "required": ["strategies", "capital"]
+      }
+    }
+  ]
+}
