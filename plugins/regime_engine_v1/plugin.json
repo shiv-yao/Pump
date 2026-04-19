@@ -1,0 +1,11 @@
+{
+  "id": "regime_engine_v1",
+  "name": "regime_engine_v1",
+  "description": "Detect market regime",
+  "tools": [
+    {
+      "name": "detect_regime",
+      "description": "Return market regime"
+    }
+  ]
+}
