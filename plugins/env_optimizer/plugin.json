@@ -1,0 +1,41 @@
+{
+  "id": "env_optimizer",
+  "name": "env_optimizer",
+  "description": "Auto tune execution and fund brain env parameters from trade results",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "optimizer",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "suggest_env_params",
+      "description": "Suggest better env params from recent trades",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "trades": {
+            "type": "array"
+          },
+          "current": {
+            "type": "object"
+          }
+        },
+        "required": ["trades"]
+      }
+    },
+    {
+      "name": "export_env_block",
+      "description": "Export suggested params as .env block",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "params": {
+            "type": "object"
+          }
+        },
+        "required": ["params"]
+      }
+    }
+  ]
+}
