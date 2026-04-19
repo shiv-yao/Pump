@@ -1,0 +1,47 @@
+{
+  "id": "risk_engine",
+  "name": "risk_engine",
+  "description": "Risk controls: kill switch, daily loss, max exposure",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "risk",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "can_trade",
+      "description": "Return whether trading is currently allowed",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "check_risk",
+      "description": "Update pnl and decide whether to trigger kill switch",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pnl": { "type": "number" }
+        },
+        "required": ["pnl"]
+      }
+    },
+    {
+      "name": "get_risk_state",
+      "description": "Return full risk state",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "reset_risk_state",
+      "description": "Reset risk state",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
