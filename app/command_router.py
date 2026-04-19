@@ -128,6 +128,8 @@ async def execute_platform_command(command: str):
                 "/save_env_block {\"env_block\":\"...\",\"filename\":\"latest.env\"}\n"
                 "/auto_opt\n"
                 "/apply_env\n"
+                "/replay\n"
+                "/replay_opt\n"
                 "/clear\n"
             )
         }
@@ -250,6 +252,21 @@ async def execute_platform_command(command: str):
 
     if head == "apply_env":
         result = await _call_tool("apply_best_env", {})
+        return {"success": True, "output": _format(result)}
+
+    # ========= REPLAY SHORTCUTS =========
+    if head == "replay":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
+        result = await _call_tool("replay_run", payload)
+        return {"success": True, "output": _format(result)}
+
+    if head == "replay_opt":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
+        result = await _call_tool("replay_optimize", payload)
         return {"success": True, "output": _format(result)}
 
     # ========= GENERIC TOOL DISPATCH =========
