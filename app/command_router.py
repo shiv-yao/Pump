@@ -79,7 +79,6 @@ def _parse_payload(text: str):
     if not text:
         return {}
 
-    # JSON payload
     if text.startswith("{") and text.endswith("}"):
         try:
             return json.loads(text)
@@ -106,10 +105,7 @@ async def execute_platform_command(command: str):
     if not raw:
         return {"success": False, "output": "Empty command"}
 
-    # 允許不加 /
     cmdline = raw[1:] if raw.startswith("/") else raw
-
-    # 先切第一個 token
     parts = cmdline.split(maxsplit=1)
     head = parts[0].strip()
     tail = parts[1].strip() if len(parts) > 1 else ""
@@ -130,6 +126,8 @@ async def execute_platform_command(command: str):
                 "/auto_optimize_env [json]\n"
                 "/auto_optimize_and_save_env [json]\n"
                 "/save_env_block {\"env_block\":\"...\",\"filename\":\"latest.env\"}\n"
+                "/auto_opt\n"
+                "/apply_env\n"
                 "/clear\n"
             )
         }
@@ -245,11 +243,16 @@ async def execute_platform_command(command: str):
         result = await _call_tool("save_env_block", payload)
         return {"success": True, "output": _format(result)}
 
+    # ========= AI AUTO TUNING SHORTCUTS =========
+    if head == "auto_opt":
+        result = await _call_tool("auto_optimize_env", {})
+        return {"success": True, "output": _format(result)}
+
+    if head == "apply_env":
+        result = await _call_tool("apply_best_env", {})
+        return {"success": True, "output": _format(result)}
+
     # ========= GENERIC TOOL DISPATCH =========
-    # 支援：
-    # /tool_name {"json":"payload"}
-    # 或
-    # tool_name {"json":"payload"}
     payload = _parse_payload(tail)
     if "_raw" in payload:
         payload = {}
