@@ -75,7 +75,7 @@ def risk_check(asset_id, size, capital):
 
 
 # ========= fill =========
-async def apply_fill(asset_id, side, price, size):
+async def apply_fill(asset_id, side, price, size, strategy_id="fusion_alpha_v1"):
     global PNL
 
     px = float(price)
@@ -108,11 +108,26 @@ async def apply_fill(asset_id, side, price, size):
         "price": px,
         "size": qty,
         "pnl_total": PNL,
-        "pnl_delta": pnl_delta
+        "pnl_delta": pnl_delta,
+        "strategy_id": strategy_id
     })
 
     # 回寫到 fund_brain_v8
     await call("fb_record_trade", {"pnl": pnl_delta})
+
+    # 回寫到 strategy_manager_v1
+    await call("strategy_record_trade", {
+        "strategy_id": strategy_id,
+        "pnl": pnl_delta
+    })
+
+    # 回寫到 ledger_v2（如果有裝）
+    await call("ledger_record_fill", {
+        "asset_id": asset_id,
+        "side": side,
+        "price": px,
+        "size": qty
+    })
 
     return pnl_delta
 
@@ -198,7 +213,7 @@ def is_fake_liquidity(bids, asks):
 
 
 # ========= execution =========
-async def smart_execute(asset_id, side, book, size, capital):
+async def smart_execute(asset_id, side, book, size, capital, strategy_id="fusion_alpha_v1"):
     bid = float(book["best_bid"])
     ask = float(book["best_ask"])
     bids = book.get("bids", [])
@@ -225,7 +240,7 @@ async def smart_execute(asset_id, side, book, size, capital):
         elif current["size"] < 0:
             side = "buy"
 
-    # 5) price selection from orderbook_edge
+    # 5) price selection
     limit_price = await call("get_limit_price", {
         "bid": bid,
         "ask": ask,
@@ -244,7 +259,7 @@ async def smart_execute(asset_id, side, book, size, capital):
     if not risk_check(asset_id, size, capital):
         return {"skipped": "risk blocked"}
 
-    # 7) routing: fill_prob 低 → 直接 IOC，高 edge → maker 優先
+    # 7) routing
     use_ioc = False
     if fill_prob < 0.3:
         use_ioc = True
@@ -287,7 +302,7 @@ async def smart_execute(asset_id, side, book, size, capital):
         if status in ("filled", "partially_filled"):
             avg = float(order.get("avgPrice", order_price))
             qty = float(order.get("filledSize", size))
-            pnl_delta = await apply_fill(asset_id, side, avg, qty)
+            pnl_delta = await apply_fill(asset_id, side, avg, qty, strategy_id=strategy_id)
             return {
                 "asset_id": asset_id,
                 "side": side,
@@ -295,7 +310,8 @@ async def smart_execute(asset_id, side, book, size, capital):
                 "filled": True,
                 "avg_price": avg,
                 "pnl_delta": pnl_delta,
-                "mode": "ioc" if use_ioc else "limit"
+                "mode": "ioc" if use_ioc else "limit",
+                "strategy_id": strategy_id
             }
 
         await asyncio.sleep(0.05 if use_ioc else 0.1)
@@ -326,7 +342,7 @@ async def smart_execute(asset_id, side, book, size, capital):
                     if status2 in ("filled", "partially_filled"):
                         avg2 = float(order2.get("avgPrice", ask if side == "buy" else bid))
                         qty2 = float(order2.get("filledSize", size))
-                        pnl_delta = await apply_fill(asset_id, side, avg2, qty2)
+                        pnl_delta = await apply_fill(asset_id, side, avg2, qty2, strategy_id=strategy_id)
                         return {
                             "asset_id": asset_id,
                             "side": side,
@@ -334,7 +350,8 @@ async def smart_execute(asset_id, side, book, size, capital):
                             "filled": True,
                             "avg_price": avg2,
                             "pnl_delta": pnl_delta,
-                            "mode": "ioc_fallback"
+                            "mode": "ioc_fallback",
+                            "strategy_id": strategy_id
                         }
                 await asyncio.sleep(0.05)
 
@@ -342,7 +359,8 @@ async def smart_execute(asset_id, side, book, size, capital):
         "asset_id": asset_id,
         "side": side,
         "size": size,
-        "filled": False
+        "filled": False,
+        "strategy_id": strategy_id
     }
 
 
@@ -359,6 +377,16 @@ async def start_v7_engine(markets, capital=100):
 
         for m in markets:
             t0 = time.time()
+
+            # ===== mark price to ledger =====
+            book_for_mark = await call("get_polymarket_book_cache", {"asset_id": m})
+            if isinstance(book_for_mark, dict) and "error" not in book_for_mark:
+                mark_px = book_for_mark.get("best_bid") or book_for_mark.get("best_ask")
+                if mark_px:
+                    await call("ledger_mark_price", {
+                        "asset_id": m,
+                        "price": mark_px
+                    })
 
             # ===== fused alpha =====
             fused = await get_fused_signal(m)
@@ -379,6 +407,17 @@ async def start_v7_engine(markets, capital=100):
                     wallet_score = float(wallet.get("score", 0.0))
                 except Exception:
                     wallet_score = 0.0
+
+            # ===== strategy id =====
+            strategy_id = "fusion_alpha_v1"
+
+            # ===== strategy manager gate =====
+            strategy_decision = await call("strategy_should_trade", {
+                "strategy_id": strategy_id
+            })
+
+            if isinstance(strategy_decision, dict) and not strategy_decision.get("trade", True):
+                continue
 
             # ===== V9 portfolio manager =====
             pm = await call("run_portfolio_v1", {
@@ -423,7 +462,14 @@ async def start_v7_engine(markets, capital=100):
             # ===== max position per trade =====
             size = min(size, max_position_per_trade)
 
-            await smart_execute(m, side, book, size, capital)
+            await smart_execute(
+                m,
+                side,
+                book,
+                size,
+                capital,
+                strategy_id=strategy_id
+            )
 
         await asyncio.sleep(max(0.2 - (time.time() - loop_start), 0))
 
