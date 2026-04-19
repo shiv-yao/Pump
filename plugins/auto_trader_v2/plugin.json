@@ -1,30 +1,30 @@
 {
   "id": "auto_trader_v2",
   "name": "auto_trader_v2",
-  "description": "Fund-style auto trader using alpha_engine, fund_brain_v2, risk_engine and execution_router",
-  "version": "1.0.0",
+  "description": "Fund-style auto trader with Polymarket WS mode",
+  "version": "1.1.0",
   "enabled": true,
   "category": "automation",
   "price": 0,
   "author": "system",
   "tools": [
     {
-      "name": "run_fund",
-      "description": "Run auto trading loop",
+      "name": "run_polymarket_fund",
+      "description": "Run Polymarket websocket-based auto trading loop",
       "input_schema": {
         "type": "object",
         "properties": {
+          "asset_id": { "type": "string" },
           "symbol": { "type": "string" },
-          "target": { "type": "string" },
           "capital": { "type": "number" },
           "loops": { "type": "integer" }
         },
-        "required": ["symbol"]
+        "required": ["asset_id", "symbol"]
       }
     },
     {
       "name": "stop_fund",
-      "description": "Stop auto trading loop",
+      "description": "Stop the trading loop",
       "input_schema": {
         "type": "object",
         "properties": {}
