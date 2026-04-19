@@ -1,0 +1,23 @@
+{
+  "id": "env_optimizer_auto",
+  "name": "env_optimizer_auto",
+  "description": "Auto-read trades and output best env block",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "optimizer",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "auto_optimize_env",
+      "description": "Read trades from engine and output optimized env block",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "engine_tool": { "type": "string" },
+          "current": { "type": "object" }
+        }
+      }
+    }
+  ]
+}
