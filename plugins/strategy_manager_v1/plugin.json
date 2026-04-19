@@ -1,0 +1,16 @@
+{
+  "id": "strategy_manager_v1",
+  "name": "strategy_manager_v1",
+  "description": "Track and manage strategy performance",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "core",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    { "name": "strategy_record_trade" },
+    { "name": "strategy_get_stats" },
+    { "name": "strategy_get_rankings" },
+    { "name": "strategy_should_trade" }
+  ]
+}
