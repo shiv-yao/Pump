@@ -36,7 +36,10 @@ def load(tool):
         if not any(t.get("name") == tool for t in data.get("tools", [])):
             continue
 
-        spec = importlib.util.spec_from_file_location("mod", h)
+        spec = importlib.util.spec_from_file_location(f"plugin_{d.name}", h)
+        if not spec or not spec.loader:
+            continue
+
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
 
@@ -108,7 +111,7 @@ async def apply_fill(asset_id, side, price, size):
         "pnl_delta": pnl_delta
     })
 
-    # 回寫到 V8 調參
+    # 回寫到 fund_brain_v8
     await call("fb_record_trade", {"pnl": pnl_delta})
 
     return pnl_delta
@@ -248,11 +251,17 @@ async def smart_execute(asset_id, side, book, size, capital):
     if edge > 0.05:
         use_ioc = False
 
+    order_price = (
+        ask if (use_ioc and side == "buy")
+        else bid if (use_ioc and side == "sell")
+        else price
+    )
+
     # 8) 下單
     res = await call("pm_limit", {
         "asset_id": asset_id,
         "side": side,
-        "price": ask if (use_ioc and side == "buy") else bid if (use_ioc and side == "sell") else price,
+        "price": order_price,
         "size": size,
         "ioc": use_ioc
     })
@@ -265,7 +274,6 @@ async def smart_execute(asset_id, side, book, size, capital):
         return {"error": "no order_id returned"}
 
     # 9) 等成交
-    filled = False
     for _ in range(10 if not use_ioc else 4):
         od = await call("pm_get_order", {"order_id": oid})
 
@@ -277,10 +285,9 @@ async def smart_execute(asset_id, side, book, size, capital):
         status = str(order.get("status", "")).lower()
 
         if status in ("filled", "partially_filled"):
-            avg = float(order.get("avgPrice", price))
+            avg = float(order.get("avgPrice", order_price))
             qty = float(order.get("filledSize", size))
             pnl_delta = await apply_fill(asset_id, side, avg, qty)
-            filled = True
             return {
                 "asset_id": asset_id,
                 "side": side,
@@ -358,32 +365,45 @@ async def start_v7_engine(markets, capital=100):
             if "error" in fused:
                 continue
 
-            side = fused["action"]
-            score = float(fused["score"])
+            base_side = fused["action"]
+            base_score = float(fused["score"])
 
-            if side == "hold":
+            if base_side == "hold":
                 continue
 
-            # ===== V8 fund brain =====
-            regime_res = await call("fb_get_regime", {"asset_id": m})
-            regime = regime_res.get("regime", "mean") if isinstance(regime_res, dict) else "mean"
+            # ===== wallet alpha 再取一次，提供 portfolio manager 融合 =====
+            wallet = await call("get_wallet_alpha", {"asset_id": m})
+            wallet_score = 0.0
+            if isinstance(wallet, dict) and "error" not in wallet:
+                try:
+                    wallet_score = float(wallet.get("score", 0.0))
+                except Exception:
+                    wallet_score = 0.0
 
+            # ===== V9 portfolio manager =====
+            pm = await call("run_portfolio_v1", {
+                "asset_id": m,
+                "capital": capital,
+                "orderbook_score": base_score,
+                "wallet_score": wallet_score
+            })
+
+            if not isinstance(pm, dict):
+                continue
+
+            side = str(pm.get("action", "hold")).lower().strip()
+            size = float(pm.get("size", 0.0))
+            score = float(pm.get("score", base_score))
+
+            if side == "hold" or size <= 0:
+                continue
+
+            # ===== V8 entry gate =====
             params = await call("fb_adjust_params", {})
             threshold = params.get("threshold", 0.55) if isinstance(params, dict) else 0.55
 
             if score < threshold:
                 continue
-
-            size_pct = await call("fb_position_size", {
-                "score": score,
-                "regime": regime
-            })
-
-            if isinstance(size_pct, dict):
-                size_pct = size_pct.get("size", 0.01)
-
-            size = capital * float(size_pct)
-            size = min(size, max_position_per_trade)
 
             # ===== latency guard =====
             if time.time() - t0 > 0.1:
@@ -399,6 +419,9 @@ async def start_v7_engine(markets, capital=100):
 
             if not bid or not ask:
                 continue
+
+            # ===== max position per trade =====
+            size = min(size, max_position_per_trade)
 
             await smart_execute(m, side, book, size, capital)
 
