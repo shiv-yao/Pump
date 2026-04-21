@@ -3,22 +3,45 @@ from typing import Any
 
 from app.plugin_manager import plugin_registry
 
-# 新版優先，避免舊版同名工具搶走
+
+# ===== 優先順序：新版 / 主線 / 產品版優先 =====
 PLUGIN_PRIORITY = [
     "auto_evolution_v1",
     "env_optimizer_ai_v2",
     "execution_engine_v7",
     "strategy_manager_v2",
     "allocator_v3",
+    "portfolio_manager_v2",
     "wallet_alpha_v3",
     "ledger_v2",
     "replay_engine_v1",
     "execution_simulator_v1",
+    "execution_gateway",
     "polymarket_exec_prod",
     "polymarket_alpha_ws",
     "wallet_feed_ws",
+    "risk_engine",
+    "orderbook_edge",
+    "signal_filter",
     "market_data",
 ]
+
+# ===== 常用 alias 對照 =====
+TOOL_ALIASES = {
+    "price": ["get_spot_price", "get_ticker_24h", "get_price"],
+    "balance": ["pm_balance", "get_balance", "balance"],
+    "positions": ["get_positions", "positions", "get_state"],
+    "orders": ["get_orders", "orders", "list_orders"],
+    "scan": ["scan_market", "scanner_run", "scan"],
+    "start_engine": ["start_v7_engine", "start_v6_engine", "start_engine"],
+    "stop_engine": ["stop_v7_engine", "stop_v6_engine", "stop_engine"],
+    "state": ["get_state", "state"],
+    "start_arb_bot": ["start_arb_bot", "start_arb_engine", "arb_start"],
+    "stop_arb_bot": ["stop_arb_bot", "stop_arb_engine", "arb_stop"],
+    "arb_status": ["arb_status", "get_arb_status"],
+    "replay": ["replay_run", "run_replay"],
+    "evolution_status": ["evolution_status", "get_evolution_status"],
+}
 
 
 def _enabled_plugins() -> dict[str, dict[str, Any]]:
@@ -37,31 +60,52 @@ def _tool_names(info: dict[str, Any]) -> list[str]:
     ]
 
 
+def _candidate_tool_names(tool_name: str) -> list[str]:
+    """
+    給定一個邏輯名，回傳所有候選工具名。
+    例如 price -> [price, get_spot_price, get_ticker_24h, get_price]
+    """
+    names = [tool_name]
+    aliases = TOOL_ALIASES.get(tool_name, [])
+    for x in aliases:
+        if x not in names:
+            names.append(x)
+    return names
+
+
 def find_tool(tool_name: str):
     """
     回傳:
       (impl, resolved_tool_name, plugin_id)
 
-    impl 預期是 plugin_manager 放進 registry 的可呼叫實作。
+    解析順序：
+    1. 先依 PLUGIN_PRIORITY
+    2. 再掃其餘 enabled plugins
+    3. 支援 alias 候選名
     """
     enabled = _enabled_plugins()
+    candidates = _candidate_tool_names(tool_name)
 
-    # 1. 先依照 priority 找
+    # 1) priority 內先找
     for pid in PLUGIN_PRIORITY:
         info = enabled.get(pid)
         if not info:
             continue
 
-        if tool_name in _tool_names(info):
-            return info.get("impl"), tool_name, pid
+        tools = _tool_names(info)
+        for candidate_name in candidates:
+            if candidate_name in tools:
+                return info.get("impl"), candidate_name, pid
 
-    # 2. 再從其餘 enabled plugins 找
+    # 2) 其餘 enabled plugins
     for pid, info in enabled.items():
         if pid in PLUGIN_PRIORITY:
             continue
 
-        if tool_name in _tool_names(info):
-            return info.get("impl"), tool_name, pid
+        tools = _tool_names(info)
+        for candidate_name in candidates:
+            if candidate_name in tools:
+                return info.get("impl"), candidate_name, pid
 
     return None, None, None
 
@@ -69,10 +113,12 @@ def find_tool(tool_name: str):
 async def call(tool_name: str, args: dict | None = None):
     """
     統一工具呼叫入口。
-    支援兩種 plugin impl 形態：
+    預設支援 plugin_manager registry 風格：
 
-    1. impl(tool_name, args)
-    2. handler function / coroutine function
+      impl(resolved_tool_name, args)
+
+    同時保留 fallback：
+      impl(**args)
     """
     args = args or {}
 
@@ -82,29 +128,46 @@ async def call(tool_name: str, args: dict | None = None):
         return {"error": f"tool not found: {tool_name}"}
 
     try:
-        # plugin_manager 風格：impl(name, args)
-        if callable(impl):
-            try:
-                result = impl(resolved_name, args)
-                if inspect.isawaitable(result):
-                    result = await result
-                return result
-            except TypeError:
-                # fallback: 直接把 args 當 kwargs 傳入 handler function
-                if inspect.iscoroutinefunction(impl):
-                    return await impl(**args)
-                return impl(**args)
+        # 先試 plugin registry 標準形式：impl(tool_name, args)
+        result = impl(resolved_name, args)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
 
-        return {"error": f"invalid impl for tool: {tool_name}"}
+    except TypeError:
+        # fallback：直接把 args 當 kwargs 傳給 handler
+        try:
+            if inspect.iscoroutinefunction(impl):
+                return await impl(**args)
+            return impl(**args)
+        except Exception as e:
+            return {"error": f"{plugin_id}.{resolved_name} failed: {str(e)}"}
 
     except Exception as e:
-        return {"error": f"{plugin_id}.{tool_name} failed: {str(e)}"}
+        return {"error": f"{plugin_id}.{resolved_name} failed: {str(e)}"}
 
 
-def debug_tool_map() -> dict[str, dict[str, str]]:
+async def call_first(tool_names: list[str], args: dict | None = None):
     """
-    給 /debug 或人工檢查用：
-    列出目前 tool 會被哪個 plugin 接走。
+    順序嘗試多個工具名，成功就回。
+    給 dashboard / router 想做多重 fallback 時可用。
+    """
+    args = args or {}
+    last_error = None
+
+    for name in tool_names:
+        result = await call(name, args)
+        if not (isinstance(result, dict) and "error" in result):
+            return result
+        last_error = result
+
+    return last_error or {"error": f"tool chain failed: {tool_names}"}
+
+
+def debug_tool_map() -> dict[str, dict[str, Any]]:
+    """
+    列出目前所有 enabled plugins 的工具，以及最終會被哪個 plugin 接走。
+    可搭配 /debug/tools 使用。
     """
     enabled = _enabled_plugins()
     all_tools = set()
@@ -112,9 +175,17 @@ def debug_tool_map() -> dict[str, dict[str, str]]:
     for info in enabled.values():
         all_tools.update(_tool_names(info))
 
-    out = {}
+    # 加入 aliases 的邏輯名，方便查
+    for alias_name in TOOL_ALIASES.keys():
+        all_tools.add(alias_name)
+
+    out: dict[str, dict[str, Any]] = {}
+
     for name in sorted(all_tools):
-        _, _, pid = find_tool(name)
-        out[name] = {"plugin_id": pid or ""}
+        _, resolved_name, pid = find_tool(name)
+        out[name] = {
+            "plugin_id": pid or "",
+            "resolved_tool_name": resolved_name or "",
+        }
 
     return out
