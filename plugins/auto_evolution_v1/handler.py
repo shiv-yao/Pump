@@ -1,5 +1,9 @@
+import json
+import inspect
+import importlib.util
 import time
-from utils.loader import call
+from pathlib import Path
+
 
 STATE = {
     "last_run": 0,
@@ -8,9 +12,82 @@ STATE = {
 }
 
 
-# ========= 評估策略 =========
+# ===== plugin loader =====
+def _plugins_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        candidate = parent / "plugins"
+        if candidate.exists():
+            return candidate
+    return Path(__file__).resolve().parent.parent
+
+
+def _load_tool(tool_name: str):
+    plugins_root = _plugins_root()
+
+    if not plugins_root.exists():
+        return None
+
+    for plugin_dir in plugins_root.iterdir():
+        if not plugin_dir.is_dir():
+            continue
+
+        manifest_path = plugin_dir / "plugin.json"
+        handler_path = plugin_dir / "handler.py"
+
+        if not manifest_path.exists() or not handler_path.exists():
+            continue
+
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        if not any(t.get("name") == tool_name for t in manifest.get("tools", [])):
+            continue
+
+        spec = importlib.util.spec_from_file_location(f"plugin_{plugin_dir.name}", handler_path)
+        if not spec or not spec.loader:
+            continue
+
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        if hasattr(mod, tool_name):
+            return getattr(mod, tool_name)
+
+    return None
+
+
+async def _call_tool(tool_name: str, payload: dict | None = None):
+    payload = payload or {}
+    fn = _load_tool(tool_name)
+
+    if not fn:
+        return {"error": f"tool not found: {tool_name}"}
+
+    if inspect.iscoroutinefunction(fn):
+        return await fn(**payload)
+    return fn(**payload)
+
+
+def _safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _safe_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+
+# ===== strategy evaluation =====
 async def evaluate_strategies():
-    stats = await call("strategy_get_stats", {})
+    stats = await _call_tool("strategy_get_stats", {})
 
     if not isinstance(stats, dict):
         return {}
@@ -18,35 +95,43 @@ async def evaluate_strategies():
     decisions = {}
 
     for sid, s in stats.items():
-        pnl = float(s.get("pnl", 0))
-        winrate = float(s.get("winrate", 0))
-        dd = float(s.get("drawdown", 0))
-        trades = int(s.get("trades", 0))
+        pnl = _safe_float(s.get("pnl", 0))
+        winrate = _safe_float(s.get("winrate", 0))
+        dd = _safe_float(s.get("drawdown", 0))
+        trades = _safe_int(s.get("trades", 0))
+        enabled = bool(s.get("enabled", True))
 
         decision = "keep"
+        reason = "stable"
 
-        # ===== kill =====
+        # ===== disable =====
         if trades > 20 and winrate < 0.35:
             decision = "disable"
+            reason = "low winrate"
 
-        if trades > 20 and dd > abs(pnl) * 0.8:
+        if trades > 20 and pnl < 0 and dd > abs(pnl) * 0.8:
             decision = "disable"
+            reason = "high drawdown"
 
         # ===== boost =====
-        if winrate > 0.6 and pnl > 0:
+        if trades > 10 and winrate > 0.60 and pnl > 0:
             decision = "boost"
+            reason = "strong strategy"
 
         decisions[sid] = {
             "decision": decision,
+            "reason": reason,
+            "enabled": enabled,
             "pnl": pnl,
             "winrate": winrate,
-            "dd": dd
+            "drawdown": dd,
+            "trades": trades
         }
 
     return decisions
 
 
-# ========= 執行策略控制 =========
+# ===== apply controls =====
 async def apply_strategy_controls(decisions):
     results = {}
 
@@ -54,50 +139,50 @@ async def apply_strategy_controls(decisions):
         action = d["decision"]
 
         if action == "disable":
-            await call("strategy_disable", {"strategy_id": sid})
-            results[sid] = "disabled"
+            res = await _call_tool("strategy_disable", {"strategy_id": sid})
+            results[sid] = {
+                "action": "disabled",
+                "result": res
+            }
 
         elif action == "boost":
-            await call("allocator_boost", {
+            res = await _call_tool("allocator_boost", {
                 "strategy_id": sid,
                 "factor": 1.5
             })
-            results[sid] = "boosted"
+            results[sid] = {
+                "action": "boosted",
+                "result": res
+            }
 
         else:
-            results[sid] = "keep"
+            results[sid] = {
+                "action": "keep",
+                "result": {"ok": True}
+            }
 
     return results
 
 
-# ========= Env 演化 =========
+# ===== env evolution =====
 async def evolve_env():
-    # 1. replay
-    replay = await call("replay_run", {})
-
-    # 2. optimizer
-    opt = await call("auto_optimize_env", {})
-
-    # 3. apply
-    await call("apply_best_env", {})
+    replay = await _call_tool("replay_run", {})
+    optimizer = await _call_tool("auto_optimize_env", {})
+    applied = await _call_tool("apply_best_env", {})
 
     return {
         "replay": replay,
-        "optimizer": opt
+        "optimizer": optimizer,
+        "applied": applied
     }
 
 
-# ========= 主循環 =========
+# ===== main cycle =====
 async def run_evolution_cycle():
     global STATE
 
-    # ===== 1. 策略評估 =====
     decisions = await evaluate_strategies()
-
-    # ===== 2. 套用策略 =====
     controls = await apply_strategy_controls(decisions)
-
-    # ===== 3. Env 演化 =====
     env = await evolve_env()
 
     STATE["last_run"] = time.time()
