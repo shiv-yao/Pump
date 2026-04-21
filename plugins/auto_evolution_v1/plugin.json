@@ -1,0 +1,9 @@
+{
+  "name": "auto_evolution_v1",
+  "version": "1.0",
+  "priority": 100,
+  "tools": [
+    {"name": "run_evolution_cycle"},
+    {"name": "evolution_status"}
+  ]
+}
