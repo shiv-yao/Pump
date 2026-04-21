@@ -1,6 +1,3 @@
-import json
-import inspect
-import importlib.util
 import time
 from pathlib import Path
 from typing import Any
@@ -8,70 +5,21 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
+from app.utils.loader import call as _call_tool
+
 router = APIRouter(prefix="/api", tags=["dashboard_v4"])
-
-
-def _find_plugins_root() -> Path:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        candidate = parent.parent / "plugins" if parent.name == "app" else parent / "plugins"
-        if candidate.exists():
-            return candidate
-    return Path("plugins")
-
-
-def _load_tool(tool_name: str):
-    plugins_root = _find_plugins_root()
-
-    if not plugins_root.exists():
-        return None
-
-    for plugin_dir in plugins_root.iterdir():
-        if not plugin_dir.is_dir():
-            continue
-
-        manifest_path = plugin_dir / "plugin.json"
-        handler_path = plugin_dir / "handler.py"
-
-        if not manifest_path.exists() or not handler_path.exists():
-            continue
-
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-
-        if not any(t.get("name") == tool_name for t in manifest.get("tools", [])):
-            continue
-
-        spec = importlib.util.spec_from_file_location(f"plugin_{plugin_dir.name}", handler_path)
-        if not spec or not spec.loader:
-            continue
-
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        if hasattr(mod, tool_name):
-            return getattr(mod, tool_name)
-
-    return None
-
-
-async def _call_tool(tool_name: str, payload: dict | None = None):
-    payload = payload or {}
-    fn = _load_tool(tool_name)
-
-    if not fn:
-        return {"error": f"tool not found: {tool_name}"}
-
-    if inspect.iscoroutinefunction(fn):
-        return await fn(**payload)
-    return fn(**payload)
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
         return float(x)
+    except Exception:
+        return default
+
+
+def _safe_int(x: Any, default: int = 0) -> int:
+    try:
+        return int(x)
     except Exception:
         return default
 
@@ -84,6 +32,9 @@ def _err(msg: str, code: int = 400):
     raise HTTPException(status_code=code, detail=msg)
 
 
+# =========================
+# DASHBOARD HTML
+# =========================
 @router.get("/dashboard/v4")
 async def dashboard_v4_page():
     html_path = Path(__file__).resolve().parent.parent / "templates" / "dashboard_v4.html"
@@ -92,6 +43,9 @@ async def dashboard_v4_page():
     return FileResponse(str(html_path), media_type="text/html")
 
 
+# =========================
+# STATE
+# =========================
 @router.get("/state")
 async def api_state():
     state = await _call_tool("get_state", {})
@@ -114,37 +68,69 @@ async def api_state():
     trades = state.get("trades", []) or []
     pnl = _safe_float(state.get("pnl", 0.0))
     running = bool(state.get("running", False))
+    mode = state.get("mode", "PAPER")
 
     positions = []
     total_exposure = 0.0
     unrealized_pnl = 0.0
 
-    for asset_id, pos in positions_raw.items():
-        size = _safe_float(pos.get("size", 0.0))
-        avg = _safe_float(pos.get("avg", 0.0))
-        mark = _safe_float(pos.get("mark", avg))
-        pos_pnl = (mark - avg) * size if size else 0.0
+    # 支援 dict positions
+    if isinstance(positions_raw, dict):
+        for asset_id, pos in positions_raw.items():
+            if not isinstance(pos, dict):
+                continue
 
-        positions.append({
-            "asset_id": asset_id,
-            "size": size,
-            "avg": avg,
-            "mark": mark,
-            "pnl": pos_pnl,
-            "strategy_id": pos.get("strategy_id", "unknown")
-        })
+            size = _safe_float(pos.get("size", 0.0))
+            avg = _safe_float(pos.get("avg", 0.0))
+            mark = _safe_float(pos.get("mark", avg))
+            pos_pnl = (mark - avg) * size if size else 0.0
 
-        total_exposure += abs(size)
-        unrealized_pnl += pos_pnl
+            positions.append({
+                "asset_id": asset_id,
+                "size": size,
+                "avg": avg,
+                "mark": mark,
+                "pnl": pos_pnl,
+                "strategy_id": pos.get("strategy_id", "unknown")
+            })
 
-    wins = sum(1 for t in trades if _safe_float(t.get("pnl_delta", 0.0)) > 0)
-    winrate = (wins / len(trades)) if trades else 0.0
+            total_exposure += abs(size)
+            unrealized_pnl += pos_pnl
+
+    # 支援 list positions
+    elif isinstance(positions_raw, list):
+        for pos in positions_raw:
+            if not isinstance(pos, dict):
+                continue
+
+            asset_id = pos.get("asset_id", pos.get("symbol", "unknown"))
+            size = _safe_float(pos.get("size", 0.0))
+            avg = _safe_float(pos.get("avg", 0.0))
+            mark = _safe_float(pos.get("mark", avg))
+            pos_pnl = (mark - avg) * size if size else 0.0
+
+            positions.append({
+                "asset_id": asset_id,
+                "size": size,
+                "avg": avg,
+                "mark": mark,
+                "pnl": pos_pnl,
+                "strategy_id": pos.get("strategy_id", "unknown")
+            })
+
+            total_exposure += abs(size)
+            unrealized_pnl += pos_pnl
+
+    wins = sum(1 for t in trades if _safe_float(t.get("pnl_delta", t.get("pnl", 0.0))) > 0)
+    n = len(trades)
+    winrate = wins / n if n else 0.0
 
     eq = 0.0
     peak = 0.0
     max_dd = 0.0
     for t in trades:
-        eq += _safe_float(t.get("pnl_delta", 0.0))
+        pnl_delta = _safe_float(t.get("pnl_delta", t.get("pnl", 0.0)))
+        eq += pnl_delta
         peak = max(peak, eq)
         max_dd = max(max_dd, peak - eq)
 
@@ -152,19 +138,19 @@ async def api_state():
     for t in trades[-50:]:
         recent_trades.append({
             "time": t.get("time", time.time()),
-            "asset_id": t.get("asset_id", ""),
+            "asset_id": t.get("asset_id", t.get("symbol", "")),
             "side": t.get("side", ""),
             "price": _safe_float(t.get("price", 0.0)),
-            "size": _safe_float(t.get("size", 0.0)),
+            "size": _safe_float(t.get("size", t.get("amount", 0.0))),
             "fee": _safe_float(t.get("fee", 0.0)),
-            "pnl_delta": _safe_float(t.get("pnl_delta", 0.0)),
+            "pnl_delta": _safe_float(t.get("pnl_delta", t.get("pnl", 0.0))),
             "strategy_id": t.get("strategy_id", "unknown"),
             "mode": t.get("mode", "unknown")
         })
 
     return _ok({
         "running": running,
-        "mode": "PAPER",
+        "mode": mode,
         "pnl": pnl,
         "unrealized_pnl": unrealized_pnl,
         "positions_count": len(positions),
@@ -177,11 +163,14 @@ async def api_state():
     })
 
 
+# =========================
+# LEDGER
+# =========================
 @router.get("/ledger")
 async def api_ledger(range: str = "all"):
     state = await _call_tool("get_state", {})
     trades = []
-    if isinstance(state, dict):
+    if isinstance(state, dict) and "error" not in state:
         trades = state.get("trades", []) or []
 
     equity_curve = []
@@ -194,8 +183,8 @@ async def api_ledger(range: str = "all"):
 
     for t in trades:
         ts = t.get("time", time.time())
-        pnl_delta = _safe_float(t.get("pnl_delta", 0.0))
-        asset_id = t.get("asset_id", "")
+        pnl_delta = _safe_float(t.get("pnl_delta", t.get("pnl", 0.0)))
+        asset_id = t.get("asset_id", t.get("symbol", ""))
         strategy_id = t.get("strategy_id", "unknown")
 
         eq += pnl_delta
@@ -206,9 +195,14 @@ async def api_ledger(range: str = "all"):
         drawdown_curve.append({"ts": ts, "drawdown": dd})
 
         if asset_id not in asset_map:
-            asset_map[asset_id] = {"asset_id": asset_id, "realized": 0.0, "unrealized": 0.0, "exposure": 0.0}
+            asset_map[asset_id] = {
+                "asset_id": asset_id,
+                "realized": 0.0,
+                "unrealized": 0.0,
+                "exposure": 0.0
+            }
         asset_map[asset_id]["realized"] += pnl_delta
-        asset_map[asset_id]["exposure"] += abs(_safe_float(t.get("size", 0.0)))
+        asset_map[asset_id]["exposure"] += abs(_safe_float(t.get("size", t.get("amount", 0.0))))
 
         if strategy_id not in strategy_map:
             strategy_map[strategy_id] = {"strategy_id": strategy_id, "pnl": 0.0}
@@ -222,6 +216,9 @@ async def api_ledger(range: str = "all"):
     }, {"range": range})
 
 
+# =========================
+# STRATEGIES
+# =========================
 @router.get("/strategies")
 async def api_strategies():
     stats = await _call_tool("strategy_get_stats", {})
@@ -230,14 +227,17 @@ async def api_strategies():
 
     out = []
     for strategy_id, s in stats.items():
+        if not isinstance(s, dict):
+            continue
+
         out.append({
             "strategy_id": strategy_id,
             "pnl": _safe_float(s.get("pnl", 0.0)),
             "winrate": _safe_float(s.get("winrate", 0.0)),
             "drawdown": _safe_float(s.get("drawdown", 0.0)),
-            "trades": int(s.get("trades", 0)),
+            "trades": _safe_int(s.get("trades", 0)),
             "enabled": bool(s.get("enabled", True)),
-            "cooldown": int(s.get("cooldown", 0)),
+            "cooldown": _safe_int(s.get("cooldown", 0)),
             "regimes": s.get("regimes", {})
         })
 
@@ -245,10 +245,14 @@ async def api_strategies():
     return _ok(out)
 
 
+# =========================
+# ALLOCATION
+# =========================
 @router.get("/allocation")
 async def api_allocation(capital: float = 1000):
     alloc = await _call_tool("allocator_get_allocation_map", {"capital": capital})
-    if not isinstance(alloc, dict):
+
+    if not isinstance(alloc, dict) or "error" in alloc:
         return _ok({
             "total_capital": capital,
             "weights": [],
@@ -256,6 +260,9 @@ async def api_allocation(capital: float = 1000):
             "allocator_version": "allocator_v3"
         })
 
+    # 支援兩種回傳：
+    # 1. {"allocations": {...}}
+    # 2. {"strategy_a": 0.3, "strategy_b": 0.7}
     weights_raw = alloc.get("allocations", alloc)
 
     weights = []
@@ -276,29 +283,43 @@ async def api_allocation(capital: float = 1000):
     })
 
 
+# =========================
+# RISK
+# =========================
 @router.get("/risk")
 async def api_risk():
     state = await _call_tool("get_state", {})
     positions = []
     trades = []
 
-    if isinstance(state, dict):
-        positions = list((state.get("positions", {}) or {}).values())
+    if isinstance(state, dict) and "error" not in state:
+        raw_positions = state.get("positions", {}) or {}
+        if isinstance(raw_positions, dict):
+            positions = list(raw_positions.values())
+        elif isinstance(raw_positions, list):
+            positions = raw_positions
+
         trades = state.get("trades", []) or []
 
-    current_exposure = sum(abs(_safe_float(p.get("size", 0.0))) for p in positions)
+    current_exposure = 0.0
+    for p in positions:
+        if isinstance(p, dict):
+            current_exposure += abs(_safe_float(p.get("size", 0.0)))
 
     eq = 0.0
     peak = 0.0
     max_dd = 0.0
     for t in trades:
-        eq += _safe_float(t.get("pnl_delta", 0.0))
+        pnl_delta = _safe_float(t.get("pnl_delta", t.get("pnl", 0.0)))
+        eq += pnl_delta
         peak = max(peak, eq)
         max_dd = max(max_dd, peak - eq)
 
     buy_count = 0
     sell_count = 0
     for p in positions:
+        if not isinstance(p, dict):
+            continue
         size = _safe_float(p.get("size", 0.0))
         if size > 0:
             buy_count += 1
@@ -333,6 +354,9 @@ async def api_risk():
     })
 
 
+# =========================
+# WALLET LEADERS
+# =========================
 @router.get("/wallet/leaders")
 async def api_wallet_leaders():
     leaders = await _call_tool("wa_get_leaders", {})
@@ -343,17 +367,22 @@ async def api_wallet_leaders():
 
     out = []
     for item in leaders:
+        if not isinstance(item, dict):
+            continue
         out.append({
             "wallet": item.get("wallet", "unknown"),
             "score": _safe_float(item.get("score", 0.0)),
             "cluster": item.get("cluster", item.get("cluster_id", "")),
             "leader": bool(item.get("leader", False)),
-            "recent_activity": int(item.get("recent_activity", item.get("trades", 0)))
+            "recent_activity": _safe_int(item.get("recent_activity", item.get("trades", 0)))
         })
 
     return _ok(out)
 
 
+# =========================
+# ENV JSON
+# =========================
 @router.get("/env/latest/json")
 async def api_env_latest_json():
     env_path = Path("latest.env")
@@ -377,15 +406,24 @@ async def api_env_latest_json():
     })
 
 
+# =========================
+# REPLAY
+# =========================
 @router.post("/replay")
 async def api_replay(payload: dict):
-    sample_size = int(payload.get("sample_size", 200))
+    sample_size = _safe_int(payload.get("sample_size", 200), 200)
     config = payload.get("config", None)
 
     result = await _call_tool("replay_run", {
         "config": config,
         "sample_size": sample_size
     })
+
+    if isinstance(result, dict) and "error" in result:
+        result = await _call_tool("run_replay", {
+            "config": config,
+            "sample_size": sample_size
+        })
 
     if not isinstance(result, dict):
         _err("replay failed")
@@ -395,8 +433,8 @@ async def api_replay(payload: dict):
 
 @router.post("/replay_opt")
 async def api_replay_opt(payload: dict):
-    sample_size = int(payload.get("sample_size", 200))
-    num_candidates = int(payload.get("num_candidates", 30))
+    sample_size = _safe_int(payload.get("sample_size", 200), 200)
+    num_candidates = _safe_int(payload.get("num_candidates", 30), 30)
 
     result = await _call_tool("replay_optimize", {
         "sample_size": sample_size,
@@ -409,10 +447,13 @@ async def api_replay_opt(payload: dict):
     return _ok(result)
 
 
+# =========================
+# OPTIMIZER
+# =========================
 @router.post("/optimizer/auto")
 async def api_optimizer_auto(payload: dict):
-    sample_size = int(payload.get("sample_size", 200))
-    num_candidates = int(payload.get("num_candidates", 30))
+    sample_size = _safe_int(payload.get("sample_size", 200), 200)
+    num_candidates = _safe_int(payload.get("num_candidates", 30), 30)
 
     result = await _call_tool("auto_optimize_env", {
         "sample_size": sample_size,
@@ -433,6 +474,9 @@ async def api_optimizer_apply():
     return _ok(result)
 
 
+# =========================
+# SIMULATOR
+# =========================
 @router.post("/simulate_order")
 async def api_simulate_order(payload: dict):
     result = await _call_tool("simulate_order", payload)
@@ -441,6 +485,9 @@ async def api_simulate_order(payload: dict):
     return _ok(result)
 
 
+# =========================
+# ENGINE CONTROL
+# =========================
 @router.post("/engine/start")
 async def api_engine_start(payload: dict):
     markets = payload.get("markets", ["A", "B"])
@@ -451,27 +498,42 @@ async def api_engine_start(payload: dict):
         "capital": capital
     })
 
+    if isinstance(result, dict) and "error" in result:
+        result = await _call_tool("start_v6_engine", {
+            "markets": markets,
+            "capital": capital
+        })
+
     if not isinstance(result, dict):
         return _ok({"running": True, "message": "engine started"})
+
     return _ok({
         "running": True,
-        "message": result.get("message", "engine started")
+        "message": result.get("message", result.get("msg", "engine started"))
     })
 
 
 @router.post("/engine/stop")
 async def api_engine_stop():
     result = await _call_tool("stop_v7_engine", {})
+    if isinstance(result, dict) and "error" in result:
+        result = await _call_tool("stop_v6_engine", {})
+
     if not isinstance(result, dict):
         return _ok({"running": False, "message": "engine stopped"})
+
     return _ok({
         "running": False,
-        "message": result.get("message", "engine stopped")
+        "message": result.get("message", result.get("msg", "engine stopped"))
     })
 
 
+# =========================
+# LOGS
+# =========================
 @router.get("/logs")
 async def api_logs(type: str = "system", limit: int = 100):
+    # 目前仍是 scaffold / sample logs
     now = int(time.time())
     sample = [
         {"ts": now - 10, "level": "info", "type": "execution", "message": "filled order asset=A size=3"},
