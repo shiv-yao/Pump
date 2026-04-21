@@ -110,6 +110,7 @@ async def execute_platform_command(command: str):
     head = parts[0].strip()
     tail = parts[1].strip() if len(parts) > 1 else ""
 
+    # ========= HELP =========
     if head in {"help", "?"}:
         return {
             "success": True,
@@ -131,13 +132,17 @@ async def execute_platform_command(command: str):
                 "/replay_opt [json]\n"
                 "/simulate_order {\"asset_id\":\"A\",\"side\":\"buy\",\"size\":1,\"book\":{...},\"order_type\":\"ioc\"}\n"
                 "/simulate_fill {\"asset_id\":\"A\",\"side\":\"buy\",\"size\":1,\"book\":{...}}\n"
+                "/auto_evolution\n"
+                "/evolution_status\n"
                 "/clear\n"
             )
         }
 
+    # ========= CLEAR =========
     if head == "clear":
         return {"success": True, "output": "__CLEAR__"}
 
+    # ========= SKILLS =========
     if head in {"skills", "plugins"}:
         if not plugin_registry:
             return {"success": True, "output": "No plugins loaded"}
@@ -150,6 +155,7 @@ async def execute_platform_command(command: str):
 
         return {"success": True, "output": "\n".join(lines)}
 
+    # ========= PROVIDERS =========
     if head in {"providers", "status"}:
         claude = await check_claude_status()
         openai = await check_openai_status()
@@ -164,6 +170,7 @@ async def execute_platform_command(command: str):
             })
         }
 
+    # ========= STORE =========
     if head == "store":
         items = []
         for pid, info in plugin_registry.items():
@@ -174,6 +181,7 @@ async def execute_platform_command(command: str):
             })
         return {"success": True, "output": _format(items)}
 
+    # ========= INSTALL =========
     if head == "install":
         if not tail:
             return {"success": False, "output": "Usage: /install <name> <url>"}
@@ -188,6 +196,7 @@ async def execute_platform_command(command: str):
             return {"success": True, "output": f"Installed: {name}"}
         return {"success": False, "output": f"Install failed: {name}"}
 
+    # ========= ENABLE / DISABLE =========
     if head == "enable":
         if not tail:
             return {"success": False, "output": "Usage: /enable <name>"}
@@ -206,6 +215,7 @@ async def execute_platform_command(command: str):
             "output": f"{'Disabled' if ok else 'Disable failed'}: {tail}"
         }
 
+    # ========= REMOVE =========
     if head in {"remove", "delete"}:
         if not tail:
             return {"success": False, "output": "Usage: /remove <name>"}
@@ -215,6 +225,7 @@ async def execute_platform_command(command: str):
             "output": f"{'Removed' if ok else 'Remove failed'}: {tail}"
         }
 
+    # ========= ENV OPTIMIZER =========
     if head == "auto_optimize_env":
         payload = _parse_payload(tail)
         if "_raw" in payload:
@@ -247,6 +258,7 @@ async def execute_platform_command(command: str):
         result = await _call_tool("apply_best_env", {})
         return {"success": True, "output": _format(result)}
 
+    # ========= REPLAY =========
     if head == "replay":
         payload = _parse_payload(tail)
         if "_raw" in payload:
@@ -261,6 +273,7 @@ async def execute_platform_command(command: str):
         result = await _call_tool("replay_optimize", payload)
         return {"success": True, "output": _format(result)}
 
+    # ========= EXECUTION SIMULATOR =========
     if head == "simulate_order":
         payload = _parse_payload(tail)
         if "_raw" in payload:
@@ -288,6 +301,16 @@ async def execute_platform_command(command: str):
         result = await _call_tool("simulate_fill", payload)
         return {"success": True, "output": _format(result)}
 
+    # ========= AUTO EVOLUTION =========
+    if head == "auto_evolution":
+        result = await _call_tool("run_evolution_cycle", {})
+        return {"success": True, "output": _format(result)}
+
+    if head == "evolution_status":
+        result = await _call_tool("evolution_status", {})
+        return {"success": True, "output": _format(result)}
+
+    # ========= GENERIC TOOL DISPATCH =========
     payload = _parse_payload(tail)
     if "_raw" in payload:
         payload = {}
