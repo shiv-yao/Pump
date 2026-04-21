@@ -2,30 +2,15 @@
   "id": "allocator_v3",
   "name": "allocator_v3",
   "description": "Fund brain allocator with dynamic capital scaling + risk control",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "enabled": true,
   "category": "portfolio",
   "price": 0,
   "tools": [
-    {
-      "name": "allocator_get_budget",
-      "description": "get capital allocation per strategy",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "strategy_id": {"type": "string"},
-          "capital": {"type": "number"}
-        },
-        "required": ["strategy_id","capital"]
-      }
-    },
-    {
-      "name": "allocator_get_allocation_map",
-      "description": "get all strategy allocation",
-      "input_schema": {
-        "type": "object",
-        "properties": {}
-      }
-    }
+    {"name": "allocator_get_budget"},
+    {"name": "allocator_get_allocation_map"},
+    {"name": "allocator_boost"},
+    {"name": "allocator_reset_boost"},
+    {"name": "allocator_get_boosts"}
   ]
 }
