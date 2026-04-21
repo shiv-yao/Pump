@@ -81,6 +81,7 @@ from app.provider_status import (
     check_openai_status,
     check_trading_status,
 )
+from app.utils.loader import debug_tool_map
 
 # OPTIONAL SETTINGS
 try:
@@ -124,7 +125,7 @@ async def lifespan(app: FastAPI):
 # ===== APP =====
 app = FastAPI(
     title="AI Trading System (Hardened)",
-    version="5.1.0",
+    version="5.2.0",
     lifespan=lifespan,
 )
 
@@ -158,6 +159,7 @@ async def frontend():
     <h1>🔥 AI Trading System Running</h1>
     <p><a href="/docs">API Docs</a></p>
     <p><a href="/debug">Debug</a></p>
+    <p><a href="/debug/tools">Debug Tools</a></p>
     <p><a href="/api/dashboard/v4">Dashboard V4</a></p>
     """
 
@@ -194,6 +196,23 @@ async def debug():
         "plugins_count": len(plugin_registry),
         "sample_plugins": list(plugin_registry.keys())[:20],
     }
+
+
+# ===== DEBUG TOOLS =====
+@app.get("/debug/tools")
+async def debug_tools():
+    try:
+        return {
+            "success": True,
+            "tools": debug_tool_map(),
+        }
+    except Exception as e:
+        log.error(f"debug_tool_map failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "tools": {},
+        }
 
 
 # ===== PROVIDERS =====
@@ -292,7 +311,7 @@ async def store():
         return {"plugins": []}
 
 
-# ===== PLUGIN INSTALL =====
+# ===== PLUGIN INSTALL / CREATE / TOGGLE / DELETE =====
 if plugin_manager and models:
     InstallPluginRequest = models["InstallPluginRequest"]
     PluginManualCreate = models["PluginManualCreate"]
