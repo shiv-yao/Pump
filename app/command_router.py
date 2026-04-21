@@ -15,6 +15,12 @@ from app.provider_status import (
     check_trading_status,
 )
 
+# 優先使用統一 loader
+try:
+    from app.utils.loader import call as shared_call
+except Exception:
+    shared_call = None
+
 
 def _find_plugins_root() -> Path:
     current = Path(__file__).resolve()
@@ -25,7 +31,7 @@ def _find_plugins_root() -> Path:
     return Path("plugins")
 
 
-def _load_tool(tool_name: str):
+def _load_tool_local(tool_name: str):
     plugins_root = _find_plugins_root()
 
     if not plugins_root.exists():
@@ -64,7 +70,16 @@ def _load_tool(tool_name: str):
 
 async def _call_tool(tool_name: str, payload: dict | None = None):
     payload = payload or {}
-    fn = _load_tool(tool_name)
+
+    # 先走共用 loader
+    if shared_call is not None:
+        try:
+            return await shared_call(tool_name, payload)
+        except Exception as e:
+            return {"error": f"shared loader failed for {tool_name}: {str(e)}"}
+
+    # fallback：舊版本地 loader
+    fn = _load_tool_local(tool_name)
 
     if not fn:
         return {"error": f"tool not found: {tool_name}"}
@@ -123,6 +138,10 @@ async def execute_platform_command(command: str):
                 "/enable <name>\n"
                 "/disable <name>\n"
                 "/remove <name>\n"
+                "/price <symbol>\n"
+                "/state\n"
+                "/start_engine [json]\n"
+                "/stop_engine\n"
                 "/auto_optimize_env [json]\n"
                 "/auto_optimize_and_save_env [json]\n"
                 "/save_env_block {\"env_block\":\"...\",\"filename\":\"latest.env\"}\n"
@@ -225,6 +244,39 @@ async def execute_platform_command(command: str):
             "output": f"{'Removed' if ok else 'Remove failed'}: {tail}"
         }
 
+    # ========= PRICE =========
+    if head == "price":
+        if not tail:
+            return {"success": False, "output": "Usage: /price <symbol>"}
+
+        symbol = tail.strip()
+
+        result = await _call_tool("get_spot_price", {"symbol": symbol})
+        if isinstance(result, dict) and "error" in result:
+            result = await _call_tool("get_ticker_24h", {"symbol": symbol})
+
+        return {"success": True, "output": _format(result)}
+
+    # ========= ENGINE =========
+    if head == "state":
+        result = await _call_tool("get_state", {})
+        return {"success": True, "output": _format(result)}
+
+    if head == "start_engine":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
+        result = await _call_tool("start_v7_engine", payload)
+        if isinstance(result, dict) and "error" in result:
+            result = await _call_tool("start_v6_engine", payload)
+        return {"success": True, "output": _format(result)}
+
+    if head == "stop_engine":
+        result = await _call_tool("stop_v7_engine", {})
+        if isinstance(result, dict) and "error" in result:
+            result = await _call_tool("stop_v6_engine", {})
+        return {"success": True, "output": _format(result)}
+
     # ========= ENV OPTIMIZER =========
     if head == "auto_optimize_env":
         payload = _parse_payload(tail)
@@ -264,6 +316,8 @@ async def execute_platform_command(command: str):
         if "_raw" in payload:
             payload = {}
         result = await _call_tool("replay_run", payload)
+        if isinstance(result, dict) and "error" in result:
+            result = await _call_tool("run_replay", payload)
         return {"success": True, "output": _format(result)}
 
     if head == "replay_opt":
@@ -308,6 +362,8 @@ async def execute_platform_command(command: str):
 
     if head == "evolution_status":
         result = await _call_tool("evolution_status", {})
+        if isinstance(result, dict) and "error" in result:
+            result = await _call_tool("get_evolution_status", {})
         return {"success": True, "output": _format(result)}
 
     # ========= GENERIC TOOL DISPATCH =========
@@ -315,8 +371,8 @@ async def execute_platform_command(command: str):
     if "_raw" in payload:
         payload = {}
 
-    tool_fn = _load_tool(head)
-    if tool_fn:
+    tool_fn = _load_tool_local(head)
+    if tool_fn or shared_call is not None:
         result = await _call_tool(head, payload)
         return {"success": True, "output": _format(result)}
 
