@@ -71,7 +71,7 @@ def _load_tool_local(tool_name: str):
 async def _call_tool(tool_name: str, payload: dict | None = None):
     payload = payload or {}
 
-    # 先走共用 loader
+    # 優先走共用 loader
     if shared_call is not None:
         try:
             return await shared_call(tool_name, payload)
@@ -87,6 +87,19 @@ async def _call_tool(tool_name: str, payload: dict | None = None):
     if inspect.iscoroutinefunction(fn):
         return await fn(**payload)
     return fn(**payload)
+
+
+async def _call_first(tool_names: list[str], payload: dict | None = None):
+    payload = payload or {}
+
+    last_error = None
+    for name in tool_names:
+        result = await _call_tool(name, payload)
+        if not (isinstance(result, dict) and "error" in result):
+            return result
+        last_error = result
+
+    return last_error or {"error": f"tool chain failed: {tool_names}"}
 
 
 def _parse_payload(text: str):
@@ -139,9 +152,18 @@ async def execute_platform_command(command: str):
                 "/disable <name>\n"
                 "/remove <name>\n"
                 "/price <symbol>\n"
+                "/balance\n"
+                "/positions\n"
+                "/orders\n"
+                "/buy <symbol> <size>\n"
+                "/sell <symbol> <size>\n"
+                "/scan <symbol1> <symbol2> ...\n"
                 "/state\n"
                 "/start_engine [json]\n"
                 "/stop_engine\n"
+                "/start_arb_bot\n"
+                "/stop_arb_bot\n"
+                "/arb_status\n"
                 "/auto_optimize_env [json]\n"
                 "/auto_optimize_and_save_env [json]\n"
                 "/save_env_block {\"env_block\":\"...\",\"filename\":\"latest.env\"}\n"
@@ -251,30 +273,120 @@ async def execute_platform_command(command: str):
 
         symbol = tail.strip()
 
-        result = await _call_tool("get_spot_price", {"symbol": symbol})
-        if isinstance(result, dict) and "error" in result:
-            result = await _call_tool("get_ticker_24h", {"symbol": symbol})
+        result = await _call_first(
+            ["get_spot_price", "get_ticker_24h", "price", "get_price"],
+            {"symbol": symbol}
+        )
+        return {"success": True, "output": _format(result)}
 
+    # ========= BALANCE / POSITIONS / ORDERS =========
+    if head == "balance":
+        result = await _call_first(
+            ["pm_balance", "get_balance", "balance"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
+
+    if head == "positions":
+        result = await _call_first(
+            ["get_positions", "positions", "get_state"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
+
+    if head == "orders":
+        result = await _call_first(
+            ["get_orders", "orders", "list_orders"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
+
+    # ========= BUY / SELL =========
+    if head in {"buy", "sell"}:
+        args = tail.split()
+        if len(args) < 2:
+            return {"success": False, "output": f"Usage: /{head} <symbol> <size>"}
+
+        symbol = args[0]
+        try:
+            size = float(args[1])
+        except ValueError:
+            return {"success": False, "output": f"Usage: /{head} <symbol> <size>"}
+
+        payload = {
+            "asset_id": symbol,
+            "symbol": symbol,
+            "side": head,
+            "size": size,
+            "amount": size,
+        }
+
+        result = await _call_first(
+            [
+                "trade_order",
+                "place_order",
+                "simulate_order",
+                "buy_token" if head == "buy" else "sell_token",
+            ],
+            payload
+        )
+        return {"success": True, "output": _format(result)}
+
+    # ========= SCAN =========
+    if head == "scan":
+        symbols = [x for x in tail.split() if x.strip()]
+        payload = {"symbols": symbols} if symbols else {}
+        result = await _call_first(
+            ["scan_market", "scanner_run", "scan"],
+            payload
+        )
         return {"success": True, "output": _format(result)}
 
     # ========= ENGINE =========
     if head == "state":
-        result = await _call_tool("get_state", {})
+        result = await _call_first(["get_state", "state"], {})
         return {"success": True, "output": _format(result)}
 
     if head == "start_engine":
         payload = _parse_payload(tail)
         if "_raw" in payload:
             payload = {}
-        result = await _call_tool("start_v7_engine", payload)
-        if isinstance(result, dict) and "error" in result:
-            result = await _call_tool("start_v6_engine", payload)
+        result = await _call_first(
+            ["start_v7_engine", "start_v6_engine", "start_engine"],
+            payload
+        )
         return {"success": True, "output": _format(result)}
 
     if head == "stop_engine":
-        result = await _call_tool("stop_v7_engine", {})
-        if isinstance(result, dict) and "error" in result:
-            result = await _call_tool("stop_v6_engine", {})
+        result = await _call_first(
+            ["stop_v7_engine", "stop_v6_engine", "stop_engine"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
+
+    # ========= ARB BOT =========
+    if head == "start_arb_bot":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
+        result = await _call_first(
+            ["start_arb_bot", "start_arb_engine", "arb_start"],
+            payload
+        )
+        return {"success": True, "output": _format(result)}
+
+    if head == "stop_arb_bot":
+        result = await _call_first(
+            ["stop_arb_bot", "stop_arb_engine", "arb_stop"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
+
+    if head == "arb_status":
+        result = await _call_first(
+            ["arb_status", "get_arb_status"],
+            {}
+        )
         return {"success": True, "output": _format(result)}
 
     # ========= ENV OPTIMIZER =========
@@ -315,9 +427,10 @@ async def execute_platform_command(command: str):
         payload = _parse_payload(tail)
         if "_raw" in payload:
             payload = {}
-        result = await _call_tool("replay_run", payload)
-        if isinstance(result, dict) and "error" in result:
-            result = await _call_tool("run_replay", payload)
+        result = await _call_first(
+            ["replay_run", "run_replay"],
+            payload
+        )
         return {"success": True, "output": _format(result)}
 
     if head == "replay_opt":
@@ -361,9 +474,10 @@ async def execute_platform_command(command: str):
         return {"success": True, "output": _format(result)}
 
     if head == "evolution_status":
-        result = await _call_tool("evolution_status", {})
-        if isinstance(result, dict) and "error" in result:
-            result = await _call_tool("get_evolution_status", {})
+        result = await _call_first(
+            ["evolution_status", "get_evolution_status"],
+            {}
+        )
         return {"success": True, "output": _format(result)}
 
     # ========= GENERIC TOOL DISPATCH =========
