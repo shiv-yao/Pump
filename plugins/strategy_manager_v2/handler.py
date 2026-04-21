@@ -25,8 +25,8 @@ def _get(sid):
 
 # ===== drawdown =====
 def _drawdown(eq):
-    peak = 0
-    max_dd = 0
+    peak = 0.0
+    max_dd = 0.0
     for v in eq:
         if v > peak:
             peak = v
@@ -57,19 +57,16 @@ def strategy_record_trade(strategy_id, pnl, regime=None):
     else:
         s["losses"] += 1
 
-    # equity
-    eq = (s["equity"][-1] if s["equity"] else 0) + pnl
+    eq = (s["equity"][-1] if s["equity"] else 0.0) + pnl
     s["equity"].append(eq)
 
-    # regime stats
     r = trade["regime"]
     if r not in s["regimes"]:
-        s["regimes"][r] = {"pnl": 0, "trades": 0}
+        s["regimes"][r] = {"pnl": 0.0, "trades": 0}
 
     s["regimes"][r]["pnl"] += pnl
     s["regimes"][r]["trades"] += 1
 
-    # trim
     if len(s["trades"]) > WINDOW:
         s["trades"] = s["trades"][-WINDOW:]
         s["equity"] = s["equity"][-WINDOW:]
@@ -77,12 +74,25 @@ def strategy_record_trade(strategy_id, pnl, regime=None):
     return {"ok": True}
 
 
+# ===== manual controls =====
+def strategy_disable(strategy_id):
+    s = _get(strategy_id)
+    s["enabled"] = False
+    return {"ok": True, "strategy_id": strategy_id, "enabled": False}
+
+
+def strategy_enable(strategy_id):
+    s = _get(strategy_id)
+    s["enabled"] = True
+    s["disabled_until"] = 0
+    return {"ok": True, "strategy_id": strategy_id, "enabled": True}
+
+
 # ===== decision gate =====
 def strategy_should_trade(strategy_id, regime=None):
     s = _get(strategy_id)
     now = time.time()
 
-    # cooldown check
     if now < s["disabled_until"]:
         return {"trade": False, "reason": "cooldown"}
 
@@ -97,16 +107,14 @@ def strategy_should_trade(strategy_id, regime=None):
 
     pnl = sum(t["pnl"] for t in trades)
     wins = sum(1 for t in trades if t["pnl"] > 0)
-    winrate = wins / n
+    winrate = wins / n if n else 0.0
     dd = _drawdown(s["equity"])
 
-    # ===== regime filter =====
     if regime and regime in s["regimes"]:
         r = s["regimes"][regime]
         if r["trades"] > 5 and r["pnl"] < 0:
             return {"trade": False, "reason": "bad regime"}
 
-    # ===== disable logic =====
     if winrate < 0.35 and n > 20:
         s["enabled"] = False
         s["disabled_until"] = now + COOLDOWN_SEC
@@ -130,7 +138,7 @@ def strategy_get_stats():
 
         pnl = s["pnl"]
         wins = s["wins"]
-        winrate = wins / n if n else 0
+        winrate = wins / n if n else 0.0
         dd = _drawdown(s["equity"])
 
         out[k] = {
