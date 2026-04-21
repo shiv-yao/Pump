@@ -1,9 +1,20 @@
 {
+  "id": "auto_evolution_v1",
   "name": "auto_evolution_v1",
-  "version": "1.0",
-  "priority": 100,
+  "description": "Automatic strategy evolution engine with disable, boost, replay, and env optimization",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "optimizer",
+  "price": 0,
+  "author": "system",
   "tools": [
-    {"name": "run_evolution_cycle"},
-    {"name": "evolution_status"}
+    {
+      "name": "run_evolution_cycle",
+      "description": "Run one full evolution cycle"
+    },
+    {
+      "name": "evolution_status",
+      "description": "Get evolution engine status"
+    }
   ]
 }
