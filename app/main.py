@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from app.provider_status import (
     check_trading_status,
 )
 from app.settings import ENABLE_CLAUDE, ENABLE_OPENAI, INDEX_HTML
+from app.routers.dashboard_v4 import router as dashboard_v4_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -76,7 +78,7 @@ async def lifespan(app: FastAPI):
     log.info("AI Plugin Terminal stopped")
 
 
-app = FastAPI(title="AI Plugin Terminal", version="3.1.2", lifespan=lifespan)
+app = FastAPI(title="AI Plugin Terminal", version="3.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -84,6 +86,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(dashboard_v4_router)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -250,4 +254,5 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    port = int(os.getenv("PORT", "8080"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
