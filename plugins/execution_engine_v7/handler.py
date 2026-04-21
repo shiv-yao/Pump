@@ -1,11 +1,9 @@
-# ================= FINAL PRODUCTION VERSION =================
-
 import asyncio
 import time
-import json
-import importlib.util
-import inspect
-from pathlib import Path
+import os
+import httpx
+
+from utils.loader import call
 
 RUNNING = False
 
@@ -13,51 +11,7 @@ POSITIONS = {}
 PNL = 0.0
 TRADES = []
 
-
-# ========= loader =========
-def root():
-    for p in Path(__file__).resolve().parents:
-        if (p / "plugins").exists():
-            return p / "plugins"
-    return Path(__file__).resolve().parent.parent
-
-
-def load(tool):
-    for d in root().iterdir():
-        m = d / "plugin.json"
-        h = d / "handler.py"
-
-        if not m.exists() or not h.exists():
-            continue
-
-        try:
-            data = json.loads(m.read_text(encoding="utf-8"))
-        except:
-            continue
-
-        if not any(t.get("name") == tool for t in data.get("tools", [])):
-            continue
-
-        spec = importlib.util.spec_from_file_location(f"plugin_{d.name}", h)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        if hasattr(mod, tool):
-            return getattr(mod, tool)
-
-    return None
-
-
-async def call(tool, payload=None):
-    payload = payload or {}
-    fn = load(tool)
-
-    if not fn:
-        return {"error": f"{tool} not found"}
-
-    if inspect.iscoroutinefunction(fn):
-        return await fn(**payload)
-    return fn(**payload)
+TRADING_API_BASE = os.getenv("TRADING_API_BASE", "").rstrip("/")
 
 
 # ========= wallet alpha =========
@@ -70,18 +24,19 @@ async def get_best_wallet_alpha(asset_id):
                 "action": res.get("action", "hold"),
                 "score": float(res.get("score", 0))
             }
-    return {"tool": None, "action": "hold", "score": 0.0}
+    return {"action": "hold", "score": 0.0, "tool": None}
 
 
 # ========= risk =========
-def risk_check(asset_id, size, capital):
-    pos = POSITIONS.get(asset_id, {"size": 0})
+async def risk_check(asset_id, size):
+    res = await call("check_risk", {
+        "asset_id": asset_id,
+        "size": size
+    })
 
-    if size > capital * 0.02:
-        return False
-
-    if abs(pos["size"]) > capital * 0.2:
-        return False
+    if isinstance(res, dict):
+        if res.get("allowed") is False:
+            return False
 
     return True
 
@@ -99,7 +54,7 @@ async def apply_fill(asset_id, side, price, size, strategy_id):
         new_size = pos["size"] + qty
         pos["avg"] = (pos["avg"] * pos["size"] + px * qty) / max(new_size, 1e-9)
         pos["size"] = new_size
-        pnl_delta = 0
+        pnl_delta = 0.0
     else:
         pnl_delta = (px - pos["avg"]) * qty
         PNL += pnl_delta
@@ -107,20 +62,11 @@ async def apply_fill(asset_id, side, price, size, strategy_id):
 
     POSITIONS[asset_id] = pos
 
-    # ===== record =====
-    TRADES.append({
-        "time": time.time(),
-        "asset_id": asset_id,
-        "side": side,
-        "price": px,
-        "size": qty,
-        "pnl_delta": pnl_delta,
-        "strategy_id": strategy_id
+    await call("strategy_record_trade", {
+        "strategy_id": strategy_id,
+        "pnl": pnl_delta
     })
 
-    # ===== plugins =====
-    await call("fb_record_trade", {"pnl": pnl_delta})
-    await call("strategy_record_trade", {"strategy_id": strategy_id, "pnl": pnl_delta})
     await call("ledger_record_fill", {
         "asset_id": asset_id,
         "side": side,
@@ -128,82 +74,58 @@ async def apply_fill(asset_id, side, price, size, strategy_id):
         "size": qty
     })
 
+    TRADES.append({
+        "time": time.time(),
+        "asset_id": asset_id,
+        "side": side,
+        "price": px,
+        "size": qty,
+        "pnl": pnl_delta,
+        "strategy_id": strategy_id
+    })
+
     return pnl_delta
 
 
-# ========= alpha =========
-async def get_fused_signal(asset_id):
-    alpha = await call("get_alpha_v2", {"asset_id": asset_id})
-    if not isinstance(alpha, dict) or "error" in alpha:
-        return {"error": "alpha fail"}
+# ========= gateway execution =========
+async def gateway_execute(asset_id, side, size, price, strategy_id):
+    if not TRADING_API_BASE:
+        return {"error": "TRADING_API_BASE not set"}
 
-    side = alpha.get("action", "hold")
-    score = float(alpha.get("score", 0))
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            res = await client.post(
+                f"{TRADING_API_BASE}/trade/order",
+                json={
+                    "asset_id": asset_id,
+                    "side": side,
+                    "size": size,
+                    "price": price,
+                    "strategy_id": strategy_id
+                }
+            )
+            return res.json()
 
-    wallet = await get_best_wallet_alpha(asset_id)
-
-    if wallet["score"] > 0.75:
-        side = wallet["action"]
-        score = max(score, wallet["score"])
-    elif wallet["score"] > 0.55 and wallet["action"] == side:
-        score *= 1.2
-    elif wallet["action"] != side:
-        score *= 0.4
-
-    if score < 0.55:
-        return {"action": "hold", "score": score}
-
-    return {"action": side, "score": score}
+    except Exception as e:
+        return {"error": f"gateway_fail: {str(e)}"}
 
 
-# ========= execution =========
-async def smart_execute(asset_id, side, book, size, capital, strategy_id):
-    bid = float(book["best_bid"])
-    ask = float(book["best_ask"])
-
-    edge = abs(ask - bid)
-    if edge < 0.02:
-        return
-
-    if not risk_check(asset_id, size, capital):
-        return
-
-    price = ask if side == "buy" else bid
-
-    res = await call("pm_limit", {
+# ========= fallback =========
+async def fallback_execute(asset_id, side, size, price):
+    return await call("simulate_order", {
         "asset_id": asset_id,
         "side": side,
         "price": price,
-        "size": size,
-        "ioc": True
+        "size": size
     })
 
-    if "error" in res:
-        return
 
-    oid = res.get("order_id")
-
-    for _ in range(4):
-        od = await call("pm_get_order", {"order_id": oid})
-        if "error" in od:
-            continue
-
-        status = od.get("order", {}).get("status", "")
-
-        if status in ("filled", "partially_filled"):
-            avg = float(od["order"].get("avgPrice", price))
-            qty = float(od["order"].get("filledSize", size))
-
-            await apply_fill(asset_id, side, avg, qty, strategy_id)
-            return
-
-
-# ========= engine =========
+# ========= main =========
 async def start_v7_engine(markets, capital=100):
     global RUNNING
 
     if RUNNING:
-        return {"ok": True}
+        return {"ok": True, "msg": "already running"}
 
     RUNNING = True
 
@@ -211,68 +133,113 @@ async def start_v7_engine(markets, capital=100):
     await call("start_wallet_feed_ws", {"asset_ids": markets})
 
     while RUNNING:
+        loop_start = time.time()
+
         for m in markets:
+            try:
+                t0 = time.time()
 
-            fused = await get_fused_signal(m)
-            if "error" in fused:
+                # ===== alpha =====
+                alpha = await call("get_alpha_v2", {"asset_id": m})
+                if not isinstance(alpha, dict):
+                    continue
+
+                base_side = str(alpha.get("action", "hold")).lower()
+                base_score = float(alpha.get("score", 0))
+
+                wallet = await get_best_wallet_alpha(m)
+                wallet_side = wallet["action"]
+                wallet_score = wallet["score"]
+
+                # ===== fuse =====
+                if wallet_score > base_score:
+                    side = wallet_side
+                    score = wallet_score
+                else:
+                    side = base_side
+                    score = base_score
+
+                if side == "hold":
+                    continue
+
+                # ===== strategy id FIXED =====
+                strategy_id = (
+                    "wallet_alpha_v3"
+                    if wallet_score > base_score
+                    else "orderbook_alpha_v2"
+                )
+
+                # ===== strategy gate =====
+                gate = await call("strategy_should_trade", {
+                    "strategy_id": strategy_id
+                })
+
+                if isinstance(gate, dict) and not gate.get("trade", True):
+                    continue
+
+                # ===== allocator =====
+                alloc = await call("allocator_get_budget", {
+                    "strategy_id": strategy_id,
+                    "capital": capital
+                })
+
+                if not isinstance(alloc, dict):
+                    continue
+
+                budget = float(alloc.get("budget", 0))
+                if budget <= 0:
+                    continue
+
+                size = budget * 0.2
+
+                # ===== clamp =====
+                size = max(0.001, min(size, capital * 0.05))
+
+                # ===== risk =====
+                if not await risk_check(m, size):
+                    continue
+
+                # ===== orderbook =====
+                book = await call("get_polymarket_book_cache", {"asset_id": m})
+                if not isinstance(book, dict):
+                    continue
+
+                bid = book.get("best_bid")
+                ask = book.get("best_ask")
+
+                if not bid or not ask:
+                    continue
+
+                price = ask if side == "buy" else bid
+
+                # ===== latency guard =====
+                if time.time() - t0 > 0.15:
+                    continue
+
+                # ===== execute =====
+                result = await gateway_execute(
+                    m, side, size, price, strategy_id
+                )
+
+                # ===== fallback =====
+                if "error" in result:
+                    result = await fallback_execute(m, side, size, price)
+
+                # ===== fill =====
+                if result.get("filled"):
+                    await apply_fill(
+                        m,
+                        side,
+                        result.get("avg_price", price),
+                        result.get("size", size),
+                        strategy_id
+                    )
+
+            except Exception as e:
+                print(f"[ENGINE ERROR] {m}: {e}")
                 continue
 
-            side = fused["action"]
-            score = fused["score"]
-
-            if side == "hold":
-                continue
-
-            wallet = await get_best_wallet_alpha(m)
-
-            # ===== strategy id 強化 =====
-            if wallet["score"] > score:
-                strategy_id = wallet["tool"]
-            else:
-                strategy_id = "orderbook_alpha_v2"
-
-            # ===== strategy gate =====
-            ok = await call("strategy_should_trade", {"strategy_id": strategy_id})
-            if not ok.get("trade", True):
-                continue
-
-            # ===== allocator v3 =====
-            alloc = await call("allocator_get_budget", {
-                "strategy_id": strategy_id,
-                "capital": capital
-            })
-
-            if "error" in alloc:
-                continue
-
-            budget = float(alloc.get("budget", 0))
-            if budget <= 0:
-                continue
-
-            # ===== portfolio v2 =====
-            pm = await call("run_portfolio_v2", {
-                "asset_id": m,
-                "capital": budget,
-                "orderbook_score": score,
-                "wallet_score": wallet["score"]
-            })
-
-            if not isinstance(pm, dict):
-                continue
-
-            side = pm.get("action", "hold")
-            size = float(pm.get("size", 0))
-
-            if side == "hold" or size <= 0:
-                continue
-
-            book = await call("get_polymarket_book_cache", {"asset_id": m})
-            if "error" in book:
-                continue
-
-            await smart_execute(m, side, book, size, capital, strategy_id)
-
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(max(0.2 - (time.time() - loop_start), 0))
 
     return {"ok": True}
 
@@ -280,9 +247,7 @@ async def start_v7_engine(markets, capital=100):
 async def stop_v7_engine():
     global RUNNING
     RUNNING = False
-
     await call("stop_wallet_feed_ws", {})
-
     return {"ok": True}
 
 
@@ -290,5 +255,6 @@ def get_state():
     return {
         "positions": POSITIONS,
         "pnl": PNL,
-        "trades": TRADES[-20:]
+        "trades": TRADES[-20:],
+        "running": RUNNING
     }
