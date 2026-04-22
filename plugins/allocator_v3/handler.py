@@ -1,192 +1,134 @@
-import json
-import inspect
-import importlib.util
-from pathlib import Path
+from __future__ import annotations
 
-# ===== config =====
-BASE_WEIGHT = 0.2
-MAX_WEIGHT = 0.6
-MIN_WEIGHT = 0.05
+from typing import Any
 
-DD_PENALTY = 1.5
-VOL_SCALE = 1.2
-
-# ===== boost state =====
-BOOST = {}
+from app.utils.loader import call
 
 
-# ===== plugin loader =====
-def _plugins_root() -> Path:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        candidate = parent / "plugins"
-        if candidate.exists():
-            return candidate
-    return Path(__file__).resolve().parent.parent
+BASE_WEIGHTS = {
+    "wallet_alpha": 0.45,
+    "market_alpha": 0.35,
+    "smart_money": 0.20,
+}
+
+BOOSTS = {}
 
 
-def _load_tool(tool_name: str):
-    plugins_root = _plugins_root()
+def _f(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
 
-    if not plugins_root.exists():
-        return None
 
-    for plugin_dir in plugins_root.iterdir():
-        if not plugin_dir.is_dir():
+def _normalize(weights: dict[str, float]) -> dict[str, float]:
+    total = sum(max(0.0, _f(v, 0.0)) for v in weights.values())
+    if total <= 0:
+        n = len(weights) or 1
+        return {k: 1.0 / n for k in weights.keys()}
+    return {k: max(0.0, _f(v, 0.0)) / total for k, v in weights.items()}
+
+
+async def _get_regime_name(symbol=None, asset_id=None):
+    regime = await call("fb_get_regime", {"symbol": symbol or asset_id})
+    if isinstance(regime, dict) and "error" not in regime:
+        return str(regime.get("regime", regime.get("state", "unknown")))
+    regime = await call("get_market_regime", {"symbol": symbol or asset_id})
+    if isinstance(regime, dict) and "error" not in regime:
+        return str(regime.get("regime", regime.get("state", "unknown")))
+    return "unknown"
+
+
+async def _get_strategy_stats():
+    stats = await call("strategy_get_stats", {})
+    if isinstance(stats, dict) and "error" not in stats:
+        return stats
+    return {}
+
+
+async def allocator_get_allocation_map(capital=100.0, **kwargs):
+    capital = max(_f(capital, 100.0), 1e-9)
+
+    weights = dict(BASE_WEIGHTS)
+    stats = await _get_strategy_stats()
+
+    # 1. performance tilt
+    for sid, s in stats.items():
+        if sid not in weights:
             continue
 
-        manifest_path = plugin_dir / "plugin.json"
-        handler_path = plugin_dir / "handler.py"
+        pnl = _f(s.get("pnl", 0.0), 0.0)
+        winrate = _f(s.get("winrate", 0.0), 0.0)
+        dd = _f(s.get("drawdown", 0.0), 0.0)
+        enabled = bool(s.get("enabled", True))
 
-        if not manifest_path.exists() or not handler_path.exists():
+        if not enabled:
+            weights[sid] *= 0.05
             continue
 
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
+        if pnl > 0:
+            weights[sid] *= 1.10
+        if winrate > 0.55:
+            weights[sid] *= 1.10
+        if dd > abs(pnl) * 0.7 and pnl != 0:
+            weights[sid] *= 0.75
 
-        if not any(t.get("name") == tool_name for t in manifest.get("tools", [])):
-            continue
+    # 2. manual boosts
+    for sid, factor in BOOSTS.items():
+        if sid in weights:
+            weights[sid] *= max(0.1, _f(factor, 1.0))
 
-        spec = importlib.util.spec_from_file_location(f"plugin_{plugin_dir.name}", handler_path)
-        if not spec or not spec.loader:
-            continue
+    weights = _normalize(weights)
 
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+    allocations = {
+        sid: capital * w
+        for sid, w in weights.items()
+    }
 
-        if hasattr(mod, tool_name):
-            return getattr(mod, tool_name)
-
-    return None
-
-
-async def _call_tool(tool_name: str, payload: dict | None = None):
-    payload = payload or {}
-    fn = _load_tool(tool_name)
-
-    if not fn:
-        return {"error": f"tool not found: {tool_name}"}
-
-    if inspect.iscoroutinefunction(fn):
-        return await fn(**payload)
-    return fn(**payload)
-
-
-# ===== helpers =====
-def _volatility_score(stats):
-    win = float(stats.get("winrate", 0))
-    dd = float(stats.get("drawdown", 0))
-
-    stability = win * 1.2 - dd * 0.8
-    return max(0.1, stability)
-
-
-def _score_strategy(stats):
-    pnl = float(stats.get("pnl", 0))
-    win = float(stats.get("winrate", 0))
-    dd = float(stats.get("drawdown", 0))
-
-    score = 0.0
-    score += pnl * 0.4
-    score += win * 2.0
-    score -= dd * DD_PENALTY
-
-    return max(0.0, score)
-
-
-# ===== boost controls =====
-def allocator_boost(strategy_id, factor=1.2):
-    factor = float(factor)
-    BOOST[strategy_id] = BOOST.get(strategy_id, 1.0) * factor
     return {
-        "ok": True,
-        "strategy_id": strategy_id,
-        "boost": BOOST[strategy_id]
+        "capital": capital,
+        "weights": weights,
+        "allocations": allocations
     }
 
 
-def allocator_reset_boost(strategy_id=None):
-    if strategy_id:
-        BOOST.pop(strategy_id, None)
-        return {"ok": True, "strategy_id": strategy_id, "boost": 1.0}
+async def allocator_get_budget(strategy_id, capital=100.0, symbol=None, asset_id=None, **kwargs):
+    strategy_id = strategy_id or "market_alpha"
+    capital = max(_f(capital, 100.0), 1e-9)
 
-    BOOST.clear()
-    return {"ok": True, "reset_all": True}
+    alloc_map = await allocator_get_allocation_map(capital=capital)
+    if not isinstance(alloc_map, dict):
+        return {"budget": 0.0}
 
+    allocations = alloc_map.get("allocations", {})
+    budget = _f(allocations.get(strategy_id, capital * 0.10), capital * 0.10)
 
-def allocator_get_boosts():
-    return {"boosts": BOOST}
+    regime_name = await _get_regime_name(symbol=symbol, asset_id=asset_id)
 
+    # regime-based scaling
+    if regime_name == "trend":
+        if strategy_id in {"market_alpha", "smart_money"}:
+            budget *= 1.10
+    elif regime_name == "range":
+        if strategy_id == "market_alpha":
+            budget *= 0.85
+    elif regime_name == "risk_off":
+        budget *= 0.50
 
-# ===== allocation map =====
-async def allocator_get_allocation_map(capital=1000):
-    rankings = await _call_tool("strategy_get_rankings", {})
-
-    if not isinstance(rankings, list) or len(rankings) == 0:
-        return {}
-
-    scores = {}
-    total_score = 0.0
-
-    for sid, stats in rankings:
-        s = _score_strategy(stats)
-
-        vol = _volatility_score(stats)
-        s *= vol * VOL_SCALE
-
-        boost = BOOST.get(sid, 1.0)
-        s *= boost
-
-        scores[sid] = s
-        total_score += s
-
-    if total_score <= 0:
-        n = len(scores)
-        return {k: 1 / n for k in scores}
-
-    weights = {}
-    for sid, s in scores.items():
-        w = s / total_score
-        w = max(MIN_WEIGHT, min(MAX_WEIGHT, w))
-        weights[sid] = w
-
-    total = sum(weights.values())
-    weights = {k: v / total for k, v in weights.items()}
-
-    return weights
-
-
-# ===== main allocation =====
-async def allocator_get_budget(strategy_id, capital):
-    capital = float(capital)
-
-    weights = await allocator_get_allocation_map(capital=capital)
-
-    if not weights or strategy_id not in weights:
-        base_budget = capital * BASE_WEIGHT
-        boost = BOOST.get(strategy_id, 1.0)
-        budget = base_budget * boost
-        budget = max(capital * MIN_WEIGHT, min(capital * MAX_WEIGHT, budget))
-
-        return {
-            "budget": budget,
-            "weight": budget / capital if capital > 0 else 0.0,
-            "boost": boost
-        }
-
-    w = float(weights[strategy_id])
-    boost = BOOST.get(strategy_id, 1.0)
-
-    budget = capital * w
-    budget *= boost
-
-    budget = max(capital * MIN_WEIGHT, min(capital * MAX_WEIGHT, budget))
-    final_weight = budget / capital if capital > 0 else 0.0
+    # global cap
+    budget = min(budget, capital * 0.25)
 
     return {
         "budget": budget,
-        "weight": final_weight,
-        "boost": boost
+        "strategy_id": strategy_id,
+        "regime": regime_name
+    }
+
+
+async def allocator_boost(strategy_id, factor=1.2, **kwargs):
+    BOOSTS[strategy_id] = _f(factor, 1.2)
+    return {
+        "ok": True,
+        "strategy_id": strategy_id,
+        "factor": BOOSTS[strategy_id]
     }
