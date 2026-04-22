@@ -1,35 +1,38 @@
 {
   "id": "risk_engine",
   "name": "risk_engine",
-  "description": "Risk controls: kill switch, daily loss, max exposure",
-  "version": "1.0.0",
+  "description": "PRO+ global and per-trade risk engine with kill switch, exposure checks, and drawdown guard",
+  "version": "2.0.0",
   "enabled": true,
   "category": "risk",
   "price": 0,
   "author": "system",
   "tools": [
     {
-      "name": "can_trade",
-      "description": "Return whether trading is currently allowed",
+      "name": "check_risk",
+      "description": "Check whether a trade is allowed",
       "input_schema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "asset_id": { "type": "string" },
+          "size": { "type": "number" },
+          "capital": { "type": "number" }
+        }
       }
     },
     {
-      "name": "check_risk",
-      "description": "Update pnl and decide whether to trigger kill switch",
+      "name": "record_risk_pnl",
+      "description": "Record realized pnl into global risk state",
       "input_schema": {
         "type": "object",
         "properties": {
           "pnl": { "type": "number" }
-        },
-        "required": ["pnl"]
+        }
       }
     },
     {
       "name": "get_risk_state",
-      "description": "Return full risk state",
+      "description": "Get current risk state",
       "input_schema": {
         "type": "object",
         "properties": {}
@@ -37,7 +40,7 @@
     },
     {
       "name": "reset_risk_state",
-      "description": "Reset risk state",
+      "description": "Reset global risk state",
       "input_schema": {
         "type": "object",
         "properties": {}
