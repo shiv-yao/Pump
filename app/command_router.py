@@ -1,6 +1,5 @@
 import json
 import inspect
-import importlib.util
 from pathlib import Path
 
 from app.plugin_manager import (
@@ -15,102 +14,58 @@ from app.provider_status import (
     check_trading_status,
 )
 
-# 優先使用統一 loader
+# ===== unified loader =====
 try:
     from app.utils.loader import call as shared_call
 except Exception:
     shared_call = None
 
 
-def _find_plugins_root() -> Path:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        candidate = parent.parent / "plugins" if parent.name == "app" else parent / "plugins"
-        if candidate.exists():
-            return candidate
-    return Path("plugins")
-
-
-def _load_tool_local(tool_name: str):
-    plugins_root = _find_plugins_root()
-
-    if not plugins_root.exists():
-        return None
-
-    for plugin_dir in plugins_root.iterdir():
-        if not plugin_dir.is_dir():
-            continue
-
-        manifest_path = plugin_dir / "plugin.json"
-        handler_path = plugin_dir / "handler.py"
-
-        if not manifest_path.exists() or not handler_path.exists():
-            continue
-
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-
-        if not any(t.get("name") == tool_name for t in manifest.get("tools", [])):
-            continue
-
-        spec = importlib.util.spec_from_file_location(f"plugin_{plugin_dir.name}", handler_path)
-        if not spec or not spec.loader:
-            continue
-
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        if hasattr(mod, tool_name):
-            return getattr(mod, tool_name)
-
-    return None
-
+# =========================
+# CORE CALL LAYER
+# =========================
 
 async def _call_tool(tool_name: str, payload: dict | None = None):
     payload = payload or {}
 
-    # 優先走共用 loader
+    # ✅ 永遠優先 unified loader
     if shared_call is not None:
-        try:
-            return await shared_call(tool_name, payload)
-        except Exception as e:
-            return {"error": f"shared loader failed for {tool_name}: {str(e)}"}
+        return await shared_call(tool_name, payload)
 
-    # fallback：舊版本地 loader
-    fn = _load_tool_local(tool_name)
-
-    if not fn:
-        return {"error": f"tool not found: {tool_name}"}
-
-    if inspect.iscoroutinefunction(fn):
-        return await fn(**payload)
-    return fn(**payload)
+    # fallback（幾乎不會用到）
+    return {"error": f"loader unavailable: {tool_name}"}
 
 
 async def _call_first(tool_names: list[str], payload: dict | None = None):
     payload = payload or {}
 
     last_error = None
+
     for name in tool_names:
         result = await _call_tool(name, payload)
+
         if not (isinstance(result, dict) and "error" in result):
             return result
+
         last_error = result
 
     return last_error or {"error": f"tool chain failed: {tool_names}"}
 
 
+# =========================
+# UTILS
+# =========================
+
 def _parse_payload(text: str):
     text = (text or "").strip()
+
     if not text:
         return {}
 
     if text.startswith("{") and text.endswith("}"):
         try:
             return json.loads(text)
-        except Exception:
+        except:
             return {"_raw": text}
 
     return {"_raw": text}
@@ -123,9 +78,13 @@ def _format(obj):
         return obj
     try:
         return json.dumps(obj, ensure_ascii=False, indent=2)
-    except Exception:
+    except:
         return str(obj)
 
+
+# =========================
+# MAIN ROUTER
+# =========================
 
 async def execute_platform_command(command: str):
     raw = (command or "").strip()
@@ -135,6 +94,7 @@ async def execute_platform_command(command: str):
 
     cmdline = raw[1:] if raw.startswith("/") else raw
     parts = cmdline.split(maxsplit=1)
+
     head = parts[0].strip()
     tail = parts[1].strip() if len(parts) > 1 else ""
 
@@ -143,39 +103,22 @@ async def execute_platform_command(command: str):
         return {
             "success": True,
             "output": (
-                "/help\n"
-                "/skills\n"
-                "/providers\n"
-                "/store\n"
-                "/install <name> <url>\n"
-                "/enable <name>\n"
-                "/disable <name>\n"
-                "/remove <name>\n"
-                "/price <symbol>\n"
+                "/price BTCUSDT\n"
                 "/balance\n"
                 "/positions\n"
                 "/orders\n"
-                "/buy <symbol> <size>\n"
-                "/sell <symbol> <size>\n"
-                "/scan <symbol1> <symbol2> ...\n"
+                "/buy BTCUSDT 10\n"
+                "/sell BTCUSDT 10\n"
+                "/scan BTCUSDT SOLUSDT\n"
                 "/state\n"
-                "/start_engine [json]\n"
+                "/start_engine\n"
                 "/stop_engine\n"
                 "/start_arb_bot\n"
                 "/stop_arb_bot\n"
                 "/arb_status\n"
-                "/auto_optimize_env [json]\n"
-                "/auto_optimize_and_save_env [json]\n"
-                "/save_env_block {\"env_block\":\"...\",\"filename\":\"latest.env\"}\n"
-                "/auto_opt\n"
                 "/apply_env\n"
-                "/replay [json]\n"
-                "/replay_opt [json]\n"
-                "/simulate_order {\"asset_id\":\"A\",\"side\":\"buy\",\"size\":1,\"book\":{...},\"order_type\":\"ioc\"}\n"
-                "/simulate_fill {\"asset_id\":\"A\",\"side\":\"buy\",\"size\":1,\"book\":{...}}\n"
+                "/replay\n"
                 "/auto_evolution\n"
-                "/evolution_status\n"
-                "/clear\n"
             )
         }
 
@@ -183,311 +126,185 @@ async def execute_platform_command(command: str):
     if head == "clear":
         return {"success": True, "output": "__CLEAR__"}
 
-    # ========= SKILLS =========
-    if head in {"skills", "plugins"}:
-        if not plugin_registry:
-            return {"success": True, "output": "No plugins loaded"}
-
-        lines = []
-        for pid, info in plugin_registry.items():
-            enabled = info.get("enabled", False)
-            tools = [t.get("name") for t in info.get("manifest", {}).get("tools", [])]
-            lines.append(f"{pid} [{'ON' if enabled else 'OFF'}]  tools={tools}")
-
-        return {"success": True, "output": "\n".join(lines)}
-
     # ========= PROVIDERS =========
     if head in {"providers", "status"}:
-        claude = await check_claude_status()
-        openai = await check_openai_status()
-        trading = check_trading_status()
-
         return {
             "success": True,
             "output": _format({
-                "claude": claude,
-                "openai": openai,
-                "trading_api": trading,
+                "claude": await check_claude_status(),
+                "openai": await check_openai_status(),
+                "trading_api": check_trading_status(),
             })
-        }
-
-    # ========= STORE =========
-    if head == "store":
-        items = []
-        for pid, info in plugin_registry.items():
-            items.append({
-                "id": pid,
-                "enabled": info.get("enabled", False),
-                "tools": [t.get("name") for t in info.get("manifest", {}).get("tools", [])]
-            })
-        return {"success": True, "output": _format(items)}
-
-    # ========= INSTALL =========
-    if head == "install":
-        if not tail:
-            return {"success": False, "output": "Usage: /install <name> <url>"}
-
-        try:
-            name, url = tail.split(maxsplit=1)
-        except ValueError:
-            return {"success": False, "output": "Usage: /install <name> <url>"}
-
-        ok = await install_plugin_from_url(name, url, remember=True)
-        if ok:
-            return {"success": True, "output": f"Installed: {name}"}
-        return {"success": False, "output": f"Install failed: {name}"}
-
-    # ========= ENABLE / DISABLE =========
-    if head == "enable":
-        if not tail:
-            return {"success": False, "output": "Usage: /enable <name>"}
-        ok = set_plugin_enabled(tail, True)
-        return {
-            "success": ok,
-            "output": f"{'Enabled' if ok else 'Enable failed'}: {tail}"
-        }
-
-    if head == "disable":
-        if not tail:
-            return {"success": False, "output": "Usage: /disable <name>"}
-        ok = set_plugin_enabled(tail, False)
-        return {
-            "success": ok,
-            "output": f"{'Disabled' if ok else 'Disable failed'}: {tail}"
-        }
-
-    # ========= REMOVE =========
-    if head in {"remove", "delete"}:
-        if not tail:
-            return {"success": False, "output": "Usage: /remove <name>"}
-        ok = remove_plugin(tail)
-        return {
-            "success": ok,
-            "output": f"{'Removed' if ok else 'Remove failed'}: {tail}"
         }
 
     # ========= PRICE =========
     if head == "price":
         if not tail:
-            return {"success": False, "output": "Usage: /price <symbol>"}
+            return {"success": False, "output": "Usage: /price BTCUSDT"}
 
-        symbol = tail.strip()
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(
+                    ["price", "get_spot_price", "get_ticker_24h"],
+                    {"symbol": tail}
+                )
+            )
+        }
 
-        result = await _call_first(
-            ["get_spot_price", "get_ticker_24h", "price", "get_price"],
-            {"symbol": symbol}
-        )
-        return {"success": True, "output": _format(result)}
-
-    # ========= BALANCE / POSITIONS / ORDERS =========
+    # ========= BALANCE =========
     if head == "balance":
-        result = await _call_first(
-            ["pm_balance", "get_balance", "balance"],
-            {}
-        )
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["balance", "get_balance", "pm_balance"], {})
+            )
+        }
 
+    # ========= POSITIONS =========
     if head == "positions":
-        result = await _call_first(
-            ["get_positions", "positions", "get_state"],
-            {}
-        )
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["positions", "get_positions", "get_state"], {})
+            )
+        }
 
+    # ========= ORDERS =========
     if head == "orders":
-        result = await _call_first(
-            ["get_orders", "orders", "list_orders"],
-            {}
-        )
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["orders", "get_orders"], {})
+            )
+        }
 
     # ========= BUY / SELL =========
     if head in {"buy", "sell"}:
         args = tail.split()
+
         if len(args) < 2:
-            return {"success": False, "output": f"Usage: /{head} <symbol> <size>"}
+            return {"success": False, "output": f"/{head} BTCUSDT 10"}
 
         symbol = args[0]
-        try:
-            size = float(args[1])
-        except ValueError:
-            return {"success": False, "output": f"Usage: /{head} <symbol> <size>"}
+        size = float(args[1])
 
-        payload = {
-            "asset_id": symbol,
-            "symbol": symbol,
-            "side": head,
-            "size": size,
-            "amount": size,
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(
+                    ["buy_token" if head == "buy" else "sell_token",
+                     "trade_order",
+                     "simulate_order"],
+                    {
+                        "symbol": symbol,
+                        "asset_id": symbol,
+                        "size": size,
+                        "side": head
+                    }
+                )
+            )
         }
-
-        result = await _call_first(
-            [
-                "trade_order",
-                "place_order",
-                "simulate_order",
-                "buy_token" if head == "buy" else "sell_token",
-            ],
-            payload
-        )
-        return {"success": True, "output": _format(result)}
 
     # ========= SCAN =========
     if head == "scan":
-        symbols = [x for x in tail.split() if x.strip()]
-        payload = {"symbols": symbols} if symbols else {}
-        result = await _call_first(
-            ["scan_market", "scanner_run", "scan"],
-            payload
-        )
-        return {"success": True, "output": _format(result)}
+        symbols = tail.split()
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(
+                    ["scan", "scan_market"],
+                    {"symbols": symbols}
+                )
+            )
+        }
+
+    # ========= STATE =========
+    if head == "state":
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["state", "get_state"], {})
+            )
+        }
 
     # ========= ENGINE =========
-    if head == "state":
-        result = await _call_first(["get_state", "state"], {})
-        return {"success": True, "output": _format(result)}
-
     if head == "start_engine":
-        payload = _parse_payload(tail)
-        if "_raw" in payload:
-            payload = {}
-        result = await _call_first(
-            ["start_v7_engine", "start_v6_engine", "start_engine"],
-            payload
-        )
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["start_engine", "start_v7_engine"], {})
+            )
+        }
 
     if head == "stop_engine":
-        result = await _call_first(
-            ["stop_v7_engine", "stop_v6_engine", "stop_engine"],
-            {}
-        )
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["stop_engine", "stop_v7_engine"], {})
+            )
+        }
 
-    # ========= ARB BOT =========
+    # ========= ARB =========
     if head == "start_arb_bot":
-        payload = _parse_payload(tail)
-        if "_raw" in payload:
-            payload = {}
-        result = await _call_first(
-            ["start_arb_bot", "start_arb_engine", "arb_start"],
-            payload
-        )
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["start_arb_bot"], {})
+            )
+        }
 
     if head == "stop_arb_bot":
-        result = await _call_first(
-            ["stop_arb_bot", "stop_arb_engine", "arb_stop"],
-            {}
-        )
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["stop_arb_bot"], {})
+            )
+        }
 
     if head == "arb_status":
-        result = await _call_first(
-            ["arb_status", "get_arb_status"],
-            {}
-        )
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["arb_status"], {})
+            )
+        }
 
-    # ========= ENV OPTIMIZER =========
-    if head == "auto_optimize_env":
-        payload = _parse_payload(tail)
-        if "_raw" in payload:
-            payload = {}
-        result = await _call_tool("auto_optimize_env", payload)
-        return {"success": True, "output": _format(result)}
-
-    if head == "auto_optimize_and_save_env":
-        payload = _parse_payload(tail)
-        if "_raw" in payload:
-            payload = {}
-        result = await _call_tool("auto_optimize_and_save_env", payload)
-        return {"success": True, "output": _format(result)}
-
-    if head == "save_env_block":
-        payload = _parse_payload(tail)
-        if "_raw" in payload:
-            return {
-                "success": False,
-                "output": 'Usage: /save_env_block {"env_block":"...","filename":"latest.env"}'
-            }
-        result = await _call_tool("save_env_block", payload)
-        return {"success": True, "output": _format(result)}
-
-    if head == "auto_opt":
-        result = await _call_tool("auto_optimize_env", {})
-        return {"success": True, "output": _format(result)}
-
+    # ========= ENV =========
     if head == "apply_env":
-        result = await _call_tool("apply_best_env", {})
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["apply_env", "apply_best_env"], {})
+            )
+        }
 
     # ========= REPLAY =========
     if head == "replay":
-        payload = _parse_payload(tail)
-        if "_raw" in payload:
-            payload = {}
-        result = await _call_first(
-            ["replay_run", "run_replay"],
-            payload
-        )
-        return {"success": True, "output": _format(result)}
-
-    if head == "replay_opt":
-        payload = _parse_payload(tail)
-        if "_raw" in payload:
-            payload = {}
-        result = await _call_tool("replay_optimize", payload)
-        return {"success": True, "output": _format(result)}
-
-    # ========= EXECUTION SIMULATOR =========
-    if head == "simulate_order":
-        payload = _parse_payload(tail)
-        if "_raw" in payload:
-            return {
-                "success": False,
-                "output": (
-                    'Usage: /simulate_order {"asset_id":"A","side":"buy","size":1,'
-                    '"book":{"best_bid":0.49,"best_ask":0.51,"bids":[...],"asks":[...]},'
-                    '"order_type":"ioc","price":0.51}'
-                )
-            }
-        result = await _call_tool("simulate_order", payload)
-        return {"success": True, "output": _format(result)}
-
-    if head == "simulate_fill":
-        payload = _parse_payload(tail)
-        if "_raw" in payload:
-            return {
-                "success": False,
-                "output": (
-                    'Usage: /simulate_fill {"asset_id":"A","side":"buy","size":1,'
-                    '"book":{"best_bid":0.49,"best_ask":0.51,"bids":[...],"asks":[...]}}'
-                )
-            }
-        result = await _call_tool("simulate_fill", payload)
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["replay", "replay_run"], {})
+            )
+        }
 
     # ========= AUTO EVOLUTION =========
     if head == "auto_evolution":
-        result = await _call_tool("run_evolution_cycle", {})
-        return {"success": True, "output": _format(result)}
+        return {
+            "success": True,
+            "output": _format(
+                await _call_first(["auto_evolution", "run_evolution_cycle"], {})
+            )
+        }
 
-    if head == "evolution_status":
-        result = await _call_first(
-            ["evolution_status", "get_evolution_status"],
-            {}
-        )
-        return {"success": True, "output": _format(result)}
-
-    # ========= GENERIC TOOL DISPATCH =========
+    # ========= GENERIC =========
     payload = _parse_payload(tail)
     if "_raw" in payload:
         payload = {}
 
-    tool_fn = _load_tool_local(head)
-    if tool_fn or shared_call is not None:
-        result = await _call_tool(head, payload)
-        return {"success": True, "output": _format(result)}
+    result = await _call_tool(head, payload)
 
-    return {"success": False, "output": f"Unknown command: {raw}"}
+    if isinstance(result, dict) and "error" in result:
+        return {"success": False, "output": result["error"]}
+
+    return {"success": True, "output": _format(result)}
