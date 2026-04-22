@@ -1,10 +1,12 @@
 {
   "id": "execution_gateway",
   "name": "execution_gateway",
-  "description": "Real trading execution via Jupiter v2 with optional Jito bundle",
-  "version": "1.0.0",
+  "description": "Real trading execution via Jupiter v2 with optional Jito bundle and token resolver",
+  "version": "2.0.0",
   "enabled": true,
   "category": "execution",
+  "price": 0,
+  "author": "system",
   "tools": [
     {
       "name": "trade_order",
@@ -14,7 +16,8 @@
         "properties": {
           "symbol": { "type": "string" },
           "side": { "type": "string" },
-          "size": { "type": "number" }
+          "size": { "type": "number" },
+          "slippage_bps": { "type": "number" }
         }
       }
     }
