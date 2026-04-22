@@ -10,7 +10,6 @@ PNL = 0.0
 TRADES = []
 
 
-# ========= ENGINE LOOP =========
 async def engine_loop(markets, capital):
     global RUNNING, PNL
 
@@ -19,7 +18,6 @@ async def engine_loop(markets, capital):
 
         for m in markets:
             try:
-                # ===== FUND BRAIN =====
                 decision = await call("fund_decide_trade", {
                     "symbol": m,
                     "capital": capital
@@ -29,20 +27,18 @@ async def engine_loop(markets, capital):
                     continue
 
                 side = decision.get("action", "hold")
-                size = float(decision.get("size", 0))
+                size = float(decision.get("size", 0.0))
                 strategy_id = decision.get("strategy_id", "fund_brain")
 
                 if side == "hold" or size <= 0:
                     continue
 
-                # ===== PRICE =====
                 price_data = await call("get_spot_price", {"symbol": m})
                 if not isinstance(price_data, dict):
                     continue
 
-                price = float(price_data.get("price", 1))
+                price = float(price_data.get("price", 1.0))
 
-                # ===== EXECUTION =====
                 result = await call("simulate_order", {
                     "asset_id": m,
                     "side": side,
@@ -65,7 +61,6 @@ async def engine_loop(markets, capital):
         await asyncio.sleep(max(0.2 - (time.time() - loop_start), 0))
 
 
-# ========= FILL =========
 async def apply_fill(asset_id, side, price, size, strategy_id):
     global PNL
 
@@ -74,6 +69,7 @@ async def apply_fill(asset_id, side, price, size, strategy_id):
 
     pos = POSITIONS.get(asset_id, {"size": 0.0, "avg": 0.0})
 
+    pnl_delta = 0.0
     if side == "buy":
         new_size = pos["size"] + qty
         pos["avg"] = (pos["avg"] * pos["size"] + px * qty) / max(new_size, 1e-9)
@@ -85,17 +81,22 @@ async def apply_fill(asset_id, side, price, size, strategy_id):
 
     POSITIONS[asset_id] = pos
 
+    await call("strategy_record_trade", {
+        "strategy_id": strategy_id,
+        "pnl": pnl_delta
+    })
+
     TRADES.append({
         "time": time.time(),
         "asset_id": asset_id,
         "side": side,
         "price": px,
         "size": qty,
-        "strategy": strategy_id
+        "strategy_id": strategy_id,
+        "pnl_delta": pnl_delta
     })
 
 
-# ========= API =========
 async def start_v7_engine(markets=None, capital=100, **kwargs):
     global RUNNING, TASK
 
@@ -103,22 +104,16 @@ async def start_v7_engine(markets=None, capital=100, **kwargs):
         return {"ok": True, "msg": "already running"}
 
     markets = markets or ["BTCUSDT"]
-
     RUNNING = True
     TASK = asyncio.create_task(engine_loop(markets, capital))
 
-    return {
-        "ok": True,
-        "msg": "engine started",
-        "markets": markets
-    }
+    return {"ok": True, "msg": "engine started", "markets": markets}
 
 
 async def stop_v7_engine(**kwargs):
     global RUNNING, TASK
 
     RUNNING = False
-
     if TASK:
         TASK.cancel()
         TASK = None
