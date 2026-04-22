@@ -1,14 +1,82 @@
 {
   "id": "fund_brain",
-  "name": "fund_brain",
-  "description": "Fund-level decision brain controlling execution",
-  "version": "1.0.0",
+  "name": "Fund Brain PRO",
+  "description": "Central fund-level brain that fuses alpha, allocator, strategy manager, and risk engine to control trading decisions and execution",
+  "version": "2.0.0",
   "enabled": true,
   "category": "brain",
+  "price": 0,
+  "author": "system",
   "tools": [
-    { "name": "start_engine" },
-    { "name": "stop_engine" },
-    { "name": "get_state" },
-    { "name": "fund_decide_trade" }
+    {
+      "name": "start_engine",
+      "description": "Start trading engine through fund brain",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "markets": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Markets to trade (e.g. [\"BTCUSDT\",\"ETHUSDT\"])"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Capital allocation"
+          }
+        }
+      }
+    },
+    {
+      "name": "stop_engine",
+      "description": "Stop trading engine",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_state",
+      "description": "Get engine state (positions, pnl, running status)",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "fund_decide_trade",
+      "description": "Generate fund-level decision using alpha fusion, allocator, strategy manager, and risk control",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "Trading symbol (e.g. BTCUSDT)"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Capital reference for allocation"
+          }
+        },
+        "required": ["symbol"]
+      }
+    },
+    {
+      "name": "run_fund_cycle",
+      "description": "Run a full fund cycle: decide → price → execute",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "Trading symbol"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Capital reference"
+          }
+        },
+        "required": ["symbol"]
+      }
+    }
   ]
 }
