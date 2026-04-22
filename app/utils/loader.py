@@ -1,10 +1,13 @@
+# app/utils/loader.py
+
+import importlib.util
 import inspect
+from pathlib import Path
 from typing import Any
 
 from app.plugin_manager import plugin_registry
 
 
-# ===== 優先順序：新版 / 主線 / 產品版優先 =====
 PLUGIN_PRIORITY = [
     "auto_evolution_v1",
     "env_optimizer_ai_v2",
@@ -26,7 +29,6 @@ PLUGIN_PRIORITY = [
     "market_data",
 ]
 
-# ===== 常用 alias 對照 =====
 TOOL_ALIASES = {
     "price": ["get_spot_price", "get_ticker_24h", "get_price"],
     "balance": ["pm_balance", "get_balance", "balance"],
@@ -61,10 +63,6 @@ def _tool_names(info: dict[str, Any]) -> list[str]:
 
 
 def _candidate_tool_names(tool_name: str) -> list[str]:
-    """
-    給定一個邏輯名，回傳所有候選工具名。
-    例如 price -> [price, get_spot_price, get_ticker_24h, get_price]
-    """
     names = [tool_name]
     aliases = TOOL_ALIASES.get(tool_name, [])
     for x in aliases:
@@ -73,20 +71,35 @@ def _candidate_tool_names(tool_name: str) -> list[str]:
     return names
 
 
+def _load_handler_function(plugin_id: str, plugin_info: dict[str, Any], resolved_tool_name: str):
+    handler_file = Path(plugin_info["path"]) / "handler.py"
+    if not handler_file.exists():
+        return None
+
+    try:
+        spec = importlib.util.spec_from_file_location(f"plugin_{plugin_id}", handler_file)
+        if spec is None or spec.loader is None:
+            return None
+
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        if hasattr(mod, resolved_tool_name):
+            return getattr(mod, resolved_tool_name)
+
+        return None
+    except Exception:
+        return None
+
+
 def find_tool(tool_name: str):
     """
     回傳:
-      (impl, resolved_tool_name, plugin_id)
-
-    解析順序：
-    1. 先依 PLUGIN_PRIORITY
-    2. 再掃其餘 enabled plugins
-    3. 支援 alias 候選名
+      (fn, resolved_tool_name, plugin_id)
     """
     enabled = _enabled_plugins()
     candidates = _candidate_tool_names(tool_name)
 
-    # 1) priority 內先找
     for pid in PLUGIN_PRIORITY:
         info = enabled.get(pid)
         if not info:
@@ -95,9 +108,10 @@ def find_tool(tool_name: str):
         tools = _tool_names(info)
         for candidate_name in candidates:
             if candidate_name in tools:
-                return info.get("impl"), candidate_name, pid
+                fn = _load_handler_function(pid, info, candidate_name)
+                if fn is not None:
+                    return fn, candidate_name, pid
 
-    # 2) 其餘 enabled plugins
     for pid, info in enabled.items():
         if pid in PLUGIN_PRIORITY:
             continue
@@ -105,53 +119,30 @@ def find_tool(tool_name: str):
         tools = _tool_names(info)
         for candidate_name in candidates:
             if candidate_name in tools:
-                return info.get("impl"), candidate_name, pid
+                fn = _load_handler_function(pid, info, candidate_name)
+                if fn is not None:
+                    return fn, candidate_name, pid
 
     return None, None, None
 
 
 async def call(tool_name: str, args: dict | None = None):
-    """
-    統一工具呼叫入口。
-    預設支援 plugin_manager registry 風格：
-
-      impl(resolved_tool_name, args)
-
-    同時保留 fallback：
-      impl(**args)
-    """
     args = args or {}
 
-    impl, resolved_name, plugin_id = find_tool(tool_name)
+    fn, resolved_name, plugin_id = find_tool(tool_name)
 
-    if not impl:
+    if not fn:
         return {"error": f"tool not found: {tool_name}"}
 
     try:
-        # 先試 plugin registry 標準形式：impl(tool_name, args)
-        result = impl(resolved_name, args)
-        if inspect.isawaitable(result):
-            result = await result
-        return result
-
-    except TypeError:
-        # fallback：直接把 args 當 kwargs 傳給 handler
-        try:
-            if inspect.iscoroutinefunction(impl):
-                return await impl(**args)
-            return impl(**args)
-        except Exception as e:
-            return {"error": f"{plugin_id}.{resolved_name} failed: {str(e)}"}
-
+        if inspect.iscoroutinefunction(fn):
+            return await fn(**args)
+        return fn(**args)
     except Exception as e:
         return {"error": f"{plugin_id}.{resolved_name} failed: {str(e)}"}
 
 
 async def call_first(tool_names: list[str], args: dict | None = None):
-    """
-    順序嘗試多個工具名，成功就回。
-    給 dashboard / router 想做多重 fallback 時可用。
-    """
     args = args or {}
     last_error = None
 
@@ -165,17 +156,12 @@ async def call_first(tool_names: list[str], args: dict | None = None):
 
 
 def debug_tool_map() -> dict[str, dict[str, Any]]:
-    """
-    列出目前所有 enabled plugins 的工具，以及最終會被哪個 plugin 接走。
-    可搭配 /debug/tools 使用。
-    """
     enabled = _enabled_plugins()
     all_tools = set()
 
     for info in enabled.values():
         all_tools.update(_tool_names(info))
 
-    # 加入 aliases 的邏輯名，方便查
     for alias_name in TOOL_ALIASES.keys():
         all_tools.add(alias_name)
 
