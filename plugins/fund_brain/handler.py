@@ -7,11 +7,10 @@ from app.utils.loader import call
 DEFAULT_MARKETS = ["BTCUSDT"]
 DEFAULT_CAPITAL = 100.0
 
-# ===== early alpha params =====
 EARLY_WALLET_MIN = 0.60
 EARLY_RUG_MAX = 0.70
-EARLY_ENTRY_FRAC = 0.005       # 第一筆試單 0.5%
-EARLY_ADDON_FRAC = 0.015       # 通過後加倉 1.5%
+EARLY_ENTRY_FRAC = 0.005
+EARLY_ADDON_FRAC = 0.015
 EARLY_MAX_IMPACT = 0.15
 EARLY_MIN_LIQ = 300.0
 
@@ -36,9 +35,6 @@ async def _call_first(tool_names: list[str], payload: dict | None = None):
     return last_error or {"error": f"tool chain failed: {tool_names}"}
 
 
-# =========================
-# ENGINE WRAPPER
-# =========================
 async def start_engine(markets=None, capital=DEFAULT_CAPITAL, **kwargs):
     return await _call_first(
         ["start_v7_engine", "start_v6_engine"],
@@ -63,9 +59,6 @@ async def get_state(**kwargs):
     )
 
 
-# =========================
-# EARLY FILTERS
-# =========================
 async def _wallet_gate(symbol: str):
     wallet = await _call_first(
         ["get_wallet_alpha_v3", "get_wallet_alpha_v2", "get_wallet_alpha"],
@@ -126,10 +119,6 @@ async def _rug_gate(symbol: str):
 
 
 async def _market_quality_gate(symbol: str):
-    """
-    這裡先用 price / liquidity proxy。
-    若你之後有真 liquidity / price impact plugin，可直接替換。
-    """
     price_data = await _call_first(
         ["price", "get_spot_price", "get_ticker_24h"],
         {"symbol": symbol}
@@ -150,9 +139,6 @@ async def _market_quality_gate(symbol: str):
     return {"ok": True, "reason": "ok", "liquidity": liquidity, "impact": impact}
 
 
-# =========================
-# FUND DECISION
-# =========================
 async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
     symbol = symbol or "BTCUSDT"
     capital = _f(capital, DEFAULT_CAPITAL)
@@ -168,7 +154,6 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
     base_score = _f(alpha.get("score", 0.0), 0.0)
     base_side = str(alpha.get("action", "hold")).lower().strip() or "hold"
 
-    # ===== early wallet gate =====
     wallet_gate = await _wallet_gate(symbol)
     if not wallet_gate["ok"]:
         return {
@@ -180,7 +165,6 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
     wallet_score = _f(wallet_gate["wallet_score"], 0.0)
     wallet_side = wallet_gate.get("wallet_action", "hold")
 
-    # ===== rug gate =====
     rug_gate = await _rug_gate(symbol)
     if not rug_gate["ok"]:
         return {
@@ -189,7 +173,6 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
             "rug_score": rug_gate.get("rug_score", 1.0),
         }
 
-    # ===== market quality =====
     quality_gate = await _market_quality_gate(symbol)
     if not quality_gate["ok"]:
         return {
@@ -199,7 +182,6 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
             "impact": quality_gate.get("impact", 1.0),
         }
 
-    # ===== regime =====
     regime = await _call_first(["fb_get_regime", "get_market_regime"], {"symbol": symbol})
     regime_name = "unknown"
     if isinstance(regime, dict):
@@ -208,7 +190,6 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
     if regime_name == "risk_off":
         return {"action": "hold", "reason": "risk_off_regime"}
 
-    # ===== alpha fusion =====
     if wallet_score > base_score and wallet_side != "hold":
         side = wallet_side
         score = wallet_score
@@ -218,7 +199,6 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
         score = base_score
         strategy_id = "market_alpha"
 
-    # ===== strategy gate =====
     gate = await _call_first(
         ["strategy_should_trade"],
         {"strategy_id": strategy_id, "regime": regime_name}
@@ -231,7 +211,6 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
             "score": score,
         }
 
-    # ===== threshold =====
     params = await _call_first(["fb_adjust_params"], {"symbol": symbol})
     min_score = 0.60
     if isinstance(params, dict):
@@ -245,7 +224,6 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
             "score": score,
         }
 
-    # ===== allocator =====
     alloc = await _call_first(
         ["allocator_get_budget", "fb_position_size"],
         {
@@ -263,16 +241,10 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
     if budget <= 0:
         return {"action": "hold", "reason": "zero_budget"}
 
-    # ===== early entry =====
-    # 第一筆先很小
     trial_size = max(0.001, min(capital * EARLY_ENTRY_FRAC, capital * 0.01))
-    # 若條件很好，再放大到 allocator budget 的部分
     full_size = max(0.001, min(budget * EARLY_ADDON_FRAC / max(EARLY_ENTRY_FRAC, 1e-9), capital * 0.05))
-
-    # 這裡直接回早期入場倉位，等下一輪再擴大
     size = min(trial_size, full_size)
 
-    # ===== risk =====
     risk = await _call_first(
         ["check_risk", "get_risk_state"],
         {
@@ -314,9 +286,6 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
     }
 
 
-# =========================
-# SINGLE FUND CYCLE
-# =========================
 async def run_fund_cycle(symbol="BTCUSDT", capital=DEFAULT_CAPITAL, **kwargs):
     symbol = symbol or "BTCUSDT"
     capital = _f(capital, DEFAULT_CAPITAL)
@@ -345,10 +314,8 @@ async def run_fund_cycle(symbol="BTCUSDT", capital=DEFAULT_CAPITAL, **kwargs):
         "strategy_id": decision.get("strategy_id", "fund_brain"),
     }
 
-    # ===== real execution first =====
     trade_result = await _call_first(["trade_order"], trade_payload)
 
-    # ===== fallback =====
     if isinstance(trade_result, dict) and "error" in trade_result:
         price_data = await _call_first(
             ["price", "get_spot_price", "get_ticker_24h"],
