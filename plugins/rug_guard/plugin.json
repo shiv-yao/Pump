@@ -1,0 +1,9 @@
+{
+  "id": "rug_guard",
+  "name": "rug_guard",
+  "enabled": true,
+  "category": "risk",
+  "tools": [
+    { "name": "rug_check" }
+  ]
+}
