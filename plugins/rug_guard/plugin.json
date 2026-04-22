@@ -1,9 +1,21 @@
 {
   "id": "rug_guard",
   "name": "rug_guard",
+  "description": "Rug pull detection and liquidity safety check",
+  "version": "2.0.0",
   "enabled": true,
   "category": "risk",
   "tools": [
-    { "name": "rug_check" }
+    {
+      "name": "rug_check",
+      "description": "Check if token is safe to trade",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "asset_id": { "type": "string" }
+        }
+      }
+    }
   ]
 }
