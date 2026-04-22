@@ -33,7 +33,6 @@ async def engine_loop(markets, capital):
                 if side == "hold" or size <= 0:
                     continue
 
-                # ===== real execution first =====
                 result = await call("trade_order", {
                     "symbol": m,
                     "asset_id": m,
@@ -43,7 +42,6 @@ async def engine_loop(markets, capital):
                     "strategy_id": strategy_id
                 })
 
-                # ===== fallback =====
                 if isinstance(result, dict) and "error" in result:
                     price_data = await call("get_spot_price", {"symbol": m})
                     if not isinstance(price_data, dict):
