@@ -1,26 +1,79 @@
 {
   "id": "fund_brain",
-  "name": "Fund Brain",
-  "description": "Multi-alpha fusion scoring for trade decisioning",
+  "name": "fund_brain",
+  "description": "Unified fund brain wrapper for engine control, state access, and high-level trading orchestration",
   "version": "1.0.0",
   "enabled": true,
-  "category": "allocator",
+  "category": "brain",
   "price": 0,
-  "author": "fund_brain",
+  "author": "system",
   "tools": [
     {
-      "name": "combine_alpha_signals",
-      "description": "Fuse multiple alpha signals into one decision",
+      "name": "start_engine",
+      "description": "Start the main fund trading engine",
       "input_schema": {
         "type": "object",
         "properties": {
-          "signals": {
-            "type": "object"
+          "markets": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Markets to trade, e.g. [\"BTCUSDT\", \"ETHUSDT\"]"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Capital allocated to the engine"
           }
-        },
-        "required": [
-          "signals"
-        ]
+        }
+      }
+    },
+    {
+      "name": "stop_engine",
+      "description": "Stop the main fund trading engine",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_state",
+      "description": "Get current fund engine state",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "run_fund_cycle",
+      "description": "Run one high-level fund decision cycle",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "Target symbol, e.g. BTCUSDT"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Optional capital reference for allocation"
+          }
+        }
+      }
+    },
+    {
+      "name": "fund_decide_trade",
+      "description": "Generate a fund-level decision using alpha, regime, sizing, and risk",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "Target symbol"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Optional capital reference"
+          }
+        }
       }
     }
   ]
