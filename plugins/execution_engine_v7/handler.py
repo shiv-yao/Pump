@@ -1,8 +1,5 @@
 import asyncio
 import time
-import os
-import httpx
-
 from app.utils.loader import call
 
 RUNNING = False
@@ -12,10 +9,8 @@ POSITIONS = {}
 PNL = 0.0
 TRADES = []
 
-TRADING_API_BASE = os.getenv("TRADING_API_BASE", "").rstrip("/")
 
-
-# ========= core loop =========
+# ========= ENGINE LOOP =========
 async def engine_loop(markets, capital):
     global RUNNING, PNL
 
@@ -24,24 +19,36 @@ async def engine_loop(markets, capital):
 
         for m in markets:
             try:
-                alpha = await call("get_alpha_v2", {"asset_id": m})
-                if not isinstance(alpha, dict):
+                # ===== FUND BRAIN =====
+                decision = await call("fund_decide_trade", {
+                    "symbol": m,
+                    "capital": capital
+                })
+
+                if not isinstance(decision, dict):
                     continue
 
-                side = str(alpha.get("action", "hold")).lower()
-                score = float(alpha.get("score", 0))
+                side = decision.get("action", "hold")
+                size = float(decision.get("size", 0))
+                strategy_id = decision.get("strategy_id", "fund_brain")
 
-                if side == "hold" or score < 0.5:
+                if side == "hold" or size <= 0:
                     continue
 
-                size = min(max(0.001, capital * 0.02), capital * 0.05)
-
-                # ===== price =====
+                # ===== PRICE =====
                 price_data = await call("get_spot_price", {"symbol": m})
-                price = price_data.get("price", 1)
+                if not isinstance(price_data, dict):
+                    continue
 
-                # ===== execute =====
-                result = await fallback_execute(m, side, size, price)
+                price = float(price_data.get("price", 1))
+
+                # ===== EXECUTION =====
+                result = await call("simulate_order", {
+                    "asset_id": m,
+                    "side": side,
+                    "price": price,
+                    "size": size
+                })
 
                 if result.get("filled"):
                     await apply_fill(
@@ -49,7 +56,7 @@ async def engine_loop(markets, capital):
                         side,
                         result.get("avg_price", price),
                         result.get("size", size),
-                        "alpha_v2"
+                        strategy_id
                     )
 
             except Exception as e:
@@ -58,17 +65,7 @@ async def engine_loop(markets, capital):
         await asyncio.sleep(max(0.2 - (time.time() - loop_start), 0))
 
 
-# ========= execution =========
-async def fallback_execute(asset_id, side, size, price):
-    return await call("simulate_order", {
-        "asset_id": asset_id,
-        "side": side,
-        "price": price,
-        "size": size
-    })
-
-
-# ========= fill =========
+# ========= FILL =========
 async def apply_fill(asset_id, side, price, size, strategy_id):
     global PNL
 
@@ -93,7 +90,8 @@ async def apply_fill(asset_id, side, price, size, strategy_id):
         "asset_id": asset_id,
         "side": side,
         "price": px,
-        "size": qty
+        "size": qty,
+        "strategy": strategy_id
     })
 
 
