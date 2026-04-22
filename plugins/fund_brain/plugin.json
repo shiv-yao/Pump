@@ -1,8 +1,8 @@
 {
   "id": "fund_brain",
-  "name": "Fund Brain PRO",
+  "name": "Fund Brain PRO+",
   "description": "Central fund-level brain that fuses alpha, allocator, strategy manager, and risk engine to control trading decisions and execution",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "enabled": true,
   "category": "brain",
   "price": 0,
@@ -16,12 +16,10 @@
         "properties": {
           "markets": {
             "type": "array",
-            "items": { "type": "string" },
-            "description": "Markets to trade (e.g. [\"BTCUSDT\",\"ETHUSDT\"])"
+            "items": { "type": "string" }
           },
           "capital": {
-            "type": "number",
-            "description": "Capital allocation"
+            "type": "number"
           }
         }
       }
@@ -36,7 +34,7 @@
     },
     {
       "name": "get_state",
-      "description": "Get engine state (positions, pnl, running status)",
+      "description": "Get engine state",
       "input_schema": {
         "type": "object",
         "properties": {}
@@ -48,32 +46,20 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "symbol": {
-            "type": "string",
-            "description": "Trading symbol (e.g. BTCUSDT)"
-          },
-          "capital": {
-            "type": "number",
-            "description": "Capital reference for allocation"
-          }
+          "symbol": { "type": "string" },
+          "capital": { "type": "number" }
         },
         "required": ["symbol"]
       }
     },
     {
       "name": "run_fund_cycle",
-      "description": "Run a full fund cycle: decide → price → execute",
+      "description": "Run a full fund cycle: decide → execute",
       "input_schema": {
         "type": "object",
         "properties": {
-          "symbol": {
-            "type": "string",
-            "description": "Trading symbol"
-          },
-          "capital": {
-            "type": "number",
-            "description": "Capital reference"
-          }
+          "symbol": { "type": "string" },
+          "capital": { "type": "number" }
         },
         "required": ["symbol"]
       }
