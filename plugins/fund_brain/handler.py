@@ -59,31 +59,26 @@ async def fund_decide_trade(symbol: str = "BTCUSDT", capital: float = DEFAULT_CA
     symbol = symbol or "BTCUSDT"
     capital = _safe_float(capital, DEFAULT_CAPITAL)
 
-    # 1) price / market snapshot
     price_info = await _call_first(
         ["price", "get_spot_price", "get_ticker_24h"],
         {"symbol": symbol}
     )
 
-    # 2) alpha
     alpha_info = await _call_first(
         ["get_alpha_v2", "get_alpha_signal", "get_trading_signal"],
         {"asset_id": symbol, "symbol": symbol}
     )
 
-    # 3) regime
     regime_info = await _call_first(
         ["fb_get_regime"],
         {"symbol": symbol}
     )
 
-    # 4) dynamic params
     params_info = await _call_first(
         ["fb_adjust_params", "auto_optimize_env"],
         {}
     )
 
-    # 5) position sizing
     sizing_payload = {
         "symbol": symbol,
         "asset_id": symbol,
@@ -94,7 +89,6 @@ async def fund_decide_trade(symbol: str = "BTCUSDT", capital: float = DEFAULT_CA
         sizing_payload
     )
 
-    # 6) risk
     risk_info = await _call_first(
         ["get_risk_state", "check_risk"],
         {"symbol": symbol, "asset_id": symbol}
@@ -114,7 +108,6 @@ async def fund_decide_trade(symbol: str = "BTCUSDT", capital: float = DEFAULT_CA
             0.0
         )
 
-    # simple risk veto
     if isinstance(risk_info, dict):
         risk_level = _safe_float(risk_info.get("risk_level", 0.0), 0.0)
         can_trade = risk_info.get("can_trade", True)
@@ -122,7 +115,6 @@ async def fund_decide_trade(symbol: str = "BTCUSDT", capital: float = DEFAULT_CA
             action = "hold"
             size = 0.0
 
-    # if alpha result missing action but score is strong
     if action == "hold":
         if score >= 0.7:
             action = "buy"
