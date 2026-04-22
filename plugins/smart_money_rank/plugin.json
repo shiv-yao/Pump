@@ -1,0 +1,9 @@
+{
+  "id": "smart_money_rank",
+  "name": "smart_money_rank",
+  "enabled": true,
+  "category": "alpha",
+  "tools": [
+    { "name": "get_smart_money_score" }
+  ]
+}
