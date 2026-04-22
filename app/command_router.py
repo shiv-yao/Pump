@@ -1,6 +1,4 @@
 import json
-import inspect
-from pathlib import Path
 
 from app.plugin_manager import (
     plugin_registry,
@@ -22,23 +20,23 @@ except Exception:
 
 
 # =========================
-# CORE CALL LAYER
+# CORE CALL
 # =========================
 
-async def _call_tool(tool_name: str, payload: dict | None = None):
+async def _call_tool(tool_name: str, payload=None):
     payload = payload or {}
 
-    # ✅ 永遠優先 unified loader
-    if shared_call is not None:
+    if shared_call is None:
+        return {"error": f"loader not available: {tool_name}"}
+
+    try:
         return await shared_call(tool_name, payload)
+    except Exception as e:
+        return {"error": f"{tool_name} failed: {str(e)}"}
 
-    # fallback（幾乎不會用到）
-    return {"error": f"loader unavailable: {tool_name}"}
 
-
-async def _call_first(tool_names: list[str], payload: dict | None = None):
+async def _call_first(tool_names, payload=None):
     payload = payload or {}
-
     last_error = None
 
     for name in tool_names:
@@ -142,42 +140,35 @@ async def execute_platform_command(command: str):
         if not tail:
             return {"success": False, "output": "Usage: /price BTCUSDT"}
 
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(
-                    ["price", "get_spot_price", "get_ticker_24h"],
-                    {"symbol": tail}
-                )
-            )
-        }
+        result = await _call_first(
+            ["price", "get_spot_price", "get_ticker_24h"],
+            {"symbol": tail}
+        )
+        return {"success": True, "output": _format(result)}
 
     # ========= BALANCE =========
     if head == "balance":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["balance", "get_balance", "pm_balance"], {})
-            )
-        }
+        result = await _call_first(
+            ["pm_balance", "get_balance", "balance"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
 
     # ========= POSITIONS =========
     if head == "positions":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["positions", "get_positions", "get_state"], {})
-            )
-        }
+        result = await _call_first(
+            ["get_positions", "positions", "get_state"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
 
     # ========= ORDERS =========
     if head == "orders":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["orders", "get_orders"], {})
-            )
-        }
+        result = await _call_first(
+            ["get_orders", "orders"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
 
     # ========= BUY / SELL =========
     if head in {"buy", "sell"}:
@@ -187,115 +178,92 @@ async def execute_platform_command(command: str):
             return {"success": False, "output": f"/{head} BTCUSDT 10"}
 
         symbol = args[0]
-        size = float(args[1])
 
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(
-                    ["buy_token" if head == "buy" else "sell_token",
-                     "trade_order",
-                     "simulate_order"],
-                    {
-                        "symbol": symbol,
-                        "asset_id": symbol,
-                        "size": size,
-                        "side": head
-                    }
-                )
-            )
-        }
+        try:
+            size = float(args[1])
+        except:
+            return {"success": False, "output": "size must be number"}
+
+        result = await _call_first(
+            [
+                "buy_token" if head == "buy" else "sell_token",
+                "trade_order",
+                "simulate_order"
+            ],
+            {
+                "symbol": symbol,
+                "asset_id": symbol,
+                "size": size,
+                "side": head
+            }
+        )
+
+        return {"success": True, "output": _format(result)}
 
     # ========= SCAN =========
     if head == "scan":
         symbols = tail.split()
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(
-                    ["scan", "scan_market"],
-                    {"symbols": symbols}
-                )
-            )
-        }
+        result = await _call_first(
+            ["scan_market", "scan"],
+            {"symbols": symbols}
+        )
+        return {"success": True, "output": _format(result)}
 
-    # ========= STATE =========
+    # ========= FUND / ENGINE =========
     if head == "state":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["state", "get_state"], {})
-            )
-        }
+        result = await _call_first(["get_state", "state"], {})
+        return {"success": True, "output": _format(result)}
 
-    # ========= ENGINE =========
     if head == "start_engine":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["start_engine", "start_v7_engine"], {})
-            )
-        }
+        result = await _call_first(
+            ["start_engine", "start_v7_engine"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
 
     if head == "stop_engine":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["stop_engine", "stop_v7_engine"], {})
-            )
-        }
+        result = await _call_first(
+            ["stop_engine", "stop_v7_engine"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
 
     # ========= ARB =========
     if head == "start_arb_bot":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["start_arb_bot"], {})
-            )
-        }
+        result = await _call_first(["start_arb_bot"], {})
+        return {"success": True, "output": _format(result)}
 
     if head == "stop_arb_bot":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["stop_arb_bot"], {})
-            )
-        }
+        result = await _call_first(["stop_arb_bot"], {})
+        return {"success": True, "output": _format(result)}
 
     if head == "arb_status":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["arb_status"], {})
-            )
-        }
+        result = await _call_first(["arb_status"], {})
+        return {"success": True, "output": _format(result)}
 
     # ========= ENV =========
     if head == "apply_env":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["apply_env", "apply_best_env"], {})
-            )
-        }
+        result = await _call_first(
+            ["apply_best_env", "apply_env"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
 
     # ========= REPLAY =========
     if head == "replay":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["replay", "replay_run"], {})
-            )
-        }
+        result = await _call_first(
+            ["replay_run", "replay"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
 
     # ========= AUTO EVOLUTION =========
     if head == "auto_evolution":
-        return {
-            "success": True,
-            "output": _format(
-                await _call_first(["auto_evolution", "run_evolution_cycle"], {})
-            )
-        }
+        result = await _call_first(
+            ["run_evolution_cycle", "auto_evolution"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
 
     # ========= GENERIC =========
     payload = _parse_payload(tail)
