@@ -1,0 +1,18 @@
+{
+  "id": "pump_scanner",
+  "name": "pump_scanner",
+  "description": "Scan pump.fun new tokens",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "alpha",
+  "tools": [
+    {
+      "name": "pump_latest",
+      "description": "Get latest pump tokens",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
