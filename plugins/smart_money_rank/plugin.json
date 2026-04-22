@@ -1,9 +1,21 @@
 {
   "id": "smart_money_rank",
   "name": "smart_money_rank",
+  "description": "Smart money scoring engine based on wallet signals",
+  "version": "2.0.0",
   "enabled": true,
   "category": "alpha",
   "tools": [
-    { "name": "get_smart_money_score" }
+    {
+      "name": "get_smart_money_score",
+      "description": "Return smart money signal score",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "asset_id": { "type": "string" }
+        }
+      }
+    }
   ]
 }
