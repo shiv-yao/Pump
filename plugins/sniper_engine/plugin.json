@@ -1,0 +1,40 @@
+{
+  "id": "sniper_engine",
+  "name": "sniper_engine",
+  "description": "Pump.fun sniper with wallet alpha + rug guard + Jito execution",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "execution",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "sniper_scan",
+      "description": "Scan early tokens",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "start_sniper",
+      "description": "Start sniper loop",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "capital": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    {
+      "name": "stop_sniper",
+      "description": "Stop sniper",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
