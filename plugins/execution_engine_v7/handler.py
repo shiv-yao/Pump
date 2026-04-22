@@ -18,7 +18,6 @@ async def engine_loop(markets, capital):
 
         for m in markets:
             try:
-                # ===== FUND BRAIN DECISION =====
                 decision = await call("fund_decide_trade", {
                     "symbol": m,
                     "capital": capital
@@ -34,7 +33,7 @@ async def engine_loop(markets, capital):
                 if side == "hold" or size <= 0:
                     continue
 
-                # ===== REAL EXECUTION FIRST =====
+                # ===== real execution first =====
                 result = await call("trade_order", {
                     "symbol": m,
                     "asset_id": m,
@@ -44,7 +43,7 @@ async def engine_loop(markets, capital):
                     "strategy_id": strategy_id
                 })
 
-                # ===== FALLBACK TO SIM ONLY IF REAL FAILS =====
+                # ===== fallback =====
                 if isinstance(result, dict) and "error" in result:
                     price_data = await call("get_spot_price", {"symbol": m})
                     if not isinstance(price_data, dict):
@@ -85,7 +84,6 @@ async def apply_fill(asset_id, side, price, size, strategy_id):
     qty = float(size or 0.0)
 
     pos = POSITIONS.get(asset_id, {"size": 0.0, "avg": 0.0})
-
     pnl_delta = 0.0
 
     if side == "buy":
@@ -99,18 +97,15 @@ async def apply_fill(asset_id, side, price, size, strategy_id):
 
     POSITIONS[asset_id] = pos
 
-    # ===== strategy stats =====
     await call("strategy_record_trade", {
         "strategy_id": strategy_id,
         "pnl": pnl_delta
     })
 
-    # ===== risk global pnl =====
     await call("record_risk_pnl", {
         "pnl": pnl_delta
     })
 
-    # ===== ledger =====
     await call("ledger_record_fill", {
         "asset_id": asset_id,
         "side": side,
@@ -151,7 +146,6 @@ async def stop_v7_engine(**kwargs):
     global RUNNING, TASK
 
     RUNNING = False
-
     if TASK:
         TASK.cancel()
         TASK = None
