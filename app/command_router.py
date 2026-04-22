@@ -108,6 +108,8 @@ async def execute_platform_command(command: str):
                 "/disable <name>\n"
                 "/remove <name>\n"
                 "/pump\n"
+                "/pump_candidates\n"
+                "/pump_candidates {\"limit\":5,\"max_age_sec\":120}\n"
                 "/price BTCUSDT\n"
                 "/balance\n"
                 "/positions\n"
@@ -203,6 +205,13 @@ async def execute_platform_command(command: str):
     # ========= PUMP =========
     if head == "pump":
         result = await _call_first(["pump_latest"], {})
+        return {"success": True, "output": _format(result)}
+
+    if head == "pump_candidates":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {"limit": 10, "max_age_sec": 180}
+        result = await _call_first(["pump_candidates"], payload)
         return {"success": True, "output": _format(result)}
 
     # ========= PRICE =========
