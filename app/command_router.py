@@ -12,7 +12,6 @@ from app.provider_status import (
     check_trading_status,
 )
 
-# ===== unified loader =====
 try:
     from app.utils.loader import call as shared_call
 except Exception:
@@ -63,7 +62,7 @@ def _parse_payload(text: str):
     if text.startswith("{") and text.endswith("}"):
         try:
             return json.loads(text)
-        except:
+        except Exception:
             return {"_raw": text}
 
     return {"_raw": text}
@@ -76,7 +75,7 @@ def _format(obj):
         return obj
     try:
         return json.dumps(obj, ensure_ascii=False, indent=2)
-    except:
+    except Exception:
         return str(obj)
 
 
@@ -101,13 +100,22 @@ async def execute_platform_command(command: str):
         return {
             "success": True,
             "output": (
+                "/help\n"
+                "/skills\n"
+                "/providers\n"
+                "/install <name> <url>\n"
+                "/enable <name>\n"
+                "/disable <name>\n"
+                "/remove <name>\n"
+                "/pump\n"
                 "/price BTCUSDT\n"
                 "/balance\n"
                 "/positions\n"
                 "/orders\n"
-                "/buy BTCUSDT 10\n"
-                "/sell BTCUSDT 10\n"
+                "/buy BTCUSDT 0.01\n"
+                "/sell BTCUSDT 0.01\n"
                 "/scan BTCUSDT SOLUSDT\n"
+                "/run_fund_cycle {\"symbol\":\"BTCUSDT\"}\n"
                 "/state\n"
                 "/start_engine\n"
                 "/stop_engine\n"
@@ -117,12 +125,26 @@ async def execute_platform_command(command: str):
                 "/apply_env\n"
                 "/replay\n"
                 "/auto_evolution\n"
+                "/clear\n"
             )
         }
 
     # ========= CLEAR =========
     if head == "clear":
         return {"success": True, "output": "__CLEAR__"}
+
+    # ========= SKILLS / PLUGINS =========
+    if head in {"skills", "plugins"}:
+        if not plugin_registry:
+            return {"success": True, "output": "No plugins loaded"}
+
+        lines = []
+        for pid, info in plugin_registry.items():
+            enabled = info.get("enabled", False)
+            tools = [t.get("name") for t in info.get("manifest", {}).get("tools", [])]
+            lines.append(f"{pid} [{'ON' if enabled else 'OFF'}] tools={tools}")
+
+        return {"success": True, "output": "\n".join(lines)}
 
     # ========= PROVIDERS =========
     if head in {"providers", "status"}:
@@ -134,6 +156,54 @@ async def execute_platform_command(command: str):
                 "trading_api": check_trading_status(),
             })
         }
+
+    # ========= INSTALL / ENABLE / DISABLE / REMOVE =========
+    if head == "install":
+        if not tail:
+            return {"success": False, "output": "Usage: /install <name> <url>"}
+
+        try:
+            name, url = tail.split(maxsplit=1)
+        except ValueError:
+            return {"success": False, "output": "Usage: /install <name> <url>"}
+
+        ok = await install_plugin_from_url(name, url, remember=True)
+        return {
+            "success": bool(ok),
+            "output": f"{'Installed' if ok else 'Install failed'}: {name}"
+        }
+
+    if head == "enable":
+        if not tail:
+            return {"success": False, "output": "Usage: /enable <name>"}
+        ok = set_plugin_enabled(tail, True)
+        return {
+            "success": bool(ok),
+            "output": f"{'Enabled' if ok else 'Enable failed'}: {tail}"
+        }
+
+    if head == "disable":
+        if not tail:
+            return {"success": False, "output": "Usage: /disable <name>"}
+        ok = set_plugin_enabled(tail, False)
+        return {
+            "success": bool(ok),
+            "output": f"{'Disabled' if ok else 'Disable failed'}: {tail}"
+        }
+
+    if head in {"remove", "delete"}:
+        if not tail:
+            return {"success": False, "output": "Usage: /remove <name>"}
+        ok = remove_plugin(tail)
+        return {
+            "success": bool(ok),
+            "output": f"{'Removed' if ok else 'Remove failed'}: {tail}"
+        }
+
+    # ========= PUMP =========
+    if head == "pump":
+        result = await _call_first(["pump_latest"], {})
+        return {"success": True, "output": _format(result)}
 
     # ========= PRICE =========
     if head == "price":
@@ -175,26 +245,27 @@ async def execute_platform_command(command: str):
         args = tail.split()
 
         if len(args) < 2:
-            return {"success": False, "output": f"/{head} BTCUSDT 10"}
+            return {"success": False, "output": f"Usage: /{head} BTCUSDT 0.01"}
 
         symbol = args[0]
 
         try:
             size = float(args[1])
-        except:
+        except Exception:
             return {"success": False, "output": "size must be number"}
 
         result = await _call_first(
             [
-                "buy_token" if head == "buy" else "sell_token",
                 "trade_order",
-                "simulate_order"
+                "buy_token" if head == "buy" else "sell_token",
+                "simulate_order",
             ],
             {
                 "symbol": symbol,
                 "asset_id": symbol,
                 "size": size,
-                "side": head
+                "amount": size,
+                "side": head,
             }
         )
 
@@ -209,15 +280,26 @@ async def execute_platform_command(command: str):
         )
         return {"success": True, "output": _format(result)}
 
-    # ========= FUND / ENGINE =========
+    # ========= FUND CYCLE =========
+    if head == "run_fund_cycle":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {"symbol": "BTCUSDT"}
+        result = await _call_first(["run_fund_cycle"], payload)
+        return {"success": True, "output": _format(result)}
+
+    # ========= ENGINE =========
     if head == "state":
         result = await _call_first(["get_state", "state"], {})
         return {"success": True, "output": _format(result)}
 
     if head == "start_engine":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
         result = await _call_first(
             ["start_engine", "start_v7_engine"],
-            {}
+            payload
         )
         return {"success": True, "output": _format(result)}
 
@@ -251,9 +333,12 @@ async def execute_platform_command(command: str):
 
     # ========= REPLAY =========
     if head == "replay":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
         result = await _call_first(
             ["replay_run", "replay"],
-            {}
+            payload
         )
         return {"success": True, "output": _format(result)}
 
