@@ -1,17 +1,41 @@
 {
   "id": "pump_scanner",
   "name": "pump_scanner",
-  "description": "Scan pump.fun new tokens",
-  "version": "1.0.0",
+  "description": "Scan latest pump.fun tokens and produce early alpha candidates",
+  "version": "2.0.0",
   "enabled": true,
   "category": "alpha",
+  "price": 0,
+  "author": "system",
   "tools": [
     {
       "name": "pump_latest",
-      "description": "Get latest pump tokens",
+      "description": "Fetch latest pump.fun tokens",
       "input_schema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of tokens to return"
+          }
+        }
+      }
+    },
+    {
+      "name": "pump_candidates",
+      "description": "Fetch filtered early-entry candidates from pump.fun",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of candidates to return"
+          },
+          "max_age_sec": {
+            "type": "number",
+            "description": "Only keep tokens newer than this many seconds"
+          }
+        }
       }
     }
   ]
