@@ -1,0 +1,9 @@
+{
+  "id": "regime_engine",
+  "name": "regime_engine",
+  "enabled": true,
+  "category": "brain",
+  "tools": [
+    { "name": "get_market_regime" }
+  ]
+}
