@@ -10,9 +10,15 @@ from solders.system_program import transfer, TransferParams
 from solders.message import MessageV0
 from solders.transaction import VersionedTransaction
 
+from app.utils.loader import call
+
+# =========================
+# CONFIG
+# =========================
+
 RPC_URL = os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
-JUP_ORDER = os.getenv("JUP_ORDER_URL", "https://api.jup.ag/swap/v2/order")
-JUP_EXECUTE = os.getenv("JUP_EXECUTE_URL", "https://api.jup.ag/swap/v2/execute")
+JUP_ORDER_URL = os.getenv("JUP_ORDER_URL", "https://api.jup.ag/swap/v2/order")
+JUP_EXECUTE_URL = os.getenv("JUP_EXECUTE_URL", "https://api.jup.ag/swap/v2/execute")
 
 USE_JITO = os.getenv("USE_JITO", "false").lower() == "true"
 JITO_BASE_URL = os.getenv("JITO_BASE_URL", "https://mainnet.block-engine.jito.wtf")
@@ -20,8 +26,21 @@ JITO_BUNDLE_URL = f"{JITO_BASE_URL}/api/v1/bundles"
 JITO_TX_URL = f"{JITO_BASE_URL}/api/v1/transactions"
 JITO_TIP_LAMPORTS = int(os.getenv("JITO_TIP_LAMPORTS", "2000"))
 
-PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "").strip()
+PRIVATE_KEY_B64 = os.getenv("SOLANA_PRIVATE_KEY", "").strip()
 
+USDC_MINT = os.getenv(
+    "USDC_MINT",
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGk9n9Hh4v"
+)
+SOL_MINT = os.getenv(
+    "SOL_MINT",
+    "So11111111111111111111111111111111111111112"
+)
+
+
+# =========================
+# HELPERS
+# =========================
 
 def _rpc_body(method: str, params=None, req_id: int = 1):
     return {
@@ -32,11 +51,18 @@ def _rpc_body(method: str, params=None, req_id: int = 1):
     }
 
 
+def _f(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
 def load_keypair() -> Keypair:
-    if not PRIVATE_KEY:
+    if not PRIVATE_KEY_B64:
         raise Exception("Missing SOLANA_PRIVATE_KEY")
 
-    raw = base64.b64decode(PRIVATE_KEY)
+    raw = base64.b64decode(PRIVATE_KEY_B64)
     return Keypair.from_bytes(raw)
 
 
@@ -55,24 +81,28 @@ async def rpc_get_latest_blockhash() -> str:
     return data["result"]["value"]["blockhash"]
 
 
-async def jupiter_order(input_mint: str, output_mint: str, amount: float):
-    async with httpx.AsyncClient(timeout=15) as client:
+# =========================
+# JUPITER
+# =========================
+
+async def jupiter_order(input_mint: str, output_mint: str, amount: float, slippage_bps: int = 80):
+    async with httpx.AsyncClient(timeout=20) as client:
         res = await client.post(
-            JUP_ORDER,
+            JUP_ORDER_URL,
             json={
                 "inputMint": input_mint,
                 "outputMint": output_mint,
                 "amount": int(amount),
-                "slippageBps": 80
+                "slippageBps": int(slippage_bps)
             }
         )
         return res.json()
 
 
 async def jupiter_execute(signed_tx_base64: str, request_id: str | None):
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=20) as client:
         res = await client.post(
-            JUP_EXECUTE,
+            JUP_EXECUTE_URL,
             json={
                 "signedTransaction": signed_tx_base64,
                 "requestId": request_id
@@ -82,9 +112,6 @@ async def jupiter_execute(signed_tx_base64: str, request_id: str | None):
 
 
 def sign_jupiter_tx(tx_base64: str) -> str:
-    """
-    簽 Jupiter 回來的 versioned tx
-    """
     kp = load_keypair()
 
     tx_bytes = base64.b64decode(tx_base64)
@@ -94,10 +121,11 @@ def sign_jupiter_tx(tx_base64: str) -> str:
     return base64.b64encode(bytes(tx)).decode()
 
 
+# =========================
+# JITO
+# =========================
+
 async def get_jito_tip_accounts() -> list[str]:
-    """
-    Jito getTipAccounts: JSON-RPC 到 /api/v1/bundles
-    """
     async with httpx.AsyncClient(timeout=10) as client:
         res = await client.post(
             JITO_BUNDLE_URL,
@@ -117,12 +145,9 @@ async def get_jito_tip_accounts() -> list[str]:
 
 
 async def build_tip_tx_base64(tip_lamports: int | None = None) -> str:
-    """
-    建一筆獨立 SOL transfer tip tx，作為 bundle 第 2 筆交易。
-    """
     lamports = int(tip_lamports or JITO_TIP_LAMPORTS)
     if lamports < 1000:
-        lamports = 1000  # Jito 文件提到 bundle 最低 tip 1000 lamports
+        lamports = 1000
 
     kp = load_keypair()
     payer = kp.pubkey()
@@ -153,16 +178,13 @@ async def build_tip_tx_base64(tip_lamports: int | None = None) -> str:
 
 
 async def send_jito_bundle(signed_txs_base64: list[str]):
-    """
-    sendBundle: params = [[tx1, tx2, ...], {"encoding": "base64"}]
-    """
     payload = _rpc_body(
         "sendBundle",
         [signed_txs_base64, {"encoding": "base64"}],
         req_id=1
     )
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=20) as client:
         res = await client.post(
             JITO_BUNDLE_URL,
             headers={"Content-Type": "application/json"},
@@ -181,17 +203,13 @@ async def send_jito_bundle(signed_txs_base64: list[str]):
 
 
 async def send_jito_transaction(signed_tx_base64: str):
-    """
-    sendTransaction 到 Jito transaction endpoint。
-    Jito 文件說這是 validator-forwarded path，且可用 bundleOnly=true 作 revert protection。
-    """
     payload = _rpc_body(
         "sendTransaction",
         [signed_tx_base64, {"encoding": "base64"}],
         req_id=1
     )
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=20) as client:
         res = await client.post(
             f"{JITO_TX_URL}?bundleOnly=true",
             headers={"Content-Type": "application/json"},
@@ -209,23 +227,82 @@ async def send_jito_transaction(signed_tx_base64: str):
     }
 
 
-async def trade_order(symbol=None, side="buy", size=0.0, **kwargs):
+# =========================
+# TOKEN RESOLUTION
+# =========================
+
+async def resolve_symbol_to_mint(symbol: str):
+    if not symbol:
+        return {"error": "missing_symbol"}
+
+    # already mint-like
+    if len(symbol) > 30:
+        return {
+            "symbol": symbol,
+            "mint": symbol,
+            "source": "direct"
+        }
+
+    if symbol.upper() == "SOL":
+        return {
+            "symbol": "SOL",
+            "mint": SOL_MINT,
+            "source": "builtin"
+        }
+
+    token = await call("resolve_token", {"symbol": symbol})
+    if isinstance(token, dict) and "error" not in token:
+        return token
+
+    return {"error": f"token_resolve_failed: {symbol}"}
+
+
+# =========================
+# EXECUTION
+# =========================
+
+async def trade_order(symbol=None, side="buy", size=0.0, slippage_bps=80, **kwargs):
     """
-    這裡沿用你現有 symbol->mint 簡化方式。
-    真實版最好再接 token resolver。
+    Unified real execution:
+      1. resolve token
+      2. Jupiter order
+      3. sign
+      4. Jito bundle (optional)
+      5. Jito tx fallback
+      6. Jupiter execute fallback
     """
     try:
-        if symbol == "SOL":
-            input_mint = "So11111111111111111111111111111111111111112"
-            output_mint = "USDC"
+        if not symbol:
+            return {"error": "missing_symbol"}
+
+        side = str(side or "buy").lower().strip()
+        if side not in {"buy", "sell"}:
+            return {"error": f"invalid_side: {side}"}
+
+        amount = _f(size, 0.0)
+        if amount <= 0:
+            return {"error": "invalid_size"}
+
+        token = await resolve_symbol_to_mint(symbol)
+        if isinstance(token, dict) and "error" in token:
+            return token
+
+        mint = token["mint"]
+
+        if side == "buy":
+            input_mint = USDC_MINT
+            output_mint = mint
         else:
-            input_mint = "USDC"
-            output_mint = symbol
+            input_mint = mint
+            output_mint = USDC_MINT
 
-        if side == "sell":
-            input_mint, output_mint = output_mint, input_mint
+        order = await jupiter_order(
+            input_mint=input_mint,
+            output_mint=output_mint,
+            amount=amount,
+            slippage_bps=int(slippage_bps),
+        )
 
-        order = await jupiter_order(input_mint, output_mint, size)
         tx_base64 = order.get("transaction")
         request_id = order.get("requestId") or secrets.token_hex(8)
 
@@ -234,8 +311,10 @@ async def trade_order(symbol=None, side="buy", size=0.0, **kwargs):
 
         signed_swap_tx = sign_jupiter_tx(tx_base64)
 
-        # ===== Jito path =====
+        # ===== JITO PATH =====
         if USE_JITO:
+            bundle_error = None
+
             try:
                 signed_tip_tx = await build_tip_tx_base64(JITO_TIP_LAMPORTS)
                 bundle_res = await send_jito_bundle([signed_swap_tx, signed_tip_tx])
@@ -245,19 +324,26 @@ async def trade_order(symbol=None, side="buy", size=0.0, **kwargs):
                         "filled": True,
                         "via": "jito_bundle",
                         "bundle_id": bundle_res.get("bundle_id"),
+                        "symbol": symbol,
+                        "mint": mint,
+                        "size": amount,
                         "raw": bundle_res
                     }
-            except Exception as e:
-                # 先記住錯，再 fallback
-                bundle_res = {"error": f"bundle_build_or_send_failed: {str(e)}"}
 
-            # fallback 1: Jito 單筆
+                bundle_error = bundle_res
+            except Exception as e:
+                bundle_error = {"error": f"bundle_build_or_send_failed: {str(e)}"}
+
+            # fallback 1: Jito single tx
             jito_tx_res = await send_jito_transaction(signed_swap_tx)
             if "error" not in jito_tx_res:
                 return {
                     "filled": True,
                     "via": "jito_tx",
                     "tx": jito_tx_res.get("signature"),
+                    "symbol": symbol,
+                    "mint": mint,
+                    "size": amount,
                     "raw": jito_tx_res
                 }
 
@@ -267,19 +353,25 @@ async def trade_order(symbol=None, side="buy", size=0.0, **kwargs):
                 "filled": True,
                 "via": "jup_execute_fallback",
                 "tx": execute_res.get("txid"),
+                "symbol": symbol,
+                "mint": mint,
+                "size": amount,
                 "raw": {
-                    "bundle_error": bundle_res,
+                    "bundle_error": bundle_error,
                     "jito_tx_error": jito_tx_res,
                     "execute": execute_res
                 }
             }
 
-        # ===== Default Jupiter path =====
+        # ===== DEFAULT JUPITER PATH =====
         execute_res = await jupiter_execute(signed_swap_tx, request_id)
         return {
             "filled": True,
             "via": "jupiter",
             "tx": execute_res.get("txid"),
+            "symbol": symbol,
+            "mint": mint,
+            "size": amount,
             "raw": execute_res
         }
 
