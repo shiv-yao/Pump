@@ -110,6 +110,9 @@ async def execute_platform_command(command: str):
                 "/pump\n"
                 "/pump_candidates\n"
                 "/pump_candidates {\"limit\":5,\"max_age_sec\":120}\n"
+                "/sniper_scan\n"
+                "/start_sniper\n"
+                "/stop_sniper\n"
                 "/price BTCUSDT\n"
                 "/balance\n"
                 "/positions\n"
@@ -212,6 +215,22 @@ async def execute_platform_command(command: str):
         if "_raw" in payload:
             payload = {"limit": 10, "max_age_sec": 180}
         result = await _call_first(["pump_candidates"], payload)
+        return {"success": True, "output": _format(result)}
+
+    # ========= SNIPER =========
+    if head == "sniper_scan":
+        result = await _call_first(["sniper_scan"], {})
+        return {"success": True, "output": _format(result)}
+
+    if head == "start_sniper":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
+        result = await _call_first(["start_sniper"], payload)
+        return {"success": True, "output": _format(result)}
+
+    if head == "stop_sniper":
+        result = await _call_first(["stop_sniper"], {})
         return {"success": True, "output": _format(result)}
 
     # ========= PRICE =========
