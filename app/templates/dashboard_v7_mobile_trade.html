@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>AI FUND PRO MAX+</title>
+  <style>
+    :root {
+      --bg: #06111b;
+      --panel: #0b1f33;
+      --panel-2: #102941;
+      --line: #173a59;
+      --text: #d8f3ff;
+      --muted: #89a9bf;
+      --accent: #23e3c2;
+      --accent-2: #44c9ff;
+      --warn: #ffd166;
+      --danger: #ff6b6b;
+      --ok: #19d38a;
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+
+    body {
+      padding-bottom: 88px;
+    }
+
+    .wrap {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(6, 17, 27, 0.95);
+      backdrop-filter: blur(8px);
+      padding: 12px 14px 10px;
+      border-bottom: 1px solid rgba(23, 58, 89, 0.6);
+    }
+
+    .title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .title {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
+    }
+
+    .mode-pill {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--accent);
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .status-pill {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      border-radius: 12px;
+      font-size: 13px;
+    }
+
+    .status-pill b {
+      color: var(--accent);
+    }
+
+    .section {
+      padding: 12px 12px 0;
+    }
+
+    .section-title {
+      font-size: 14px;
+      color: var(--muted);
+      margin: 0 0 8px;
+      padding-left: 2px;
+    }
+
+    .kpi-row {
+      display: flex;
+      gap: 10px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .kpi-card {
+      min-width: 138px;
+      background: linear-gradient(180deg, var(--panel) 0%, #091a2a 100%);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+    }
+
+    .kpi-label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .kpi-value {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, var(--panel) 0%, #081927 100%);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 0 12px;
+      margin-top: 8px;
+    }
+
+    .tab-btn {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 9px 12px;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .tab-btn.active {
+      background: var(--accent);
+      color: #03221f;
+      border-color: transparent;
+      font-weight: 700;
+    }
+
+    .tab-page { display: none; }
+    .tab-page.active { display: block; }
+
+    .card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .mini-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+    }
+
+    .mini-title {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .mini-meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .trade-box {
+      display: grid;
+      gap: 10px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .field input, .field select {
+      width: 100%;
+      background: #081522;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 16px;
+      outline: none;
+    }
+
+    .quote-box {
+      background: #081522;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .quote-box b {
+      color: var(--accent-2);
+    }
+
+    .btn-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .btn {
+      border: none;
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .btn.buy {
+      background: var(--ok);
+      color: #032116;
+    }
+
+    .btn.sell {
+      background: var(--danger);
+      color: white;
+    }
+
+    .btn.secondary {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+
+    .btn.primary {
+      background: var(--accent);
+      color: #04221d;
+    }
+
+    .inline-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: #102941;
+      color: var(--accent-2);
+      margin-right: 6px;
+    }
+
+    .bottom-bar {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 30;
+      background: rgba(8, 24, 36, 0.96);
+      backdrop-filter: blur(8px);
+      border-top: 1px solid rgba(23, 58, 89, 0.7);
+      padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .bottom-bar button {
+      border: none;
+      border-radius: 12px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 12px 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .bottom-bar button.primary {
+      background: var(--accent);
+      color: #03221f;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .good { color: var(--ok); }
+    .bad { color: var(--danger); }
+    .warn { color: var(--warn); }
+
+    .empty {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 8px 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <div class="title-row">
+        <div class="title">🚀 AI FUND PRO MAX+</div>
+        <div class="mode-pill" id="modePill">MODE -</div>
+      </div>
+
+      <div class="status-grid">
+        <div class="status-pill" id="enginePill">Engine: <b>-</b></div>
+        <div class="status-pill" id="providerPill">Trading API: <b>-</b></div>
+        <div class="status-pill" id="sniperPill">Sniper: <b>-</b></div>
+        <div class="status-pill" id="mempoolPill">Mempool: <b>-</b></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Overview</div>
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-label">Total PnL</div>
+          <div class="kpi-value" id="kpiPnl">0.00</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Winrate</div>
+          <div class="kpi-value" id="kpiWin">0%</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Drawdown</div>
+          <div class="kpi-value" id="kpiDd">0.0000</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Positions</div>
+          <div class="kpi-value" id="kpiPos">0</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Trades</div>
+          <div class="kpi-value" id="kpiTrades">0</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="trade">Trade</button>
+      <button class="tab-btn" data-tab="positions">Positions</button>
+      <button class="tab-btn" data-tab="sniper">Sniper</button>
+      <button class="tab-btn" data-tab="trades">Trades</button>
+      <button class="tab-btn" data-tab="risk">Risk</button>
+    </div>
+
+    <div class="section">
+      <div class="tab-page active" id="tab-trade">
+        <div class="panel">
+          <div class="section-title">Real Trade Panel</div>
+
+          <div class="trade-box">
+            <div class="field">
+              <label>Symbol / Asset</label>
+              <input id="symbolInput" value="BTCUSDT" />
+            </div>
+
+            <div class="field">
+              <label>Size</label>
+              <input id="sizeInput" value="0.01" />
+            </div>
+
+            <div class="field">
+              <label>Side</label>
+              <select id="sideInput">
+                <option value="buy">BUY</option>
+                <option value="sell">SELL</option>
+              </select>
+            </div>
+
+            <div class="quote-box" id="quoteBox">
+              <div><b>Quote preview</b></div>
+              <div class="muted">Tap Preview Quote to fetch price, slippage, and execution hints.</div>
+            </div>
+
+            <div class="inline-actions">
+              <button class="btn secondary" onclick="previewQuote()">Preview Quote</button>
+              <button class="btn primary" onclick="runAI()">Run AI</button>
+            </div>
+
+            <div class="btn-row">
+              <button class="btn buy" onclick="submitTrade('buy')">BUY NOW</button>
+              <button class="btn sell" onclick="submitTrade('sell')">SELL NOW</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-page" id="tab-positions">
+        <div class="panel">
+          <div class="section-title">Open Positions</div>
+          <div id="positionsList" class="card-list"></div>
+        </div>
+      </div>
+
+      <div class="tab-page" id="tab-sniper">
+        <div class="panel">
+          <div class="section-title">Sniper Control</div>
+          <div class="inline-actions">
+            <button class="btn primary" onclick="startSniper()">Start Sniper</button>
+            <button class="btn secondary" onclick="stopSniper()">Stop Sniper</button>
+          </div>
+          <div class="inline-actions">
+            <button class="btn primary" onclick="startMempool()">Start Mempool</button>
+            <button class="btn secondary" onclick="stopMempool()">Stop Mempool</button>
+          </div>
+          <div class="inline-actions">
+            <button class="btn secondary" onclick="loadSniperHits()">Refresh Hits</button>
+            <button class="btn secondary" onclick="runDevSignal()">Dev Signal</button>
+          </div>
+
+          <div style="margin-top: 10px" id="sniperHits" class="card-list"></div>
+        </div>
+      </div>
+
+      <div class="tab-page" id="tab-trades">
+        <div class="panel">
+          <div class="section-title">Recent Trades</div>
+          <div id="tradesList" class="card-list"></div>
+        </div>
+      </div>
+
+      <div class="tab-page" id="tab-risk">
+        <div class="panel">
+          <div class="section-title">Risk Snapshot</div>
+          <div id="riskBox" class="quote-box">Loading...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bottom-bar">
+    <button class="primary" onclick="runAI()">▶ Run</button>
+    <button onclick="startSniper()">⚡ Sniper</button>
+    <button onclick="startMempool()">🧠 Mempool</button>
+    <button onclick="refreshAll()">🔄 Refresh</button>
+  </div>
+
+  <script>
+    const API = "/api";
+
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach(x => x.classList.remove("active"));
+        document.querySelectorAll(".tab-page").forEach(x => x.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+      });
+    });
+
+    function fmt(x, digits = 4) {
+      const n = Number(x ?? 0);
+      if (!Number.isFinite(n)) return "0";
+      return n.toFixed(digits);
+    }
+
+    function showList(el, rows, renderer) {
+      const node = document.getElementById(el);
+      if (!rows || !rows.length) {
+        node.innerHTML = `<div class="empty">No data</div>`;
+        return;
+      }
+      node.innerHTML = rows.map(renderer).join("");
+    }
+
+    async function getJson(url, options) {
+      const r = await fetch(url, options);
+      return await r.json();
+    }
+
+    async function refreshState() {
+      const j = await getJson(API + "/state");
+      const d = j.data || {};
+
+      document.getElementById("modePill").innerText = "MODE " + (d.mode || "PAPER");
+      document.getElementById("enginePill").innerHTML = `Engine: <b>${d.running ? "RUNNING" : "STOPPED"}</b>`;
+      document.getElementById("providerPill").innerHTML = `Trading API: <b>READY</b>`;
+
+      document.getElementById("kpiPnl").innerText = fmt(d.pnl, 2);
+      document.getElementById("kpiWin").innerText = (Number(d.winrate || 0) * 100).toFixed(1) + "%";
+      document.getElementById("kpiDd").innerText = fmt(d.drawdown, 4);
+      document.getElementById("kpiPos").innerText = String(d.positions_count || 0);
+      document.getElementById("kpiTrades").innerText = String(d.trades_count || 0);
+
+      showList("positionsList", d.positions || [], p => `
+        <div class="mini-card">
+          <div class="mini-title">${p.asset_id || "unknown"} <span class="badge">${p.strategy_id || "unknown"}</span></div>
+          <div class="mini-meta">
+            size: ${fmt(p.size, 6)}<br>
+            avg: ${fmt(p.avg, 6)}<br>
+            mark: ${fmt(p.mark, 6)}<br>
+            pnl: <span class="${Number(p.pnl) >= 0 ? 'good' : 'bad'}">${fmt(p.pnl, 6)}</span>
+          </div>
+        </div>
+      `);
+
+      const recentTrades = d.recent_trades || [];
+      showList("tradesList", recentTrades.slice().reverse(), t => `
+        <div class="mini-card">
+          <div class="mini-title">${t.asset_id || ""} · ${(t.side || "").toUpperCase()}</div>
+          <div class="mini-meta">
+            size: ${fmt(t.size, 6)} | price: ${fmt(t.price, 6)}<br>
+            pnl: <span class="${Number(t.pnl_delta) >= 0 ? 'good' : 'bad'}">${fmt(t.pnl_delta, 6)}</span><br>
+            strategy: ${t.strategy_id || "unknown"}
+          </div>
+        </div>
+      `);
+    }
+
+    async function refreshRisk() {
+      try {
+        const j = await getJson(API + "/risk");
+        const d = j.data || {};
+        document.getElementById("riskBox").innerHTML = `
+          <div><b>Current Exposure:</b> ${fmt(d.current_exposure, 4)}</div>
+          <div><b>Max Exposure:</b> ${fmt(d.max_total_exposure, 4)}</div>
+          <div><b>Correlation:</b> ${fmt(d.correlation_pressure, 4)}</div>
+          <div><b>Kill Switch:</b> ${d.kill_switch_active ? "ON" : "OFF"}</div>
+          <div style="margin-top:8px"><b>Alerts</b></div>
+          <div class="muted">${(d.alerts || []).map(a => a.message).join("<br>") || "No alerts"}</div>
+        `;
+      } catch {
+        document.getElementById("riskBox").innerText = "Risk unavailable";
+      }
+    }
+
+    async function loadSniperHits() {
+      try {
+        const j = await getJson(API + "/sniper_scan");
+        const data = j.data || [];
+        document.getElementById("sniperPill").innerHTML = `Sniper: <b>${data.length ? "HOT" : "IDLE"}</b>`;
+
+        showList("sniperHits", data.slice(0, 10), x => `
+          <div class="mini-card">
+            <div class="mini-title">${x.asset_id || x.mint || "unknown"}</div>
+            <div class="mini-meta">score: ${fmt(x.score, 4)}</div>
+          </div>
+        `);
+      } catch {
+        document.getElementById("sniperHits").innerHTML = `<div class="empty">Sniper unavailable</div>`;
+      }
+    }
+
+    async function previewQuote() {
+      const symbol = document.getElementById("symbolInput").value.trim();
+      const size = Number(document.getElementById("sizeInput").value || 0);
+
+      try {
+        const priceResp = await getJson(API + "/price?symbol=" + encodeURIComponent(symbol));
+        const riskResp = await getJson(API + "/risk");
+        const p = priceResp.data || {};
+        const r = riskResp.data || {};
+
+        const px = Number(p.price || p.lastPrice || 0);
+        const liq = Number(p.liquidity || 0);
+        const impact = Number(p.price_impact || 0);
+        const slip = 80;
+        const priorityFee = 120000;
+        const jitoTip = 15000;
+
+        document.getElementById("quoteBox").innerHTML = `
+          <div><b>Quote preview</b></div>
+          <div>symbol: <b>${symbol}</b></div>
+          <div>size: <b>${fmt(size, 6)}</b></div>
+          <div>price: <b>${fmt(px, 6)}</b></div>
+          <div>liquidity: <b>${fmt(liq, 2)}</b></div>
+          <div>price impact: <b>${fmt(impact, 4)}</b></div>
+          <div>slippage bps: <b>${slip}</b></div>
+          <div>priority fee: <b>${priorityFee}</b></div>
+          <div>jito tip: <b>${jitoTip}</b></div>
+          <div>current exposure: <b>${fmt(r.current_exposure || 0, 4)}</b></div>
+        `;
+      } catch {
+        document.getElementById("quoteBox").innerHTML = `<div class="warn">Quote preview failed</div>`;
+      }
+    }
+
+    async function submitTrade(side) {
+      const symbol = document.getElementById("symbolInput").value.trim();
+      const size = Number(document.getElementById("sizeInput").value || 0);
+
+      const payload = {
+        symbol,
+        asset_id: symbol,
+        side,
+        size,
+        amount: size
+      };
+
+      try {
+        const resp = await getJson(API + "/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            command: `/${side} ${symbol} ${size}`
+          })
+        });
+
+        alert(resp.output || "Submitted");
+        await refreshAll();
+      } catch {
+        alert("Trade submit failed");
+      }
+    }
+
+    async function runAI() {
+      const symbol = document.getElementById("symbolInput").value.trim() || "BTCUSDT";
+      try {
+        await getJson(API + "/run_fund_cycle", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({symbol})
+        });
+        await refreshAll();
+      } catch {
+        alert("Run AI failed");
+      }
+    }
+
+    async function startSniper() {
+      try {
+        await getJson(API + "/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({command: "/start_sniper"})
+        });
+        document.getElementById("sniperPill").innerHTML = `Sniper: <b>RUNNING</b>`;
+      } catch {
+        alert("Start sniper failed");
+      }
+    }
+
+    async function stopSniper() {
+      try {
+        await getJson(API + "/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({command: "/stop_sniper"})
+        });
+        document.getElementById("sniperPill").innerHTML = `Sniper: <b>STOPPED</b>`;
+      } catch {
+        alert("Stop sniper failed");
+      }
+    }
+
+    async function startMempool() {
+      try {
+        await getJson(API + "/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({command: "/start_mempool"})
+        });
+        document.getElementById("mempoolPill").innerHTML = `Mempool: <b>RUNNING</b>`;
+      } catch {
+        alert("Start mempool failed");
+      }
+    }
+
+    async function stopMempool() {
+      try {
+        await getJson(API + "/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({command: "/stop_mempool"})
+        });
+        document.getElementById("mempoolPill").innerHTML = `Mempool: <b>STOPPED</b>`;
+      } catch {
+        alert("Stop mempool failed");
+      }
+    }
+
+    async function runDevSignal() {
+      const symbol = document.getElementById("symbolInput").value.trim();
+      try {
+        const resp = await getJson(API + "/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            command: `/dev_signal {"asset_id":"${symbol}"}`
+          })
+        });
+        alert(resp.output || "No signal");
+      } catch {
+        alert("Dev signal failed");
+      }
+    }
+
+    async function refreshAll() {
+      await Promise.allSettled([
+        refreshState(),
+        refreshRisk(),
+        loadSniperHits()
+      ]);
+    }
+
+    setInterval(refreshAll, 2500);
+    refreshAll();
+  </script>
+</body>
+</html>
