@@ -2,9 +2,13 @@ from __future__ import annotations
 from typing import Any
 from app.utils.loader import call
 
+from app.alpha.gnn_wallet_graph import get_wallet_score
+from app.alpha.ml_alpha import predict
+
 # ===== config =====
 MIN_SCORE = 0.60
-DEV_OVERRIDE_SCORE = 0.80
+MAX_SIZE = 0.05
+
 
 def _f(x: Any, d: float = 0.0):
     try:
@@ -15,48 +19,73 @@ def _f(x: Any, d: float = 0.0):
 
 async def decide_trade(symbol: str, capital: float = 100):
 
-    # ===== 1. DEV WALLET（最高優先）=====
+    # =========================
+    # 1️⃣ DEV WALLET（最高優先）
+    # =========================
     dev = await call("get_dev_signal", {"asset_id": symbol})
 
     if isinstance(dev, dict):
         dev_score = _f(dev.get("score"))
 
-        if dev_score > DEV_OVERRIDE_SCORE:
+        if dev_score > 0.80:
             return {
                 "action": "buy",
-                "size": min(capital * 0.05, 0.08),
+                "size": min(capital * 0.06, MAX_SIZE),
                 "reason": "dev_wallet",
-                "score": dev_score
+                "score": dev_score,
             }
 
-    # ===== 2. SNIPER SIGNAL =====
-    sniper = await call("sniper_scan", {})
-    tokens = sniper.get("candidates", []) if isinstance(sniper, dict) else []
+    # =========================
+    # 2️⃣ GNN Wallet Graph
+    # =========================
+    wallet = await get_wallet_score(symbol)
+    wallet_score = _f(wallet.get("score"))
 
-    for t in tokens:
-        if t.get("asset_id") == symbol and _f(t.get("score")) > 0.75:
-            return {
-                "action": "buy",
-                "size": 0.02,
-                "reason": "sniper",
-                "score": t.get("score")
-            }
+    # =========================
+    # 3️⃣ Market Features
+    # =========================
+    market = await call("get_market_features", {"symbol": symbol})
 
-    # ===== 3. ALPHA =====
-    alpha = await call("get_alpha_signal", {"symbol": symbol})
+    if not isinstance(market, dict):
+        return {"action": "hold", "reason": "no_market"}
 
-    if not isinstance(alpha, dict):
-        return {"action": "hold"}
+    features = {
+        "momentum": _f(market.get("momentum")),
+        "volume": _f(market.get("volume")),
+        "liquidity": _f(market.get("liquidity")),
+        "wallet_score": wallet_score,
+    }
 
-    score = _f(alpha.get("score"))
-    side = alpha.get("action", "hold")
+    # =========================
+    # 4️⃣ ML Alpha
+    # =========================
+    ml = predict(features)
 
-    if score < MIN_SCORE:
-        return {"action": "hold", "reason": "low_score"}
+    score = _f(ml.get("score"))
+    action = ml.get("action", "hold")
+
+    if action != "buy" or score < MIN_SCORE:
+        return {
+            "action": "hold",
+            "reason": "ml_filter",
+            "score": score,
+        }
+
+    # =========================
+    # 5️⃣ Position Sizing（重要）
+    # =========================
+    size = min(
+        capital * 0.03 * (1 + wallet_score),
+        MAX_SIZE
+    )
 
     return {
-        "action": side,
-        "size": 0.01,
-        "reason": "alpha",
-        "score": score
+        "action": "buy",
+        "size": size,
+        "reason": "ml+gnn",
+        "score": score,
+        "meta": {
+            "wallet_score": wallet_score,
+            "features": features
+        }
     }
