@@ -1,8 +1,8 @@
 {
   "id": "sniper_engine",
-  "name": "sniper_engine",
-  "description": "Pump.fun sniper with wallet alpha + rug guard + Jito execution",
-  "version": "1.0.0",
+  "name": "Sniper Engine PRO+",
+  "description": "Early token sniper using pump scan, wallet alpha, rug guard and real execution with Jito acceleration",
+  "version": "2.0.0",
   "enabled": true,
   "category": "execution",
   "price": 0,
@@ -10,7 +10,7 @@
   "tools": [
     {
       "name": "sniper_scan",
-      "description": "Scan early tokens",
+      "description": "Scan early tokens from pump and filter by wallet alpha and rug guard",
       "input_schema": {
         "type": "object",
         "properties": {}
@@ -23,14 +23,15 @@
         "type": "object",
         "properties": {
           "capital": {
-            "type": "number"
+            "type": "number",
+            "description": "Capital used by sniper"
           }
         }
       }
     },
     {
       "name": "stop_sniper",
-      "description": "Stop sniper",
+      "description": "Stop sniper loop",
       "input_schema": {
         "type": "object",
         "properties": {}
