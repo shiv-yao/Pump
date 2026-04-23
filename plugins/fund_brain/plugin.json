@@ -1,8 +1,8 @@
 {
   "id": "fund_brain",
   "name": "Fund Brain PRO+",
-  "description": "Central fund-level brain that fuses alpha, allocator, strategy manager, and risk engine to control trading decisions and execution",
-  "version": "3.0.0",
+  "description": "Central fund-level brain for engine control, early alpha filtering, sniper override, risk-gated decision making, and real execution orchestration",
+  "version": "4.0.0",
   "enabled": true,
   "category": "brain",
   "price": 0,
@@ -16,17 +16,19 @@
         "properties": {
           "markets": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": { "type": "string" },
+            "description": "Markets to trade, e.g. [\"BTCUSDT\", \"ETHUSDT\"]"
           },
           "capital": {
-            "type": "number"
+            "type": "number",
+            "description": "Capital allocation for engine start"
           }
         }
       }
     },
     {
       "name": "stop_engine",
-      "description": "Stop trading engine",
+      "description": "Stop trading engine through fund brain",
       "input_schema": {
         "type": "object",
         "properties": {}
@@ -34,7 +36,7 @@
     },
     {
       "name": "get_state",
-      "description": "Get engine state",
+      "description": "Get current engine state through fund brain",
       "input_schema": {
         "type": "object",
         "properties": {}
@@ -42,24 +44,36 @@
     },
     {
       "name": "fund_decide_trade",
-      "description": "Generate fund-level decision using alpha fusion, allocator, strategy manager, and risk control",
+      "description": "Produce a fund-level trade decision using alpha, wallet gate, rug gate, market quality gate, sniper override, allocator, regime, and risk checks",
       "input_schema": {
         "type": "object",
         "properties": {
-          "symbol": { "type": "string" },
-          "capital": { "type": "number" }
+          "symbol": {
+            "type": "string",
+            "description": "Target symbol or asset id"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Capital reference for sizing and allocation"
+          }
         },
         "required": ["symbol"]
       }
     },
     {
       "name": "run_fund_cycle",
-      "description": "Run a full fund cycle: decide → execute",
+      "description": "Run one full fund cycle: decision then real execution, with simulation fallback on failure",
       "input_schema": {
         "type": "object",
         "properties": {
-          "symbol": { "type": "string" },
-          "capital": { "type": "number" }
+          "symbol": {
+            "type": "string",
+            "description": "Target symbol or asset id"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Capital reference for the cycle"
+          }
         },
         "required": ["symbol"]
       }
