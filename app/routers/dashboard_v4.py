@@ -546,3 +546,11 @@ async def api_logs(type: str = "system", limit: int = 100):
         sample = [x for x in sample if x["type"] == type]
 
     return _ok(sample[:limit])
+
+
+@router.get("/dashboard/pro")
+async def dashboard_pro_page():
+    html_path = Path(__file__).resolve().parent.parent / "templates" / "dashboard_v7_mobile_trade.html"
+    if not html_path.exists():
+        _err("dashboard_v7_mobile_trade.html not found", 404)
+    return FileResponse(str(html_path), media_type="text/html")
