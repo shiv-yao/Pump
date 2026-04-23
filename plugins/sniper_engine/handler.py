@@ -26,10 +26,13 @@ USE_JITO = os.getenv("USE_JITO", "true").lower() == "true"
 async def sniper_scan():
     tokens = await call("pump_candidates", {})
 
+    if isinstance(tokens, dict):
+        tokens = tokens.get("tokens") or tokens.get("results") or []
+
     results = []
 
     for t in tokens:
-        mint = t.get("mint")
+        mint = t.get("mint") or t.get("asset_id")
         if not mint:
             continue
 
@@ -47,17 +50,22 @@ async def sniper_scan():
         if score < MIN_SCORE:
             continue
 
+        # ===== rug check =====
+        rug = await call("rug_check", {"asset_id": mint})
+
+        if isinstance(rug, dict):
+            if rug.get("allowed") is False or rug.get("score", 1) > 0.7:
+                continue
+
         # ===== liquidity =====
-        liq = await call("check_liquidity", {"asset_id": mint})
+        price_data = await call("price", {"symbol": mint})
 
-        if isinstance(liq, dict) and liq.get("ok") is False:
-            continue
+        if isinstance(price_data, dict):
+            liq = float(price_data.get("liquidity", 0))
+            impact = float(price_data.get("price_impact", 0))
 
-        # ===== rug =====
-        rug = await call("rug_guard_check", {"asset_id": mint})
-
-        if isinstance(rug, dict) and rug.get("rug", False):
-            continue
+            if liq < 300 or impact > 0.15:
+                continue
 
         results.append({
             "asset_id": mint,
@@ -71,7 +79,6 @@ async def sniper_scan():
 # EXECUTION
 # =========================
 async def sniper_execute(asset_id, score, capital=100):
-    # ===== size =====
     size = BASE_SIZE
 
     if score > STRONG_SCORE:
@@ -86,13 +93,13 @@ async def sniper_execute(asset_id, score, capital=100):
     if isinstance(risk, dict) and not risk.get("allowed", True):
         return {"skip": True, "reason": "risk"}
 
-    # ===== JITO boost =====
     payload = {
         "asset_id": asset_id,
         "side": "buy",
         "size": size
     }
 
+    # ===== JITO boost =====
     if USE_JITO and score > STRONG_SCORE:
         payload.update({
             "priority_fee": 120000,
