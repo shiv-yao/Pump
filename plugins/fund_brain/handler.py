@@ -370,8 +370,10 @@ async def run_fund_cycle(symbol="BTCUSDT", capital=DEFAULT_CAPITAL, **kwargs):
         "strategy_id": decision.get("strategy_id", "fund_brain"),
     }
 
+    # ===== real execution first =====
     trade_result = await _call_first(["trade_order"], trade_payload)
 
+    # ===== fallback to simulation =====
     if isinstance(trade_result, dict) and "error" in trade_result:
         price_data = await _call_first(
             ["price", "get_spot_price", "get_ticker_24h"],
