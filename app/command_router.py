@@ -113,6 +113,9 @@ async def execute_platform_command(command: str):
                 "/sniper_scan\n"
                 "/start_sniper\n"
                 "/stop_sniper\n"
+                "/start_mempool\n"
+                "/stop_mempool\n"
+                "/dev_signal {\"asset_id\":\"<mint>\"}\n"
                 "/price BTCUSDT\n"
                 "/balance\n"
                 "/positions\n"
@@ -231,6 +234,23 @@ async def execute_platform_command(command: str):
 
     if head == "stop_sniper":
         result = await _call_first(["stop_sniper"], {})
+        return {"success": True, "output": _format(result)}
+
+    # ========= MEMPOOL SNIPER =========
+    if head == "start_mempool":
+        result = await _call_first(["start_mempool_sniper"], {})
+        return {"success": True, "output": _format(result)}
+
+    if head == "stop_mempool":
+        result = await _call_first(["stop_mempool_sniper"], {})
+        return {"success": True, "output": _format(result)}
+
+    # ========= DEV WALLET =========
+    if head == "dev_signal":
+        payload = _parse_payload(tail)
+        if "_raw" in payload:
+            payload = {}
+        result = await _call_first(["get_dev_signal"], payload)
         return {"success": True, "output": _format(result)}
 
     # ========= PRICE =========
