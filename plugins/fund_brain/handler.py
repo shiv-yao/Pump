@@ -7,6 +7,7 @@ from app.utils.loader import call
 DEFAULT_MARKETS = ["BTCUSDT"]
 DEFAULT_CAPITAL = 100.0
 
+# ===== early alpha params =====
 EARLY_WALLET_MIN = 0.60
 EARLY_RUG_MAX = 0.70
 EARLY_ENTRY_FRAC = 0.005
@@ -35,6 +36,9 @@ async def _call_first(tool_names: list[str], payload: dict | None = None):
     return last_error or {"error": f"tool chain failed: {tool_names}"}
 
 
+# =========================
+# ENGINE WRAPPER
+# =========================
 async def start_engine(markets=None, capital=DEFAULT_CAPITAL, **kwargs):
     return await _call_first(
         ["start_v7_engine", "start_v6_engine"],
@@ -59,6 +63,9 @@ async def get_state(**kwargs):
     )
 
 
+# =========================
+# EARLY FILTERS
+# =========================
 async def _wallet_gate(symbol: str):
     wallet = await _call_first(
         ["get_wallet_alpha_v3", "get_wallet_alpha_v2", "get_wallet_alpha"],
@@ -139,9 +146,39 @@ async def _market_quality_gate(symbol: str):
     return {"ok": True, "reason": "ok", "liquidity": liquidity, "impact": impact}
 
 
+def _extract_sniper_hits(sniper_result):
+    if isinstance(sniper_result, list):
+        return sniper_result
+    if isinstance(sniper_result, dict):
+        for key in ("candidates", "results", "tokens"):
+            val = sniper_result.get(key)
+            if isinstance(val, list):
+                return val
+    return []
+
+
+# =========================
+# FUND DECISION
+# =========================
 async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
     symbol = symbol or "BTCUSDT"
     capital = _f(capital, DEFAULT_CAPITAL)
+
+    # ===== SNIPER OVERRIDE =====
+    sniper_result = await call("sniper_scan", {})
+    sniper_hits = _extract_sniper_hits(sniper_result)
+
+    for row in sniper_hits:
+        asset_id = row.get("asset_id") or row.get("mint")
+        if asset_id == symbol:
+            return {
+                "action": "buy",
+                "size": max(0.001, min(capital * 0.03, capital * 0.05)),
+                "strategy_id": "sniper_early",
+                "score": 0.99,
+                "regime": "sniper",
+                "meta": {"source": "sniper_override"}
+            }
 
     alpha = await _call_first(
         ["get_alpha_v2", "get_alpha_signal"],
@@ -241,6 +278,7 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
     if budget <= 0:
         return {"action": "hold", "reason": "zero_budget"}
 
+    # ===== early entry sizing =====
     trial_size = max(0.001, min(capital * EARLY_ENTRY_FRAC, capital * 0.01))
     full_size = max(0.001, min(budget * EARLY_ADDON_FRAC / max(EARLY_ENTRY_FRAC, 1e-9), capital * 0.05))
     size = min(trial_size, full_size)
@@ -286,6 +324,9 @@ async def fund_decide_trade(symbol, capital=DEFAULT_CAPITAL, **kwargs):
     }
 
 
+# =========================
+# SINGLE FUND CYCLE
+# =========================
 async def run_fund_cycle(symbol="BTCUSDT", capital=DEFAULT_CAPITAL, **kwargs):
     symbol = symbol or "BTCUSDT"
     capital = _f(capital, DEFAULT_CAPITAL)
@@ -314,8 +355,10 @@ async def run_fund_cycle(symbol="BTCUSDT", capital=DEFAULT_CAPITAL, **kwargs):
         "strategy_id": decision.get("strategy_id", "fund_brain"),
     }
 
+    # ===== real execution first =====
     trade_result = await _call_first(["trade_order"], trade_payload)
 
+    # ===== fallback to simulation =====
     if isinstance(trade_result, dict) and "error" in trade_result:
         price_data = await _call_first(
             ["price", "get_spot_price", "get_ticker_24h"],
