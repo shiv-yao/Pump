@@ -5,7 +5,6 @@ from app.utils.loader import call
 from app.alpha.gnn_wallet_graph import get_wallet_score
 from app.alpha.ml_alpha import predict
 
-# ===== config =====
 MIN_SCORE = 0.60
 MAX_SIZE = 0.05
 
@@ -26,17 +25,17 @@ async def decide_trade(symbol: str, capital: float = 100):
 
     if isinstance(dev, dict):
         dev_score = _f(dev.get("score"))
-
         if dev_score > 0.80:
             return {
                 "action": "buy",
                 "size": min(capital * 0.06, MAX_SIZE),
                 "reason": "dev_wallet",
                 "score": dev_score,
+                "priority": "jito"
             }
 
     # =========================
-    # 2️⃣ GNN Wallet Graph
+    # 2️⃣ GNN Wallet
     # =========================
     wallet = await get_wallet_score(symbol)
     wallet_score = _f(wallet.get("score"))
@@ -49,10 +48,20 @@ async def decide_trade(symbol: str, capital: float = 100):
     if not isinstance(market, dict):
         return {"action": "hold", "reason": "no_market"}
 
+    liquidity = _f(market.get("liquidity"))
+    impact = _f(market.get("price_impact"))
+
+    # 🚨 關鍵風控（你之前缺這個 → 很致命）
+    if liquidity < 300:
+        return {"action": "hold", "reason": "low_liquidity"}
+
+    if impact > 0.15:
+        return {"action": "hold", "reason": "high_impact"}
+
     features = {
         "momentum": _f(market.get("momentum")),
         "volume": _f(market.get("volume")),
-        "liquidity": _f(market.get("liquidity")),
+        "liquidity": liquidity,
         "wallet_score": wallet_score,
     }
 
@@ -72,10 +81,10 @@ async def decide_trade(symbol: str, capital: float = 100):
         }
 
     # =========================
-    # 5️⃣ Position Sizing（重要）
+    # 5️⃣ 動態倉位（融合 GNN）
     # =========================
     size = min(
-        capital * 0.03 * (1 + wallet_score),
+        capital * 0.02 * (1 + wallet_score * 1.5),
         MAX_SIZE
     )
 
@@ -84,6 +93,7 @@ async def decide_trade(symbol: str, capital: float = 100):
         "size": size,
         "reason": "ml+gnn",
         "score": score,
+        "priority": "jito" if score > 0.75 else "normal",
         "meta": {
             "wallet_score": wallet_score,
             "features": features
