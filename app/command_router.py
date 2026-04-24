@@ -40,8 +40,10 @@ async def _call_first(tool_names, payload=None):
 
     for name in tool_names:
         result = await _call_tool(name, payload)
+
         if not (isinstance(result, dict) and "error" in result):
             return result
+
         last_error = result
 
     return last_error or {"error": f"tool chain failed: {tool_names}"}
@@ -114,6 +116,8 @@ async def execute_platform_command(command: str):
                 "/start_mempool\n"
                 "/stop_mempool\n"
                 "/dev_signal {\"asset_id\":\"<mint>\"}\n"
+                "/decide BTCUSDT\n"
+                "/decide {\"symbol\":\"BTCUSDT\",\"capital\":100}\n"
                 "/price BTCUSDT\n"
                 "/balance\n"
                 "/positions\n"
@@ -253,6 +257,23 @@ async def execute_platform_command(command: str):
         if "_raw" in payload:
             payload = {}
         result = await _call_first(["get_dev_signal"], payload)
+        return {"success": True, "output": _format(result)}
+
+    # ========= FUND DECISION =========
+    if head in {"decide", "fund_decide", "decide_trade"}:
+        payload = _parse_payload(tail)
+
+        if "_raw" in payload:
+            symbol = tail.strip() or "BTCUSDT"
+            payload = {"symbol": symbol}
+
+        if not payload.get("symbol"):
+            payload["symbol"] = payload.get("asset_id", "BTCUSDT")
+
+        result = await _call_first(
+            ["fund_decide_trade", "decide_trade"],
+            payload
+        )
         return {"success": True, "output": _format(result)}
 
     # ========= PRICE =========
