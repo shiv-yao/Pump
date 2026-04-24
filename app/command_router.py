@@ -40,10 +40,8 @@ async def _call_first(tool_names, payload=None):
 
     for name in tool_names:
         result = await _call_tool(name, payload)
-
         if not (isinstance(result, dict) and "error" in result):
             return result
-
         last_error = result
 
     return last_error or {"error": f"tool chain failed: {tool_names}"}
@@ -59,7 +57,7 @@ def _parse_payload(text: str):
     if not text:
         return {}
 
-    if text.startswith("{") and text.endswith("}"):
+    if text.startswith("{") or text.startswith("["):
         try:
             return json.loads(text)
         except Exception:
@@ -92,7 +90,7 @@ async def execute_platform_command(command: str):
     cmdline = raw[1:] if raw.startswith("/") else raw
     parts = cmdline.split(maxsplit=1)
 
-    head = parts[0].strip()
+    head = parts[0].strip().lower()
     tail = parts[1].strip() if len(parts) > 1 else ""
 
     # ========= HELP =========
@@ -133,6 +131,10 @@ async def execute_platform_command(command: str):
                 "/apply_env\n"
                 "/replay\n"
                 "/auto_evolution\n"
+                "/automl\n"
+                "/automl_status\n"
+                "/start_automl\n"
+                "/stop_automl\n"
                 "/clear\n"
             )
         }
@@ -236,7 +238,7 @@ async def execute_platform_command(command: str):
         result = await _call_first(["stop_sniper"], {})
         return {"success": True, "output": _format(result)}
 
-    # ========= MEMPOOL SNIPER =========
+    # ========= MEMPOOL =========
     if head == "start_mempool":
         result = await _call_first(["start_mempool_sniper"], {})
         return {"success": True, "output": _format(result)}
@@ -316,7 +318,6 @@ async def execute_platform_command(command: str):
                 "side": head,
             }
         )
-
         return {"success": True, "output": _format(result)}
 
     # ========= SCAN =========
@@ -394,6 +395,32 @@ async def execute_platform_command(command: str):
     if head == "auto_evolution":
         result = await _call_first(
             ["run_evolution_cycle", "auto_evolution"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
+
+    # ========= AUTOML =========
+    if head == "automl":
+        result = await _call_first(["run_automl"], {})
+        return {"success": True, "output": _format(result)}
+
+    if head == "automl_status":
+        result = await _call_first(
+            ["get_automl_status", "automl_status"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
+
+    if head == "start_automl":
+        result = await _call_first(
+            ["start_automl_scheduler", "automl_start"],
+            {}
+        )
+        return {"success": True, "output": _format(result)}
+
+    if head == "stop_automl":
+        result = await _call_first(
+            ["stop_automl_scheduler", "automl_stop"],
             {}
         )
         return {"success": True, "output": _format(result)}
