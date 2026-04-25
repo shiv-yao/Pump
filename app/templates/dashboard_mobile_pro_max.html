@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<style>
+body { background:#0b0f1a; color:#fff; font-family:sans-serif }
+.btn { padding:14px; margin:5px; width:100%; border-radius:10px }
+.buy { background:#00c853 }
+.sell { background:#ff1744 }
+.modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#000a }
+.box { background:#111; margin:30% auto; padding:20px; width:90%; border-radius:12px }
+</style>
+</head>
+
+<body>
+
+<h2>🚀 Fund Trading</h2>
+
+<input id="symbol" value="SOLUSDT"/>
+<input id="size" value="0.01"/>
+
+<button class="btn buy" onclick="openQuote()">BUY</button>
+<button class="btn sell" onclick="sell()">SELL</button>
+
+<button class="btn" onclick="startSniper()">Start Sniper</button>
+<button class="btn" onclick="stopSniper()">Stop Sniper</button>
+
+<div id="modal" class="modal">
+ <div class="box">
+   <h3>Quote</h3>
+   <div id="quote"></div>
+
+   <button class="btn buy" onclick="confirm()">CONFIRM</button>
+   <button class="btn" onclick="closeModal()">Cancel</button>
+ </div>
+</div>
+
+<script>
+let quoteData=null
+
+async function openQuote(){
+ const symbol=document.getElementById("symbol").value
+ const size=parseFloat(document.getElementById("size").value)
+
+ const r=await fetch("/api/quote",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol,size})})
+ const d=await r.json()
+
+ quoteData=d.data
+
+ document.getElementById("quote").innerHTML=
+ `Price:${d.data.price}<br>Out:${d.data.out_amount}`
+
+ document.getElementById("modal").style.display="block"
+}
+
+function closeModal(){
+ document.getElementById("modal").style.display="none"
+}
+
+async function confirm(){
+ const symbol=document.getElementById("symbol").value
+ const size=parseFloat(document.getElementById("size").value)
+
+ const r=await fetch("/api/trade",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol,size,quote:quoteData})})
+ alert(JSON.stringify(await r.json()))
+
+ closeModal()
+}
+
+async function sell(){
+ const symbol=document.getElementById("symbol").value
+ const size=parseFloat(document.getElementById("size").value)
+
+ await fetch("/api/sell",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol,size})})
+}
+
+async function startSniper(){ await fetch("/api/sniper/start",{method:"POST"}) }
+async function stopSniper(){ await fetch("/api/sniper/stop",{method:"POST"}) }
+</script>
+
+</body>
+</html>
