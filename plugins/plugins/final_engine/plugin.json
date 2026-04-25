@@ -1,0 +1,32 @@
+{
+  "id": "final_engine",
+  "name": "final_engine",
+  "description": "Final real trading engine (safe mode)",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "execution",
+  "tools": [
+    {
+      "name": "start_final",
+      "description": "Start trading",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "markets": { "type": "array", "items": { "type": "string" } },
+          "capital": { "type": "number" }
+        },
+        "required": ["markets"]
+      }
+    },
+    {
+      "name": "stop_final",
+      "description": "Stop trading",
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "get_state",
+      "description": "Get positions + pnl",
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  ]
+}

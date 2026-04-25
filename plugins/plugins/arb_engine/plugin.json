@@ -1,0 +1,32 @@
+{
+  "id": "arb_engine",
+  "name": "arb_engine",
+  "description": "Cross-market arbitrage engine (Polymarket vs external)",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "alpha",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "run_arb",
+      "description": "Run cross-market arbitrage loop",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": { "type": "string" },
+          "symbol": { "type": "string" },
+          "capital": { "type": "number" },
+          "loops": { "type": "integer" },
+          "edge_threshold": { "type": "number" }
+        },
+        "required": ["asset_id", "symbol"]
+      }
+    },
+    {
+      "name": "stop_arb",
+      "description": "Stop arbitrage",
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  ]
+}
