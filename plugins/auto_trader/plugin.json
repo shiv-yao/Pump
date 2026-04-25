@@ -1,8 +1,0 @@
-{
-  "id": "auto_trader",
-  "name": "auto_trader",
-  "enabled": true,
-  "tools": [
-    {"name": "run_auto_trading"}
-  ]
-}
