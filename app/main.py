@@ -328,3 +328,18 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     host = os.getenv("HOST", "0.0.0.0")
     uvicorn.run(app, host=host, port=port)
+
+@app.get("/api/debug/flow")
+async def debug_flow():
+    try:
+        from app.state import engine
+
+        return {
+            "running": engine.running,
+            "mode": engine.mode,
+            "last_logs": engine.logs[-20:],
+            "positions": engine.positions,
+            "trades": engine.trade_history[-10:],
+        }
+    except Exception as e:
+        return {"error": str(e)}
