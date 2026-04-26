@@ -1,5 +1,7 @@
 import logging
 import os
+import asyncio
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -35,14 +37,89 @@ from app.provider_status import (
 )
 from app.settings import ENABLE_CLAUDE, ENABLE_OPENAI, INDEX_HTML
 from app.routers.dashboard_v4 import router as dashboard_v4_router
-from app.api.trade import router as trade_router
+
+try:
+    from app.api.trade import router as trade_router
+except Exception as e:
+    trade_router = None
+    trade_import_error = e
+else:
+    trade_import_error = None
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
 
+AUTO_TRADING = os.getenv("AUTO_TRADING", "false").lower() == "true"
+REAL_TRADING = os.getenv("REAL_TRADING", "false").lower() == "true"
+TRADING_INTERVAL_SEC = int(os.getenv("TRADING_INTERVAL_SEC", "10"))
+BOT_TASK = None
+
+
+async def auto_trading_loop():
+    try:
+        from app.state import engine
+    except Exception as e:
+        engine = None
+        log.warning(f"[AUTO] engine unavailable: {e}")
+
+    if engine:
+        try:
+            engine.running = True
+            engine.mode = "REAL" if REAL_TRADING else "PAPER"
+            if hasattr(engine, "logs"):
+                engine.logs.append(f"[AUTO] started mode={engine.mode}")
+        except Exception as e:
+            log.warning(f"[AUTO] engine init failed: {e}")
+
+    while True:
+        try:
+            msg = f"[AUTO] bot tick {int(time.time())}"
+            log.info(msg)
+
+            if engine and hasattr(engine, "logs"):
+                engine.logs.append(msg)
+
+            result = None
+
+            # 優先跑你原本的 auto_trader_v2 plugin
+            try:
+                from plugins.auto_trader_v2.handler import run
+
+                maybe = run({"action": "tick"})
+                if asyncio.iscoroutine(maybe):
+                    result = await maybe
+                else:
+                    result = maybe
+
+                log.info(f"[AUTO] auto_trader_v2 result: {result}")
+
+                if engine and hasattr(engine, "logs"):
+                    engine.logs.append(f"[AUTO] auto_trader_v2 result: {result}")
+
+            except Exception as e:
+                log.warning(f"[AUTO] auto_trader_v2 skipped: {e}")
+                if engine and hasattr(engine, "logs"):
+                    engine.logs.append(f"[AUTO] auto_trader_v2 skipped: {e}")
+
+            await asyncio.sleep(TRADING_INTERVAL_SEC)
+
+        except asyncio.CancelledError:
+            log.info("[AUTO] bot loop cancelled")
+            break
+
+        except Exception as e:
+            log.error(f"[AUTO ERROR] {e}")
+            if engine and hasattr(engine, "logs"):
+                engine.logs.append(f"[AUTO ERROR] {e}")
+            await asyncio.sleep(5)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global BOT_TASK
+
     db_ok = True
 
     try:
@@ -74,9 +151,20 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("DB unavailable, skipping installed plugin restore")
 
+    if AUTO_TRADING and BOT_TASK is None:
+        BOT_TASK = asyncio.create_task(auto_trading_loop())
+        log.info("AUTO_TRADING enabled: bot loop started")
+    else:
+        log.info("AUTO_TRADING disabled")
+
     log.info("AI Plugin Terminal started")
-    yield
-    log.info("AI Plugin Terminal stopped")
+
+    try:
+        yield
+    finally:
+        if BOT_TASK:
+            BOT_TASK.cancel()
+        log.info("AI Plugin Terminal stopped")
 
 
 app = FastAPI(title="AI Plugin Terminal", version="3.2.0", lifespan=lifespan)
@@ -89,7 +177,12 @@ app.add_middleware(
 )
 
 app.include_router(dashboard_v4_router)
-app.include_router(trade_router)
+
+if trade_router:
+    app.include_router(trade_router)
+    log.info("Trade router loaded")
+else:
+    log.warning(f"Trade router unavailable: {trade_import_error}")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -107,7 +200,101 @@ async def health():
         "plugins": len(plugin_registry),
         "claude_enabled": ENABLE_CLAUDE,
         "openai_enabled": ENABLE_OPENAI,
+        "auto_trading": AUTO_TRADING,
+        "real_trading": REAL_TRADING,
+        "trade_router": trade_router is not None,
+        "trade_import_error": str(trade_import_error) if trade_import_error else None,
     }
+
+
+@app.get("/api/state")
+async def api_state():
+    try:
+        from app.state import engine
+
+        return {
+            "success": True,
+            "data": {
+                "running": bool(getattr(engine, "running", False)),
+                "mode": getattr(engine, "mode", "PAPER"),
+                "pnl": float(getattr(engine, "pnl", 0.0)),
+                "unrealized_pnl": float(getattr(engine, "unrealized_pnl", 0.0)),
+                "positions_count": len(getattr(engine, "positions", []) or []),
+                "trades_count": len(getattr(engine, "trade_history", []) or []),
+                "winrate": float(getattr(engine, "winrate", 0.0)),
+                "drawdown": float(getattr(engine, "drawdown", 0.0)),
+                "total_exposure": float(getattr(engine, "total_exposure", 0.0)),
+                "positions": getattr(engine, "positions", []) or [],
+                "recent_trades": (getattr(engine, "trade_history", []) or [])[-20:],
+                "logs": (getattr(engine, "logs", []) or [])[-80:],
+            },
+            "meta": {},
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/trading/start")
+async def trading_start():
+    global BOT_TASK
+
+    try:
+        from app.state import engine
+
+        engine.running = True
+        engine.mode = "REAL" if REAL_TRADING else "PAPER"
+    except Exception:
+        pass
+
+    if BOT_TASK is None or BOT_TASK.done():
+        BOT_TASK = asyncio.create_task(auto_trading_loop())
+
+    return {
+        "success": True,
+        "running": True,
+        "mode": "REAL" if REAL_TRADING else "PAPER",
+    }
+
+
+@app.post("/api/trading/stop")
+async def trading_stop():
+    global BOT_TASK
+
+    try:
+        from app.state import engine
+
+        engine.running = False
+        if hasattr(engine, "logs"):
+            engine.logs.append("[AUTO] stopped by API")
+    except Exception:
+        pass
+
+    if BOT_TASK:
+        BOT_TASK.cancel()
+        BOT_TASK = None
+
+    return {"success": True, "running": False}
+
+
+@app.post("/api/killswitch")
+async def killswitch():
+    global BOT_TASK
+
+    try:
+        from app.state import engine
+
+        engine.running = False
+        engine.killswitch = True
+        if hasattr(engine, "logs"):
+            engine.logs.append("[KILLSWITCH] activated")
+    except Exception:
+        pass
+
+    if BOT_TASK:
+        BOT_TASK.cancel()
+        BOT_TASK = None
+
+    return {"success": True, "killswitch": True}
 
 
 @app.get("/api/plugins")
@@ -201,7 +388,7 @@ async def provider_status():
             "claude": await check_claude_status(),
             "openai": await check_openai_status(),
             "trading_api": check_trading_status(),
-        }
+        },
     }
 
 
@@ -209,13 +396,15 @@ async def provider_status():
 async def chat(req: ChatRequest):
     session = get_session(req.session_id)
     result = await session.run(req.message, req.history.copy() if req.history else [])
-    return JSONResponse({
-        "response": result.get("response", ""),
-        "steps": result.get("steps", []),
-        "provider": result.get("provider"),
-        "error": result.get("error"),
-        "session_id": req.session_id,
-    })
+    return JSONResponse(
+        {
+            "response": result.get("response", ""),
+            "steps": result.get("steps", []),
+            "provider": result.get("provider"),
+            "error": result.get("error"),
+            "session_id": req.session_id,
+        }
+    )
 
 
 @app.post("/api/command")
@@ -256,5 +445,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.getenv("PORT", "8080"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port)
