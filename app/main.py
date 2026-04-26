@@ -334,12 +334,21 @@ async def debug_flow():
     try:
         from app.state import engine
 
+        logs = list(getattr(engine, "logs", []))
+        trades = list(getattr(engine, "trade_history", []))
+        positions = list(getattr(engine, "positions", []))
+
         return {
-            "running": engine.running,
-            "mode": engine.mode,
-            "last_logs": engine.logs[-20:],
-            "positions": engine.positions,
-            "trades": engine.trade_history[-10:],
+            "running": bool(getattr(engine, "running", False)),
+            "mode": getattr(engine, "mode", "PAPER"),
+            "last_logs": logs[-20:],
+            "positions": positions,
+            "recent_trades": trades[-10:],
+            "summary": {
+                "logs_count": len(logs),
+                "positions_count": len(positions),
+                "trades_count": len(trades),
+            },
         }
     except Exception as e:
         return {"error": str(e)}
