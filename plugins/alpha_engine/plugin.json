@@ -1,0 +1,9 @@
+{
+  "id": "alpha_engine",
+  "name": "alpha_engine",
+  "enabled": true,
+  "category": "alpha",
+  "tools": [
+    {"name": "get_alpha_signal"}
+  ]
+}

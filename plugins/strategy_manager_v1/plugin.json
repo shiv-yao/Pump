@@ -1,0 +1,51 @@
+{
+  "id": "strategy_manager_v1",
+  "name": "strategy_manager_v1",
+  "description": "Track strategy pnl, winrate, drawdown and auto-disable bad strategies",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "portfolio",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "strategy_record_trade",
+      "description": "Record strategy trade pnl",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "strategy_id": { "type": "string" },
+          "pnl": { "type": "number" }
+        },
+        "required": ["strategy_id", "pnl"]
+      }
+    },
+    {
+      "name": "strategy_get_stats",
+      "description": "Get strategy stats",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "strategy_get_rankings",
+      "description": "Get ranked strategies",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "strategy_should_trade",
+      "description": "Check whether a strategy is allowed to trade",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "strategy_id": { "type": "string" }
+        },
+        "required": ["strategy_id"]
+      }
+    }
+  ]
+}

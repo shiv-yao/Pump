@@ -1,0 +1,41 @@
+{
+  "id": "polymarket_exec",
+  "name": "polymarket_exec",
+  "description": "Polymarket CLOB real trading executor",
+  "version": "2.0.0",
+  "enabled": true,
+  "category": "execution",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "pm_buy",
+      "description": "Buy YES token",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "market": { "type": "string" },
+          "amount": { "type": "number" }
+        },
+        "required": ["market", "amount"]
+      }
+    },
+    {
+      "name": "pm_sell",
+      "description": "Sell YES / buy NO",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "market": { "type": "string" },
+          "amount": { "type": "number" }
+        },
+        "required": ["market", "amount"]
+      }
+    },
+    {
+      "name": "pm_balance",
+      "description": "Get balance",
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  ]
+}

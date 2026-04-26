@@ -1,0 +1,11 @@
+{
+  "id": "fund_brain_v8",
+  "name": "fund_brain_v8",
+  "version": "1.0.0",
+  "enabled": true,
+  "tools": [
+    {"name": "fb_get_regime"},
+    {"name": "fb_adjust_params"},
+    {"name": "fb_position_size"}
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "id": "regime_engine",
+  "name": "regime_engine",
+  "description": "Market regime detection engine",
+  "version": "2.0.0",
+  "enabled": true,
+  "category": "brain",
+  "tools": [
+    {
+      "name": "get_market_regime",
+      "description": "Detect market regime (trend / range / risk_off)",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

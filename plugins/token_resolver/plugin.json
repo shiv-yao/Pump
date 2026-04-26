@@ -1,0 +1,20 @@
+{
+  "id": "token_resolver",
+  "name": "token_resolver",
+  "description": "Resolve token symbol to mint using Jupiter, Dexscreener, Pump.fun",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "data",
+  "tools": [
+    {
+      "name": "resolve_token",
+      "description": "Resolve symbol or mint",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

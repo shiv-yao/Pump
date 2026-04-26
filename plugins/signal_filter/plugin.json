@@ -1,0 +1,24 @@
+{
+  "id": "signal_filter",
+  "name": "signal_filter",
+  "description": "Filter noisy alpha signals",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "alpha",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "filter_signal",
+      "description": "Filter signal",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "score": { "type": "number" },
+          "action": { "type": "string" }
+        },
+        "required": ["score", "action"]
+      }
+    }
+  ]
+}

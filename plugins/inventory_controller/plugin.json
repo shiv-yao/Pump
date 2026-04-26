@@ -1,0 +1,52 @@
+{
+  "id": "inventory_controller",
+  "name": "inventory_controller",
+  "description": "Inventory and exposure control for trading engine",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "risk",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "adjust_position",
+      "description": "Update inventory after a fill",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": { "type": "string" },
+          "size": { "type": "number" },
+          "side": { "type": "string" }
+        },
+        "required": ["asset_id", "size", "side"]
+      }
+    },
+    {
+      "name": "should_reduce",
+      "description": "Return whether inventory is too large and should be reduced",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": { "type": "string" }
+        },
+        "required": ["asset_id"]
+      }
+    },
+    {
+      "name": "get_inventory_state",
+      "description": "Return full inventory state",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "reset_inventory_state",
+      "description": "Reset inventory state",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}

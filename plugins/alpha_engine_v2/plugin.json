@@ -1,0 +1,21 @@
+{
+  "id": "alpha_engine_v2",
+  "name": "alpha_engine_v2",
+  "description": "Advanced alpha engine (orderbook + flow + event)",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "alpha",
+  "tools": [
+    {
+      "name": "get_alpha_v2",
+      "description": "Compute advanced alpha score",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": { "type": "string" }
+        },
+        "required": ["asset_id"]
+      }
+    }
+  ]
+}

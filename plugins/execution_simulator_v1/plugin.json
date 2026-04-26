@@ -1,0 +1,12 @@
+{
+  "id": "execution_simulator_v1",
+  "name": "execution_simulator_v1",
+  "description": "Realistic execution simulator with orderbook fill, slippage, latency",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "execution",
+  "tools": [
+    { "name": "simulate_order" },
+    { "name": "simulate_fill" }
+  ]
+}

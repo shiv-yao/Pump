@@ -1,0 +1,35 @@
+{
+  "id": "allocator_v2",
+  "name": "allocator_v2",
+  "description": "Allocate capital by strategy performance and risk",
+  "version": "1.0.0",
+  "enabled": true,
+  "category": "portfolio",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "allocator_get_budget",
+      "description": "Return budget for one strategy",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "strategy_id": { "type": "string" },
+          "capital": { "type": "number" }
+        },
+        "required": ["strategy_id", "capital"]
+      }
+    },
+    {
+      "name": "allocator_get_allocation_map",
+      "description": "Return allocation map for all strategies",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "capital": { "type": "number" }
+        },
+        "required": ["capital"]
+      }
+    }
+  ]
+}

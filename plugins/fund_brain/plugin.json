@@ -1,0 +1,82 @@
+{
+  "id": "fund_brain",
+  "name": "Fund Brain PRO+",
+  "description": "Central fund-level brain for engine control, early alpha filtering, sniper override, risk-gated decision making, and real execution orchestration",
+  "version": "4.0.0",
+  "enabled": true,
+  "category": "brain",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "start_engine",
+      "description": "Start trading engine through fund brain",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "markets": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Markets to trade, e.g. [\"BTCUSDT\", \"ETHUSDT\"]"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Capital allocation for engine start"
+          }
+        }
+      }
+    },
+    {
+      "name": "stop_engine",
+      "description": "Stop trading engine through fund brain",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_state",
+      "description": "Get current engine state through fund brain",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "fund_decide_trade",
+      "description": "Produce a fund-level trade decision using alpha, wallet gate, rug gate, market quality gate, sniper override, allocator, regime, and risk checks",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "Target symbol or asset id"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Capital reference for sizing and allocation"
+          }
+        },
+        "required": ["symbol"]
+      }
+    },
+    {
+      "name": "run_fund_cycle",
+      "description": "Run one full fund cycle: decision then real execution, with simulation fallback on failure",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "Target symbol or asset id"
+          },
+          "capital": {
+            "type": "number",
+            "description": "Capital reference for the cycle"
+          }
+        },
+        "required": ["symbol"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "id": "strategy_manager_v2",
+  "name": "strategy_manager_v2",
+  "description": "Strategy performance tracking + auto disable + recovery",
+  "version": "2.1.0",
+  "enabled": true,
+  "category": "risk",
+  "price": 0,
+  "tools": [
+    {"name": "strategy_record_trade"},
+    {"name": "strategy_should_trade"},
+    {"name": "strategy_get_stats"},
+    {"name": "strategy_get_rankings"},
+    {"name": "strategy_disable"},
+    {"name": "strategy_enable"}
+  ]
+}

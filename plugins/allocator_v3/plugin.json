@@ -1,0 +1,46 @@
+{
+  "id": "allocator_v3",
+  "name": "allocator_v3",
+  "description": "PRO+ allocator with strategy weights, regime multipliers, and capital budgeting",
+  "version": "2.0.0",
+  "enabled": true,
+  "category": "portfolio",
+  "price": 0,
+  "author": "system",
+  "tools": [
+    {
+      "name": "allocator_get_budget",
+      "description": "Get capital budget for one strategy",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "strategy_id": { "type": "string" },
+          "capital": { "type": "number" },
+          "symbol": { "type": "string" },
+          "asset_id": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "allocator_get_allocation_map",
+      "description": "Get full allocation map for all strategies",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "capital": { "type": "number" }
+        }
+      }
+    },
+    {
+      "name": "allocator_boost",
+      "description": "Temporarily boost a strategy weight",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "strategy_id": { "type": "string" },
+          "factor": { "type": "number" }
+        }
+      }
+    }
+  ]
+}
