@@ -1,378 +1,238 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from typing import Any
 
-import httpx
+import websockets
 
 from app.state import state
 from app.utils.loader import call
-from app.core.event_log import log_event as structured_log_event, recent_events
-from app.core.trading_guard import guard_trade, mark_trade_attempt
-from app.core.kronos_filter import allow_trade as kronos_allow_trade
 
+# =========================
+# GLOBAL
+# =========================
 TASK: asyncio.Task | None = None
-PLUGIN_SNIPER_STARTED = False
+SNIPER_TASK: asyncio.Task | None = None
 SEEN_MINTS: set[str] = set()
 
-SOL_MINT = "So11111111111111111111111111111111111111112"
+WS = os.getenv("SOLANA_WS", "wss://api.mainnet-beta.solana.com")
 
-
+# =========================
+# UTILS
+# =========================
 def _b(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
-
 
 def _f(x: Any, default: float = 0.0) -> float:
     try:
         return float(x)
-    except Exception:
+    except:
         return default
-
 
 def _i(x: Any, default: int = 0) -> int:
     try:
-        return int(float(x))
-    except Exception:
+        return int(x)
+    except:
         return default
-
 
 def log_event(msg: str):
     print(msg)
     logs = state.setdefault("logs", [])
     logs.append(msg)
-    if len(logs) > 500:
-        del logs[:-500]
+    if len(logs) > 300:
+        del logs[:-300]
 
-
-def emit(tag: str, data: Any = None, level: str = "INFO"):
-    structured_log_event(tag, data, level=level)
-
-
-def _mode() -> str:
-    return "REAL" if _b("REAL_TRADING", "false") else "PAPER"
-
-
-def _trade_size() -> float:
-    return _f(
-        os.getenv("SNIPER_TRADE_SIZE_SOL")
-        or os.getenv("MAX_POSITION_SOL")
-        or os.getenv("MAX_POSITION_PER_TRADE")
-        or "0.001",
-        0.001,
-    )
-
-
-async def _start_existing_plugin_sniper_once():
-    global PLUGIN_SNIPER_STARTED
-    if PLUGIN_SNIPER_STARTED or not _b("START_PLUGIN_SNIPER", "false"):
-        return
-    res = await call("start_sniper", {"capital": _f(os.getenv("SNIPER_CAPITAL", "100"), 100)})
-    PLUGIN_SNIPER_STARTED = True
-    emit("PLUGIN_SNIPER_START", res)
-
-
-async def _fetch_pump_candidates() -> list[dict]:
-    limit = _i(os.getenv("SNIPER_LIMIT", "10"), 10)
-    max_age = _i(os.getenv("SNIPER_MAX_AGE_SEC", "180"), 180)
-
-    res = await call("pump_candidates", {"limit": limit, "max_age_sec": max_age})
-    if isinstance(res, dict) and not res.get("error"):
-        candidates = res.get("candidates") or res.get("tokens") or res.get("results") or []
-        if candidates:
-            emit("PUMP_CANDIDATES", {"count": len(candidates)})
-            return [x for x in candidates if isinstance(x, dict)]
-
-    latest = await call("pump_latest", {"limit": max(limit, 20)})
-    if isinstance(latest, dict) and not latest.get("error"):
-        rows = latest.get("tokens") or []
-        out = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            age = _i(row.get("age_sec", 999999), 999999)
-            if age > max_age:
-                continue
-            out.append(
-                {
-                    "mint": row.get("mint"),
-                    "symbol": row.get("symbol") or row.get("mint"),
-                    "name": row.get("name"),
-                    "age_sec": age,
-                    "alpha_score": 0.72 if age <= max_age else 0.0,
-                    "source": "pump_latest_fallback",
-                }
-            )
-        if out:
-            emit("PUMP_CANDIDATES", {"count": len(out), "source": "fallback"})
-            return out[:limit]
-
-    emit("PUMP_FAIL", res, level="WARN")
-    return []
-
-
-async def _fetch_dex_candidates() -> list[dict]:
-    query = os.getenv("DEX_SEARCH_QUERY", "SOL")
-    url = os.getenv("DEXSCREENER_URL", f"https://api.dexscreener.com/latest/dex/search?q={query}")
-    limit = _i(os.getenv("SNIPER_LIMIT", "10"), 10)
-    min_liq = _f(os.getenv("DEX_MIN_LIQ_USD", os.getenv("EARLY_MIN_LIQ_USD", "10000")), 10000)
-    min_vol = _f(os.getenv("DEX_MIN_VOL_24H", "20000"), 20000)
+# =========================
+# 🧠 Kronos Predictor（方向）
+# =========================
+async def kronos_filter(mint: str) -> bool:
+    if not _b("ENABLE_KRONOS", "true"):
+        return True
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url)
-            r.raise_for_status()
-            data = r.json()
+        res = await call("get_market_regime", {"symbol": mint})
+        regime = str(res).lower()
+
+        if "bear" in regime:
+            log_event(f"[KRONOS] skip {mint} (bear)")
+            return False
+
+        return True
+    except:
+        return True
+
+# =========================
+# 🛡 Guard Pipeline（風控）
+# =========================
+async def guard_check(mint: str, size: float) -> bool:
+    try:
+        rug = await call("rug_check", {"asset_id": mint})
+        if isinstance(rug, dict) and rug.get("allowed") is False:
+            log_event(f"[GUARD] rug blocked {mint}")
+            return False
+
+        risk = await call("check_risk", {"asset_id": mint, "size": size})
+        if isinstance(risk, dict) and risk.get("allowed") is False:
+            log_event(f"[GUARD] risk blocked {mint}")
+            return False
+
+        return True
     except Exception as e:
-        emit("DEX_FETCH_FAIL", str(e), level="ERROR")
-        return []
+        log_event(f"[GUARD ERROR] {e}")
+        return False
 
-    pairs = data.get("pairs") or []
-    out: list[dict] = []
+# =========================
+# 💰 BUY EXECUTION
+# =========================
+async def execute_buy(mint: str):
+    size = _f(os.getenv("MAX_POSITION_PER_TRADE", "0.01"), 0.01)
 
-    for p in pairs:
-        if not isinstance(p, dict):
-            continue
-        base = p.get("baseToken") or {}
-        quote = p.get("quoteToken") or {}
-        mint = base.get("address")
-        symbol = base.get("symbol") or mint
-        if not mint or mint == SOL_MINT:
-            continue
+    payload = {
+        "symbol": mint,
+        "side": "buy",
+        "size": size,
+        "slippage_bps": _i(os.getenv("SLIPPAGE_BPS", "80"), 80),
+        "confirm": not _b("MANUAL_CONFIRM", "true"),
+        "reason": "CHAIN_SNIPER",
+    }
 
-        liquidity = _f((p.get("liquidity") or {}).get("usd"), 0.0)
-        volume_24h = _f((p.get("volume") or {}).get("h24"), 0.0)
-        if liquidity < min_liq or volume_24h < min_vol:
-            continue
+    res = await call("trade_order", payload)
 
-        price_change_h1 = _f((p.get("priceChange") or {}).get("h1"), 0.0)
-        price_change_m5 = _f((p.get("priceChange") or {}).get("m5"), 0.0)
-        txns = p.get("txns") or {}
-        buys = _i((txns.get("h1") or {}).get("buys"), 0)
-        sells = _i((txns.get("h1") or {}).get("sells"), 0)
-        buy_pressure = buys / max(buys + sells, 1)
+    state.setdefault("trade_history", []).append({
+        "ts": int(time.time()),
+        "mint": mint,
+        "result": res
+    })
 
-        liq_score = min(liquidity / 50000, 1.0)
-        vol_score = min(volume_24h / 100000, 1.0)
-        mom_score = max(min((price_change_m5 + price_change_h1) / 100, 1.0), -1.0)
-        score = liq_score * 0.30 + vol_score * 0.30 + max(mom_score, 0.0) * 0.20 + buy_pressure * 0.20
+    log_event(f"[BUY] {mint} -> {res}")
 
-        out.append(
-            {
-                "mint": mint,
-                "symbol": symbol,
-                "name": base.get("name") or symbol,
-                "price": _f(p.get("priceUsd"), 0.0),
-                "liquidity": liquidity,
-                "volume": volume_24h,
-                "price_change_m5": price_change_m5,
-                "price_change_h1": price_change_h1,
-                "buys_h1": buys,
-                "sells_h1": sells,
-                "alpha_score": score,
-                "source": "dexscreener",
-                "pair_url": p.get("url"),
-                "dex_id": p.get("dexId"),
-                "quote_symbol": quote.get("symbol"),
-            }
-        )
+# =========================
+# 🔥 CHAIN SNIPER（核心）
+# =========================
+async def chain_sniper():
+    log_event("[SNIPER] started")
 
-    out.sort(key=lambda x: x.get("alpha_score", 0), reverse=True)
-    emit("DEX_CANDIDATES", {"count": len(out), "min_liq": min_liq, "min_vol": min_vol})
-    return out[:limit]
-
-
-async def _fetch_candidates() -> list[dict]:
-    if _b("ENABLE_PUMP_SNIPER", "false"):
-        pump = await _fetch_pump_candidates()
-        if pump:
-            return pump
-
-    if _b("ENABLE_DEX_SNIPER", "true"):
-        dex = await _fetch_dex_candidates()
-        if dex:
-            return dex
-
-    emit("SCAN_EMPTY", {"reason": "no candidates from enabled sources"}, level="WARN")
-    return []
-
-
-async def _quote_ok(mint: str, size_sol: float) -> tuple[bool, str]:
-    if not _b("ENABLE_JUPITER_QUOTE_CHECK", "true"):
-        return True, "quote_check_disabled"
-
-    amount_lamports = int(size_sol * 1_000_000_000)
-    max_impact = _f(os.getenv("MAX_PRICE_IMPACT", os.getenv("EARLY_MAX_IMPACT", "0.15")), 0.15)
-    slippage_bps = _i(os.getenv("SLIPPAGE_BPS", "80"), 80)
-    urls = [
-        os.getenv("JUP_QUOTE_URL", "https://quote-api.jup.ag/v6/quote"),
-        os.getenv("JUP_LITE_URL", "https://lite-api.jup.ag/swap/v1/quote"),
-    ]
-
-    last_error = ""
-    for url in urls:
+    while True:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(
-                    url,
-                    params={
-                        "inputMint": SOL_MINT,
-                        "outputMint": mint,
-                        "amount": amount_lamports,
-                        "slippageBps": slippage_bps,
-                    },
-                )
-                r.raise_for_status()
-                q = r.json()
-            out_amount = _f(q.get("outAmount"), 0.0)
-            impact = _f(q.get("priceImpactPct"), 1.0)
-            if out_amount <= 0:
-                last_error = "quote_no_out_amount"
-                continue
-            if impact > max_impact:
-                return False, f"price_impact_high:{impact:.4f}>{max_impact:.4f}"
-            return True, f"quote_ok impact={impact:.4f}"
+            async with websockets.connect(WS) as ws:
+
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "logsSubscribe",
+                    "params": [
+                        {"mentions": []},  # 全監聽（最快）
+                        {"commitment": "processed"}
+                    ]
+                }))
+
+                while True:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+
+                    if "params" not in data:
+                        continue
+
+                    logs = data["params"]["result"]["value"]["logs"]
+
+                    for log in logs:
+
+                        # 🔥 新 token 判斷（簡化）
+                        if "mint" not in log.lower():
+                            continue
+
+                        mint = extract_mint(log)
+
+                        if not mint:
+                            continue
+
+                        if mint in SEEN_MINTS:
+                            log_event(f"[SKIP_DUPLICATE] {mint}")
+                            continue
+
+                        SEEN_MINTS.add(mint)
+
+                        log_event(f"[NEW_TOKEN] {mint}")
+
+                        # 🧠 Kronos
+                        if not await kronos_filter(mint):
+                            continue
+
+                        # 🛡 Guard
+                        if not await guard_check(mint, 0.01):
+                            continue
+
+                        # 💰 BUY
+                        await execute_buy(mint)
+
         except Exception as e:
-            last_error = f"quote_error:{e}"
-            continue
-    return False, last_error or "quote_failed"
+            log_event(f"[SNIPER ERROR] {e}")
+            await asyncio.sleep(2)
 
+def extract_mint(log: str):
+    parts = log.split()
+    for p in parts:
+        if len(p) > 30:
+            return p
+    return None
 
-async def _risk_and_alpha_ok(c: dict, size: float) -> tuple[bool, str, float]:
-    mint = c.get("mint") or c.get("asset_id") or c.get("symbol")
-    score = _f(c.get("alpha_score", c.get("score", 0.0)), 0.0)
-    min_score = _f(os.getenv("SNIPER_MIN_SCORE", os.getenv("MIN_SCORE", "0.70")), 0.70)
-
-    if not mint:
-        return False, "missing_mint", score
-    if score < min_score:
-        return False, f"score_low:{score:.3f}<{min_score:.3f}", score
-
-    quote_ok, quote_reason = await _quote_ok(mint, size)
-    if not quote_ok:
-        return False, quote_reason, score
-
-    rug = await call("rug_check", {"asset_id": mint, "symbol": mint})
-    if isinstance(rug, dict) and not rug.get("error"):
-        if rug.get("allowed") is False:
-            return False, "rug_blocked", score
-        if _f(rug.get("score", 0.0), 0.0) > _f(os.getenv("MAX_RUG_SCORE", "0.80"), 0.80):
-            return False, "rug_score_high", score
-
-    risk = await call("check_risk", {"asset_id": mint, "symbol": mint, "size": size})
-    if isinstance(risk, dict) and not risk.get("error"):
-        if risk.get("allowed") is False:
-            return False, f"risk_blocked:{risk}", score
-
-    return True, "ok", score
-
-
-async def sniper_cycle():
-    if state.get("kill"):
-        emit("SNIPER_SKIP", {"reason": "killswitch"}, level="WARN")
-        return
-
-    candidates = await _fetch_candidates()
-    size = _trade_size()
-
-    for c in candidates:
-        mint = c.get("mint") or c.get("asset_id") or c.get("symbol")
-        if not mint:
-            emit("SKIP_CANDIDATE", {"reason": "missing_mint", "candidate": c}, level="WARN")
-            continue
-        if mint in SEEN_MINTS:
-            emit("SKIP_DUPLICATE", {"mint": mint})
-            continue
-        SEEN_MINTS.add(mint)
-
-        ok, reason, score = await _risk_and_alpha_ok(c, size)
-        if not ok:
-            emit("SKIP_RISK_ALPHA", {"mint": mint, "symbol": c.get("symbol"), "reason": reason, "score": score})
-            continue
-
-        k_ok, k_score, k_reason = kronos_allow_trade(c)
-        if not k_ok:
-            emit("SKIP_KRONOS", {"mint": mint, "symbol": c.get("symbol"), "reason": k_reason, "kronos_score": k_score})
-            continue
-
-        payload = {
-            "symbol": mint,
-            "side": "buy",
-            "size": size,
-            "slippage_bps": _i(os.getenv("SLIPPAGE_BPS", "80"), 80),
-            "confirm": not _b("MANUAL_CONFIRM", "true"),
-            "reason": f"sniper source={c.get('source')} alpha={score:.3f} kronos={k_score:.3f}",
-        }
-
-        allowed, guard_reason, guard_meta = guard_trade(payload, c)
-        if not allowed:
-            emit("BLOCKED_GUARD", {"mint": mint, "symbol": c.get("symbol"), "reason": guard_reason, "meta": guard_meta})
-            continue
-
-        emit("SIGNAL", {"mint": mint, "symbol": c.get("symbol"), "alpha_score": score, "kronos_score": k_score, "size": size, "mode": _mode(), "source": c.get("source")})
-        emit("ORDER_SEND", payload)
-        mark_trade_attempt(mint)
-
-        if not _b("REAL_TRADING", "false"):
-            res = {"success": True, "paper": True, "message": "REAL_TRADING=false; not sent"}
-        elif _b("MANUAL_CONFIRM", "true"):
-            res = {"success": True, "waiting_manual_confirm": True, "payload": payload}
-        else:
-            res = await call("trade_order", payload)
-
-        trades = state.setdefault("trade_history", [])
-        trades.append({"ts": int(time.time()), "payload": payload, "candidate": c, "guard": guard_meta, "result": res})
-        if len(trades) > 200:
-            del trades[:-200]
-        emit("ORDER_RESULT", res)
-
-
+# =========================
+# 🔁 MAIN LOOP（保留你原本）
+# =========================
 async def auto_runtime_loop():
     state["running"] = True
-    state["mode"] = _mode()
-    state.setdefault("logs", [])
-    state.setdefault("events", [])
-    state.setdefault("positions", [])
-    state.setdefault("trade_history", [])
-
-    emit("AUTO_START", {"mode": state["mode"]})
+    log_event("[AUTO] runtime started")
 
     while state.get("running", True):
         try:
-            state["mode"] = _mode()
-            await _start_existing_plugin_sniper_once()
+            if state.get("kill"):
+                log_event("[KILL] stop trading")
+                await asyncio.sleep(2)
+                continue
 
-            if _b("ENABLE_SNIPER", "true"):
-                await sniper_cycle()
+            # 👉 fallback（DEX 掃描）
+            if _b("ENABLE_DEX_FALLBACK", "true"):
+                res = await call("scan_market", {})
+                log_event(f"[DEX] {res}")
 
-            if _b("RUN_FUND_CYCLE", "false"):
-                res = await call("run_fund_cycle", {})
-                emit("FUND_CYCLE", res)
+            await asyncio.sleep(_f(os.getenv("TRADING_INTERVAL_SEC", "5"), 5))
 
-            await asyncio.sleep(_f(os.getenv("TRADING_INTERVAL_SEC", os.getenv("SNIPER_SCAN_INTERVAL", "2")), 2.0))
         except asyncio.CancelledError:
             break
         except Exception as e:
-            emit("AUTO_ERROR", str(e), level="ERROR")
+            log_event(f"[AUTO ERROR] {e}")
             await asyncio.sleep(5)
 
     state["running"] = False
-    emit("AUTO_STOP", {})
+    log_event("[AUTO] stopped")
 
+# =========================
+# 🚀 START / STOP
+# =========================
+def start_runtime():
+    global TASK, SNIPER_TASK
 
-def start_runtime() -> bool:
-    global TASK
-    if TASK and not TASK.done():
-        state["running"] = True
-        return False
-    TASK = asyncio.create_task(auto_runtime_loop())
+    if not TASK:
+        TASK = asyncio.create_task(auto_runtime_loop())
+
+    if _b("ENABLE_CHAIN_SNIPER", "true") and not SNIPER_TASK:
+        SNIPER_TASK = asyncio.create_task(chain_sniper())
+
+    state["running"] = True
     return True
 
-
 def stop_runtime():
-    global TASK
+    global TASK, SNIPER_TASK
+
     state["running"] = False
-    if TASK and not TASK.done():
+
+    if TASK:
         TASK.cancel()
-    TASK = None
+        TASK = None
+
+    if SNIPER_TASK:
+        SNIPER_TASK.cancel()
+        SNIPER_TASK = None
