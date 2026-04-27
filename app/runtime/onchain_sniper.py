@@ -17,11 +17,11 @@ SOL_MINT = "So11111111111111111111111111111111111111112"
 BASE58_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
 TASK = None
-SEEN = set()
-LAST_TRADE_TS = 0
+SEEN: set[str] = set()
+LAST_TRADE_TS = 0.0
 
 
-def log(msg):
+def log(msg: str):
     print(msg)
     logs = state.setdefault("logs", [])
     logs.append(msg)
@@ -29,34 +29,64 @@ def log(msg):
         del logs[:-300]
 
 
-def _b(name, default="false"):
+def _b(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
 
 
-def _f(x, d=0.0):
+def _f(x, d: float = 0.0) -> float:
     try:
         return float(x)
     except Exception:
         return d
 
 
-def _i(x, d=0):
+def _i(x, d: int = 0) -> int:
     try:
         return int(float(x))
     except Exception:
         return d
 
 
-def extract_mint(log_line: str):
-    for raw in log_line.replace(",", " ").replace("(", " ").replace(")", " ").split():
-        token = raw.strip().strip('"').strip("'")
+def extract_mint(log_line: str) -> str | None:
+    """
+    嚴格抽 mint：
+    - 排除 pool:
+    - 排除 SOL
+    - 排除 base64/超長資料
+    - 排除含 / + = 的亂碼
+    - 只收 32~44 位 base58
+    """
+    cleaned = (
+        log_line.replace(",", " ")
+        .replace("(", " ")
+        .replace(")", " ")
+        .replace('"', " ")
+        .replace("'", " ")
+        .replace("\n", " ")
+        .replace("\t", " ")
+    )
+
+    for raw in cleaned.split():
+        token = raw.strip()
+
+        if token.startswith("mint="):
+            token = token.replace("mint=", "", 1)
 
         if token.startswith("pool:"):
             continue
+
+        if token.startswith("program:") or token.startswith("Program"):
+            continue
+
         if token == SOL_MINT:
             continue
-        if len(token) > 44:
+
+        if "/" in token or "+" in token or "=" in token or ":" in token:
             continue
+
+        if len(token) < 32 or len(token) > 44:
+            continue
+
         if not BASE58_RE.match(token):
             continue
 
@@ -65,44 +95,48 @@ def extract_mint(log_line: str):
     return None
 
 
-async def get_jupiter_quote(mint: str, amount: int):
-    url = os.getenv("JUP_QUOTE_URL", "https://quote-api.jup.ag/v6/quote")
+async def get_jupiter_quote(mint: str, amount: int) -> dict:
+    urls = [
+        os.getenv("JUP_QUOTE_URL", "https://lite-api.jup.ag/swap/v1/quote"),
+        os.getenv("JUP_QUOTE_URL_BACKUP", "https://quote-api.jup.ag/v6/quote"),
+    ]
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(
-            url,
-            params={
-                "inputMint": SOL_MINT,
-                "outputMint": mint,
-                "amount": amount,
-                "slippageBps": _i(os.getenv("SLIPPAGE_BPS", "120"), 120),
-            },
-        )
-        r.raise_for_status()
-        return r.json()
+    last_error = None
+
+    for url in urls:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    url,
+                    params={
+                        "inputMint": SOL_MINT,
+                        "outputMint": mint,
+                        "amount": amount,
+                        "slippageBps": _i(os.getenv("SLIPPAGE_BPS", "120"), 120),
+                    },
+                )
+                r.raise_for_status()
+                return r.json()
+        except Exception as e:
+            last_error = e
+
+    raise last_error
 
 
 async def wait_until_tradable(mint: str, size_sol: float):
     retries = _i(os.getenv("TRADE_READY_RETRIES", "8"), 8)
     delay = _f(os.getenv("TRADE_READY_DELAY_SEC", "2"), 2)
-    min_out = _i(os.getenv("MIN_OUT_AMOUNT", "10"), 10)
-    max_impact = _f(os.getenv("MAX_PRICE_IMPACT", "0.35"), 0.35)
+    entry_delay = _f(os.getenv("SNIPER_ENTRY_DELAY_SEC", "2"), 2)
+    min_out = _i(os.getenv("MIN_OUT_AMOUNT", "5"), 5)
+    max_impact = _f(os.getenv("MAX_PRICE_IMPACT", "0.40"), 0.40)
+
+    await asyncio.sleep(entry_delay)
 
     amount = int(size_sol * 1_000_000_000)
 
     for i in range(retries):
         try:
             quote = await get_jupiter_quote(mint, amount)
-
-            if not isinstance(quote, dict):
-                log(f"[TRADE_READY] retry={i+1}/{retries} invalid_quote {mint}")
-                await asyncio.sleep(delay)
-                continue
-
-            if quote.get("error"):
-                log(f"[TRADE_READY] retry={i+1}/{retries} quote_error {mint}: {quote.get('error')}")
-                await asyncio.sleep(delay)
-                continue
 
             out_amount = _i(quote.get("outAmount", 0), 0)
             impact = _f(quote.get("priceImpactPct", 1), 1)
@@ -129,11 +163,14 @@ async def wait_until_tradable(mint: str, size_sol: float):
 
 async def risk_ok(mint: str, size: float):
     try:
-        risk = await call("check_risk", {
-            "symbol": mint,
-            "asset_id": mint,
-            "size": size,
-        })
+        risk = await call(
+            "check_risk",
+            {
+                "symbol": mint,
+                "asset_id": mint,
+                "size": size,
+            },
+        )
 
         if isinstance(risk, dict) and risk.get("allowed") is False:
             return False, f"risk_blocked:{risk}"
@@ -177,8 +214,8 @@ async def handle_new_mint(mint: str):
         "side": "buy",
         "size": size,
         "slippage_bps": _i(os.getenv("SLIPPAGE_BPS", "120"), 120),
-        "priority_fee": _i(os.getenv("PRIORITY_FEE", "5000"), 5000),
-        "jito_tip": _i(os.getenv("JITO_TIP_LAMPORTS", "2000"), 2000),
+        "priority_fee": _i(os.getenv("PRIORITY_FEE", "8000"), 8000),
+        "jito_tip": _i(os.getenv("JITO_TIP_LAMPORTS", "3000"), 3000),
         "confirm": not _b("MANUAL_CONFIRM", "true"),
         "reason": "onchain_sniper_trade_ready",
     }
@@ -196,14 +233,16 @@ async def handle_new_mint(mint: str):
 
     LAST_TRADE_TS = time.time()
 
-    state.setdefault("trade_history", []).append({
-        "ts": int(time.time()),
-        "mint": mint,
-        "action": "buy",
-        "payload": payload,
-        "quote": quote,
-        "result": res,
-    })
+    state.setdefault("trade_history", []).append(
+        {
+            "ts": int(time.time()),
+            "mint": mint,
+            "action": "buy",
+            "payload": payload,
+            "quote": quote,
+            "result": res,
+        }
+    )
 
     log(f"[BUY_SIGNAL] {mint} -> {res}")
 
