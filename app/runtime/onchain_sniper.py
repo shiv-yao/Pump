@@ -3,16 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 import re
+import time
 import websockets
 
 from app.state import state
 from app.utils.loader import call
 
-# ================= CONFIG =================
 WS_URL = os.getenv("SOLANA_WS", "wss://api.mainnet-beta.solana.com")
-
 SOL_MINT = "So11111111111111111111111111111111111111112"
 BASE58_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
@@ -20,7 +18,7 @@ TASK = None
 SEEN = set()
 LAST_TRADE_TS = 0
 
-# ================= UTILS =================
+
 def log(msg):
     print(msg)
     logs = state.setdefault("logs", [])
@@ -30,34 +28,33 @@ def log(msg):
 
 
 def _b(name, default="false"):
-    return os.getenv(name, default).lower() in {"1", "true", "yes"}
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
 
 
 def _f(x, d=0.0):
     try:
         return float(x)
-    except:
+    except Exception:
         return d
 
 
 def _i(x, d=0):
     try:
-        return int(x)
-    except:
+        return int(float(x))
+    except Exception:
         return d
 
 
-# ================= MINT PARSER（🔥關鍵修復） =================
 def extract_mint(log_line: str):
     for raw in log_line.replace(",", " ").replace("(", " ").replace(")", " ").split():
         token = raw.strip().strip('"').strip("'")
 
         if token.startswith("pool:"):
             continue
-
         if token == SOL_MINT:
             continue
-
+        if len(token) > 44:
+            continue
         if not BASE58_RE.match(token):
             continue
 
@@ -66,18 +63,153 @@ def extract_mint(log_line: str):
     return None
 
 
-# ================= CORE =================
+async def wait_until_tradable(mint: str, size_sol: float):
+    """
+    自動判斷 token 是否真的可交易：
+    1. 等 liquidity 出現
+    2. quote 有 outAmount
+    3. price impact 沒太高
+    4. 連續 retry，不是馬上放棄
+    """
+    retries = _i(os.getenv("TRADE_READY_RETRIES", "8"), 8)
+    delay = _f(os.getenv("TRADE_READY_DELAY_SEC", "2"), 2)
+    min_out = _i(os.getenv("MIN_OUT_AMOUNT", "10"), 10)
+    max_impact = _f(os.getenv("MAX_PRICE_IMPACT", "0.35"), 0.35)
+
+    amount = int(size_sol * 1_000_000_000)
+
+    for i in range(retries):
+        try:
+            quote = await call("get_quote", {
+                "inputMint": SOL_MINT,
+                "outputMint": mint,
+                "amount": amount,
+            })
+
+            if not isinstance(quote, dict):
+                log(f"[TRADE_READY] retry={i+1}/{retries} invalid_quote {mint}")
+                await asyncio.sleep(delay)
+                continue
+
+            if quote.get("error"):
+                log(f"[TRADE_READY] retry={i+1}/{retries} quote_error {mint}: {quote.get('error')}")
+                await asyncio.sleep(delay)
+                continue
+
+            out_amount = _i(quote.get("outAmount", 0), 0)
+            impact = _f(quote.get("priceImpactPct", 1), 1)
+
+            if out_amount < min_out:
+                log(f"[TRADE_READY] retry={i+1}/{retries} low_out {mint} out={out_amount} min={min_out}")
+                await asyncio.sleep(delay)
+                continue
+
+            if impact > max_impact:
+                log(f"[TRADE_READY] retry={i+1}/{retries} high_impact {mint} impact={impact}")
+                await asyncio.sleep(delay)
+                continue
+
+            log(f"[TRADE_READY] OK {mint} out={out_amount} impact={impact}")
+            return True, quote
+
+        except Exception as e:
+            log(f"[TRADE_READY] retry={i+1}/{retries} error {mint}: {e}")
+            await asyncio.sleep(delay)
+
+    return False, None
+
+
+async def risk_ok(mint: str, size: float):
+    try:
+        risk = await call("check_risk", {
+            "symbol": mint,
+            "asset_id": mint,
+            "size": size,
+        })
+
+        if isinstance(risk, dict) and risk.get("allowed") is False:
+            return False, f"risk_blocked:{risk}"
+
+    except Exception as e:
+        return False, f"risk_error:{e}"
+
+    return True, "ok"
+
+
+async def handle_new_mint(mint: str):
+    global LAST_TRADE_TS
+
+    if mint in SEEN:
+        return
+
+    SEEN.add(mint)
+    log(f"[NEW TOKEN] {mint}")
+
+    size = _f(os.getenv("MAX_POSITION_PER_TRADE", "0.001"), 0.001)
+
+    cooldown = _i(os.getenv("COOLDOWN_AFTER_TRADE_SEC", "10"), 10)
+    now = time.time()
+
+    if now - LAST_TRADE_TS < cooldown:
+        log(f"[SKIP] cooldown {mint}")
+        return
+
+    ok, reason = await risk_ok(mint, size)
+    if not ok:
+        log(f"[SKIP] {mint} {reason}")
+        return
+
+    tradable, quote = await wait_until_tradable(mint, size)
+    if not tradable:
+        log(f"[SKIP] no tradable liquidity {mint}")
+        return
+
+    payload = {
+        "symbol": mint,
+        "side": "buy",
+        "size": size,
+        "slippage_bps": _i(os.getenv("SLIPPAGE_BPS", "120"), 120),
+        "priority_fee": _i(os.getenv("PRIORITY_FEE", "5000"), 5000),
+        "jito_tip": _i(os.getenv("JITO_TIP_LAMPORTS", "2000"), 2000),
+        "confirm": not _b("MANUAL_CONFIRM", "true"),
+        "reason": "onchain_sniper_trade_ready",
+    }
+
+    if not _b("REAL_TRADING", "false"):
+        res = {
+            "success": True,
+            "paper": True,
+            "message": "REAL_TRADING=false; signal only",
+            "payload": payload,
+            "quote": quote,
+        }
+    else:
+        res = await call("trade_order", payload)
+
+    LAST_TRADE_TS = time.time()
+
+    state.setdefault("trade_history", []).append({
+        "ts": int(time.time()),
+        "mint": mint,
+        "action": "buy",
+        "payload": payload,
+        "quote": quote,
+        "result": res,
+    })
+
+    log(f"[BUY_SIGNAL] {mint} -> {res}")
+
+
 async def detect_new_tokens():
     async with websockets.connect(WS_URL) as ws:
-
         sub = {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "logsSubscribe",
             "params": [
                 {"mentions": ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"]},
-                {"commitment": "processed"}
-            ]
+                {"commitment": "processed"},
+            ],
         }
 
         await ws.send(json.dumps(sub))
@@ -90,98 +222,15 @@ async def detect_new_tokens():
             if "params" not in data:
                 continue
 
-            logs_data = data["params"]["result"]["value"]["logs"]
+            logs_data = data["params"]["result"]["value"].get("logs", [])
 
-            for l in logs_data:
-                if "InitializeMint" in l or "mint" in l.lower():
-                    mint = extract_mint(l)
+            for line in logs_data:
+                if "InitializeMint" in line or "mint" in line.lower():
+                    mint = extract_mint(line)
                     if mint:
                         await handle_new_mint(mint)
 
 
-# ================= SNIPER =================
-async def handle_new_mint(mint):
-    global LAST_TRADE_TS
-
-    if mint in SEEN:
-        return
-
-    # 🔥 交易節流
-    now = time.time()
-    if now - LAST_TRADE_TS < _i(os.getenv("COOLDOWN_AFTER_TRADE_SEC", "10"), 10):
-        return
-
-    SEEN.add(mint)
-
-    log(f"[NEW TOKEN] {mint}")
-
-    size = _f(os.getenv("MAX_POSITION_PER_TRADE", "0.001"), 0.001)
-
-    # ================= RISK =================
-    risk = await call("check_risk", {
-        "symbol": mint,
-        "size": size
-    })
-
-    if isinstance(risk, dict) and risk.get("allowed") is False:
-        log(f"[BLOCK] risk reject {mint}")
-        return
-
-    # ================= JUPITER RETRY（🔥關鍵） =================
-    quote = None
-
-    for i in range(3):
-        quote = await call("get_quote", {
-            "inputMint": SOL_MINT,
-            "outputMint": mint,
-            "amount": int(size * 1e9)
-        })
-
-        if quote and not quote.get("error"):
-            break
-
-        await asyncio.sleep(1.2)
-
-    if not quote or quote.get("error"):
-        log(f"[SKIP] no liquidity {mint}")
-        return
-
-    # ================= LIQ FILTER =================
-    out = int(quote.get("outAmount", 0))
-    if out < _i(os.getenv("MIN_OUT_AMOUNT", "300"), 300):
-        log(f"[LIQ] low out {mint}")
-        return
-
-    # ================= MEV GUARD =================
-    if _b("ENABLE_MEV_GUARD", "true"):
-        impact = float(quote.get("priceImpactPct", 0))
-        if impact > _f(os.getenv("MAX_PRICE_IMPACT", "0.15"), 0.15):
-            log(f"[MEV BLOCK] high impact {mint}")
-            return
-
-    # ================= BUY =================
-    log(f"[BUY SIGNAL] {mint} size={size}")
-
-    res = await call("trade_order", {
-        "symbol": mint,
-        "side": "buy",
-        "size": size,
-        "confirm": not _b("MANUAL_CONFIRM", "true"),
-        "reason": "onchain_sniper"
-    })
-
-    LAST_TRADE_TS = time.time()
-
-    state.setdefault("trade_history", []).append({
-        "ts": int(time.time()),
-        "mint": mint,
-        "result": res
-    })
-
-    log(f"[BUY] {mint} → {res}")
-
-
-# ================= LOOP =================
 async def run_loop():
     state["running"] = True
     log("[SNIPER] ONCHAIN STARTED")
@@ -189,22 +238,27 @@ async def run_loop():
     while True:
         try:
             await detect_new_tokens()
+        except asyncio.CancelledError:
+            break
         except Exception as e:
-            log(f"[ERROR] {e}")
+            log(f"[SNIPER ERROR] {e}")
             await asyncio.sleep(3)
 
 
-# ================= CONTROL =================
 def start():
     global TASK
+
     if TASK and not TASK.done():
         return False
+
     TASK = asyncio.create_task(run_loop())
     return True
 
 
 def stop():
     global TASK
-    if TASK:
+
+    if TASK and not TASK.done():
         TASK.cancel()
+
     TASK = None
