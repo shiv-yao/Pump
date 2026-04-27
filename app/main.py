@@ -37,6 +37,7 @@ from app.settings import ENABLE_CLAUDE, ENABLE_OPENAI, INDEX_HTML
 from app.routers.dashboard_v4 import router as dashboard_v4_router
 from app.api.trade import router as trade_router
 from app.api.orchestrator import router as orchestrator_router
+from app.api.diagnostics import router as diagnostics_router
 from app.state import state
 from app.runtime.original_auto import start_runtime, stop_runtime
 
@@ -139,6 +140,7 @@ app.add_middleware(
 app.include_router(dashboard_v4_router)
 app.include_router(trade_router)
 app.include_router(orchestrator_router)
+app.include_router(diagnostics_router)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -291,10 +293,7 @@ async def api_killswitch():
 @app.post("/api/killswitch/reset")
 async def api_killswitch_reset():
     state["kill"] = False
-    return {
-        "success": True,
-        "kill": False,
-    }
+    return {"success": True, "kill": False}
 
 
 @app.get("/api/plugins")
