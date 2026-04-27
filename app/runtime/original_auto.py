@@ -9,6 +9,9 @@ import httpx
 
 from app.state import state
 from app.utils.loader import call
+from app.core.event_log import log_event as structured_log_event, recent_events
+from app.core.trading_guard import guard_trade, mark_trade_attempt
+from app.core.kronos_filter import allow_trade as kronos_allow_trade
 
 TASK: asyncio.Task | None = None
 PLUGIN_SNIPER_STARTED = False
@@ -39,8 +42,12 @@ def log_event(msg: str):
     print(msg)
     logs = state.setdefault("logs", [])
     logs.append(msg)
-    if len(logs) > 300:
-        del logs[:-300]
+    if len(logs) > 500:
+        del logs[:-500]
+
+
+def emit(tag: str, data: Any = None, level: str = "INFO"):
+    structured_log_event(tag, data, level=level)
 
 
 def _mode() -> str:
@@ -61,13 +68,9 @@ async def _start_existing_plugin_sniper_once():
     global PLUGIN_SNIPER_STARTED
     if PLUGIN_SNIPER_STARTED or not _b("START_PLUGIN_SNIPER", "false"):
         return
-
-    res = await call(
-        "start_sniper",
-        {"capital": _f(os.getenv("SNIPER_CAPITAL", "100"), 100)},
-    )
+    res = await call("start_sniper", {"capital": _f(os.getenv("SNIPER_CAPITAL", "100"), 100)})
     PLUGIN_SNIPER_STARTED = True
-    log_event(f"[AUTO] existing sniper plugin start: {res}")
+    emit("PLUGIN_SNIPER_START", res)
 
 
 async def _fetch_pump_candidates() -> list[dict]:
@@ -78,6 +81,7 @@ async def _fetch_pump_candidates() -> list[dict]:
     if isinstance(res, dict) and not res.get("error"):
         candidates = res.get("candidates") or res.get("tokens") or res.get("results") or []
         if candidates:
+            emit("PUMP_CANDIDATES", {"count": len(candidates)})
             return [x for x in candidates if isinstance(x, dict)]
 
     latest = await call("pump_latest", {"limit": max(limit, 20)})
@@ -101,27 +105,19 @@ async def _fetch_pump_candidates() -> list[dict]:
                 }
             )
         if out:
+            emit("PUMP_CANDIDATES", {"count": len(out), "source": "fallback"})
             return out[:limit]
 
-    log_event(f"[PUMP] no candidates: {res}")
+    emit("PUMP_FAIL", res, level="WARN")
     return []
 
 
 async def _fetch_dex_candidates() -> list[dict]:
-    """
-    Dexscreener fallback.
-    不靠 pump.fun，避免 Railway IP 被 Cloudflare 530 擋。
-    """
     query = os.getenv("DEX_SEARCH_QUERY", "SOL")
-    url = os.getenv(
-        "DEXSCREENER_URL",
-        f"https://api.dexscreener.com/latest/dex/search?q={query}",
-    )
-
+    url = os.getenv("DEXSCREENER_URL", f"https://api.dexscreener.com/latest/dex/search?q={query}")
     limit = _i(os.getenv("SNIPER_LIMIT", "10"), 10)
     min_liq = _f(os.getenv("DEX_MIN_LIQ_USD", os.getenv("EARLY_MIN_LIQ_USD", "10000")), 10000)
     min_vol = _f(os.getenv("DEX_MIN_VOL_24H", "20000"), 20000)
-    min_score = _f(os.getenv("SNIPER_MIN_SCORE", os.getenv("MIN_SCORE", "0.70")), 0.70)
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -129,7 +125,7 @@ async def _fetch_dex_candidates() -> list[dict]:
             r.raise_for_status()
             data = r.json()
     except Exception as e:
-        log_event(f"[DEX] fetch failed: {e}")
+        emit("DEX_FETCH_FAIL", str(e), level="ERROR")
         return []
 
     pairs = data.get("pairs") or []
@@ -138,50 +134,29 @@ async def _fetch_dex_candidates() -> list[dict]:
     for p in pairs:
         if not isinstance(p, dict):
             continue
-
         base = p.get("baseToken") or {}
         quote = p.get("quoteToken") or {}
-
         mint = base.get("address")
         symbol = base.get("symbol") or mint
-
-        if not mint:
-            continue
-
-        # 避免買到 SOL 自己或 USDC 類 quote/base
-        if mint == SOL_MINT:
+        if not mint or mint == SOL_MINT:
             continue
 
         liquidity = _f((p.get("liquidity") or {}).get("usd"), 0.0)
         volume_24h = _f((p.get("volume") or {}).get("h24"), 0.0)
+        if liquidity < min_liq or volume_24h < min_vol:
+            continue
+
         price_change_h1 = _f((p.get("priceChange") or {}).get("h1"), 0.0)
         price_change_m5 = _f((p.get("priceChange") or {}).get("m5"), 0.0)
         txns = p.get("txns") or {}
         buys = _i((txns.get("h1") or {}).get("buys"), 0)
         sells = _i((txns.get("h1") or {}).get("sells"), 0)
-
-        if liquidity < min_liq:
-            continue
-        if volume_24h < min_vol:
-            continue
-
         buy_pressure = buys / max(buys + sells, 1)
 
-        # 簡單可解釋 score：流動性、量、短線動能、買壓
         liq_score = min(liquidity / 50000, 1.0)
         vol_score = min(volume_24h / 100000, 1.0)
         mom_score = max(min((price_change_m5 + price_change_h1) / 100, 1.0), -1.0)
-        pressure_score = buy_pressure
-
-        score = (
-            liq_score * 0.30
-            + vol_score * 0.30
-            + max(mom_score, 0.0) * 0.20
-            + pressure_score * 0.20
-        )
-
-        if score < min_score:
-            continue
+        score = liq_score * 0.30 + vol_score * 0.30 + max(mom_score, 0.0) * 0.20 + buy_pressure * 0.20
 
         out.append(
             {
@@ -204,16 +179,11 @@ async def _fetch_dex_candidates() -> list[dict]:
         )
 
     out.sort(key=lambda x: x.get("alpha_score", 0), reverse=True)
-    log_event(f"[DEX] candidates={len(out)} min_liq={min_liq} min_vol={min_vol}")
+    emit("DEX_CANDIDATES", {"count": len(out), "min_liq": min_liq, "min_vol": min_vol})
     return out[:limit]
 
 
 async def _fetch_candidates() -> list[dict]:
-    """
-    主候選入口：
-    1. 如果 ENABLE_PUMP_SNIPER=true，先試 pump
-    2. 如果 pump 失敗或關閉，走 DEX fallback
-    """
     if _b("ENABLE_PUMP_SNIPER", "false"):
         pump = await _fetch_pump_candidates()
         if pump:
@@ -224,48 +194,49 @@ async def _fetch_candidates() -> list[dict]:
         if dex:
             return dex
 
-    log_event("[SCAN] no candidates from pump/dex")
+    emit("SCAN_EMPTY", {"reason": "no candidates from enabled sources"}, level="WARN")
     return []
 
 
 async def _quote_ok(mint: str, size_sol: float) -> tuple[bool, str]:
-    """
-    用 Jupiter quote 做成交可行性檢查。
-    REAL/PAPER 都可以跑，避免買沒路由或 price impact 太高的幣。
-    """
     if not _b("ENABLE_JUPITER_QUOTE_CHECK", "true"):
         return True, "quote_check_disabled"
 
     amount_lamports = int(size_sol * 1_000_000_000)
     max_impact = _f(os.getenv("MAX_PRICE_IMPACT", os.getenv("EARLY_MAX_IMPACT", "0.15")), 0.15)
     slippage_bps = _i(os.getenv("SLIPPAGE_BPS", "80"), 80)
+    urls = [
+        os.getenv("JUP_QUOTE_URL", "https://quote-api.jup.ag/v6/quote"),
+        os.getenv("JUP_LITE_URL", "https://lite-api.jup.ag/swap/v1/quote"),
+    ]
 
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                os.getenv("JUP_QUOTE_URL", "https://quote-api.jup.ag/v6/quote"),
-                params={
-                    "inputMint": SOL_MINT,
-                    "outputMint": mint,
-                    "amount": amount_lamports,
-                    "slippageBps": slippage_bps,
-                },
-            )
-            r.raise_for_status()
-            q = r.json()
-    except Exception as e:
-        return False, f"quote_error:{e}"
-
-    out_amount = _f(q.get("outAmount"), 0.0)
-    impact = _f(q.get("priceImpactPct"), 1.0)
-
-    if out_amount <= 0:
-        return False, "quote_no_out_amount"
-
-    if impact > max_impact:
-        return False, f"price_impact_high:{impact:.4f}>{max_impact:.4f}"
-
-    return True, f"quote_ok impact={impact:.4f}"
+    last_error = ""
+    for url in urls:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    url,
+                    params={
+                        "inputMint": SOL_MINT,
+                        "outputMint": mint,
+                        "amount": amount_lamports,
+                        "slippageBps": slippage_bps,
+                    },
+                )
+                r.raise_for_status()
+                q = r.json()
+            out_amount = _f(q.get("outAmount"), 0.0)
+            impact = _f(q.get("priceImpactPct"), 1.0)
+            if out_amount <= 0:
+                last_error = "quote_no_out_amount"
+                continue
+            if impact > max_impact:
+                return False, f"price_impact_high:{impact:.4f}>{max_impact:.4f}"
+            return True, f"quote_ok impact={impact:.4f}"
+        except Exception as e:
+            last_error = f"quote_error:{e}"
+            continue
+    return False, last_error or "quote_failed"
 
 
 async def _risk_and_alpha_ok(c: dict, size: float) -> tuple[bool, str, float]:
@@ -275,7 +246,6 @@ async def _risk_and_alpha_ok(c: dict, size: float) -> tuple[bool, str, float]:
 
     if not mint:
         return False, "missing_mint", score
-
     if score < min_score:
         return False, f"score_low:{score:.3f}<{min_score:.3f}", score
 
@@ -300,7 +270,7 @@ async def _risk_and_alpha_ok(c: dict, size: float) -> tuple[bool, str, float]:
 
 async def sniper_cycle():
     if state.get("kill"):
-        log_event("[SNIPER] kill switch active; skip")
+        emit("SNIPER_SKIP", {"reason": "killswitch"}, level="WARN")
         return
 
     candidates = await _fetch_candidates()
@@ -309,22 +279,22 @@ async def sniper_cycle():
     for c in candidates:
         mint = c.get("mint") or c.get("asset_id") or c.get("symbol")
         if not mint:
+            emit("SKIP_CANDIDATE", {"reason": "missing_mint", "candidate": c}, level="WARN")
             continue
-
-        # 同一輪生命周期不重複打同一 mint
         if mint in SEEN_MINTS:
+            emit("SKIP_DUPLICATE", {"mint": mint})
             continue
         SEEN_MINTS.add(mint)
 
         ok, reason, score = await _risk_and_alpha_ok(c, size)
         if not ok:
-            log_event(f"[SNIPER] skip {str(mint)[:8]} reason={reason}")
+            emit("SKIP_RISK_ALPHA", {"mint": mint, "symbol": c.get("symbol"), "reason": reason, "score": score})
             continue
 
-        log_event(
-            f"[SNIPER] BUY_SIGNAL {c.get('symbol', mint)} "
-            f"mint={mint} score={score:.3f} size={size} mode={_mode()} source={c.get('source')}"
-        )
+        k_ok, k_score, k_reason = kronos_allow_trade(c)
+        if not k_ok:
+            emit("SKIP_KRONOS", {"mint": mint, "symbol": c.get("symbol"), "reason": k_reason, "kronos_score": k_score})
+            continue
 
         payload = {
             "symbol": mint,
@@ -332,8 +302,17 @@ async def sniper_cycle():
             "size": size,
             "slippage_bps": _i(os.getenv("SLIPPAGE_BPS", "80"), 80),
             "confirm": not _b("MANUAL_CONFIRM", "true"),
-            "reason": f"sniper source={c.get('source')} score={score:.3f}",
+            "reason": f"sniper source={c.get('source')} alpha={score:.3f} kronos={k_score:.3f}",
         }
+
+        allowed, guard_reason, guard_meta = guard_trade(payload, c)
+        if not allowed:
+            emit("BLOCKED_GUARD", {"mint": mint, "symbol": c.get("symbol"), "reason": guard_reason, "meta": guard_meta})
+            continue
+
+        emit("SIGNAL", {"mint": mint, "symbol": c.get("symbol"), "alpha_score": score, "kronos_score": k_score, "size": size, "mode": _mode(), "source": c.get("source")})
+        emit("ORDER_SEND", payload)
+        mark_trade_attempt(mint)
 
         if not _b("REAL_TRADING", "false"):
             res = {"success": True, "paper": True, "message": "REAL_TRADING=false; not sent"}
@@ -343,21 +322,21 @@ async def sniper_cycle():
             res = await call("trade_order", payload)
 
         trades = state.setdefault("trade_history", [])
-        trades.append({"ts": int(time.time()), "payload": payload, "candidate": c, "result": res})
+        trades.append({"ts": int(time.time()), "payload": payload, "candidate": c, "guard": guard_meta, "result": res})
         if len(trades) > 200:
             del trades[:-200]
-
-        log_event(f"[SNIPER] trade_order result: {res}")
+        emit("ORDER_RESULT", res)
 
 
 async def auto_runtime_loop():
     state["running"] = True
     state["mode"] = _mode()
     state.setdefault("logs", [])
+    state.setdefault("events", [])
     state.setdefault("positions", [])
     state.setdefault("trade_history", [])
 
-    log_event(f"[AUTO] original-core runtime started mode={state['mode']}")
+    emit("AUTO_START", {"mode": state["mode"]})
 
     while state.get("running", True):
         try:
@@ -369,39 +348,31 @@ async def auto_runtime_loop():
 
             if _b("RUN_FUND_CYCLE", "false"):
                 res = await call("run_fund_cycle", {})
-                log_event(f"[AUTO] fund_cycle: {res}")
+                emit("FUND_CYCLE", res)
 
-            await asyncio.sleep(
-                _f(os.getenv("TRADING_INTERVAL_SEC", os.getenv("SNIPER_SCAN_INTERVAL", "2")), 2.0)
-            )
-
+            await asyncio.sleep(_f(os.getenv("TRADING_INTERVAL_SEC", os.getenv("SNIPER_SCAN_INTERVAL", "2")), 2.0))
         except asyncio.CancelledError:
             break
         except Exception as e:
-            log_event(f"[AUTO_ERROR] {e}")
+            emit("AUTO_ERROR", str(e), level="ERROR")
             await asyncio.sleep(5)
 
     state["running"] = False
-    log_event("[AUTO] original-core runtime stopped")
+    emit("AUTO_STOP", {})
 
 
 def start_runtime() -> bool:
     global TASK
-
     if TASK and not TASK.done():
         state["running"] = True
         return False
-
     TASK = asyncio.create_task(auto_runtime_loop())
     return True
 
 
 def stop_runtime():
     global TASK
-
     state["running"] = False
-
     if TASK and not TASK.done():
         TASK.cancel()
-
     TASK = None
