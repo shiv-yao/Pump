@@ -488,3 +488,39 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     host = os.getenv("HOST", "0.0.0.0")
     uvicorn.run(app, host=host, port=port)
+
+import httpx
+
+@app.get("/api/debug/net")
+async def debug_network():
+    results = {}
+
+    urls = {
+        "jupiter_lite": os.getenv("JUP_QUOTE_URL", "https://lite-api.jup.ag/swap/v1/quote"),
+        "jupiter_backup": os.getenv("JUP_QUOTE_URL_BACKUP", "https://quote-api.jup.ag/v6/quote"),
+        "solana_rpc": os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com"),
+    }
+
+    async with httpx.AsyncClient(timeout=5) as client:
+        for name, url in urls.items():
+            try:
+                r = await client.get(url)
+                results[name] = {
+                    "ok": True,
+                    "status_code": r.status_code,
+                }
+            except Exception as e:
+                results[name] = {
+                    "ok": False,
+                    "error": str(e),
+                }
+
+    return {
+        "success": True,
+        "network": results,
+        "env": {
+            "JUP_QUOTE_URL": os.getenv("JUP_QUOTE_URL"),
+            "JUP_QUOTE_URL_BACKUP": os.getenv("JUP_QUOTE_URL_BACKUP"),
+            "SOLANA_RPC": os.getenv("SOLANA_RPC"),
+        }
+    }
