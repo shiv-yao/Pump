@@ -1,7 +1,5 @@
 import logging
 import os
-from dotenv import load_dotenv
-load_dotenv()
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -52,6 +50,26 @@ except Exception as e:
     ONCHAIN_IMPORT_ERROR = e
 else:
     ONCHAIN_IMPORT_ERROR = None
+
+try:
+    from app.runtime.war_sniper import start as start_war_sniper
+    from app.runtime.war_sniper import stop as stop_war_sniper
+except Exception as e:
+    start_war_sniper = None
+    stop_war_sniper = None
+    WAR_IMPORT_ERROR = e
+else:
+    WAR_IMPORT_ERROR = None
+
+try:
+    from app.runtime.auto_sell import start as start_auto_sell
+    from app.runtime.auto_sell import stop as stop_auto_sell
+except Exception as e:
+    start_auto_sell = None
+    stop_auto_sell = None
+    AUTO_SELL_IMPORT_ERROR = e
+else:
+    AUTO_SELL_IMPORT_ERROR = None
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -107,8 +125,20 @@ async def lifespan(app: FastAPI):
             log.info(f"ONCHAIN_SNIPER enabled: started={started}")
         else:
             log.warning(f"ONCHAIN_SNIPER unavailable: {ONCHAIN_IMPORT_ERROR}")
-    else:
-        log.info("ONCHAIN_SNIPER disabled")
+
+    if _enabled("ENABLE_WAR_SNIPER", "false"):
+        if start_war_sniper:
+            started = start_war_sniper()
+            log.info(f"WAR_SNIPER enabled: started={started}")
+        else:
+            log.warning(f"WAR_SNIPER unavailable: {WAR_IMPORT_ERROR}")
+
+    if _enabled("ENABLE_AUTO_SELL", "true"):
+        if start_auto_sell:
+            started = start_auto_sell()
+            log.info(f"AUTO_SELL enabled: started={started}")
+        else:
+            log.warning(f"AUTO_SELL unavailable: {AUTO_SELL_IMPORT_ERROR}")
 
     log.info("AI Plugin Terminal started")
 
@@ -123,12 +153,24 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 log.warning(f"stop_onchain_sniper failed: {e}")
 
+        if stop_war_sniper:
+            try:
+                stop_war_sniper()
+            except Exception as e:
+                log.warning(f"stop_war_sniper failed: {e}")
+
+        if stop_auto_sell:
+            try:
+                stop_auto_sell()
+            except Exception as e:
+                log.warning(f"stop_auto_sell failed: {e}")
+
         log.info("AI Plugin Terminal stopped")
 
 
 app = FastAPI(
     title="AI Plugin Terminal",
-    version="3.2.0-original-core-real-market",
+    version="3.2.0-war-mode",
     lifespan=lifespan,
 )
 
@@ -158,16 +200,22 @@ async def health():
     return {
         "status": "ok",
         "plugins": len(plugin_registry),
-        "claude_enabled": ENABLE_CLAUDE,
-        "openai_enabled": ENABLE_OPENAI,
         "auto_trading": _enabled("AUTO_TRADING", "false"),
         "onchain_sniper": _enabled("ENABLE_ONCHAIN_SNIPER", "false"),
         "onchain_import_ok": ONCHAIN_IMPORT_ERROR is None,
         "onchain_import_error": str(ONCHAIN_IMPORT_ERROR) if ONCHAIN_IMPORT_ERROR else None,
+        "war_sniper": _enabled("ENABLE_WAR_SNIPER", "false"),
+        "war_import_ok": WAR_IMPORT_ERROR is None,
+        "war_import_error": str(WAR_IMPORT_ERROR) if WAR_IMPORT_ERROR else None,
+        "auto_sell": _enabled("ENABLE_AUTO_SELL", "true"),
+        "auto_sell_import_ok": AUTO_SELL_IMPORT_ERROR is None,
+        "auto_sell_import_error": str(AUTO_SELL_IMPORT_ERROR) if AUTO_SELL_IMPORT_ERROR else None,
         "real_trading": _enabled("REAL_TRADING", "false"),
         "manual_confirm": _enabled("MANUAL_CONFIRM", "true"),
         "running": bool(state.get("running", False)),
         "kill": bool(state.get("kill", False)),
+        "claude_enabled": ENABLE_CLAUDE,
+        "openai_enabled": ENABLE_OPENAI,
     }
 
 
@@ -183,61 +231,53 @@ async def api_state():
             "running": bool(state.get("running", False)),
             "mode": state.get("mode", "PAPER"),
             "kill": bool(state.get("kill", False)),
-            "pnl": float(state.get("pnl", 0.0)),
-            "unrealized_pnl": float(state.get("unrealized_pnl", 0.0)),
             "positions_count": len(positions),
             "trades_count": len(trades),
-            "winrate": float(state.get("winrate", 0.0)),
-            "drawdown": float(state.get("drawdown", 0.0)),
-            "total_exposure": float(state.get("total_exposure", 0.0)),
             "positions": positions,
             "recent_trades": trades[-20:],
             "logs": logs[-100:],
         },
         "meta": {
-            "auto_trading_env": os.getenv("AUTO_TRADING", "false"),
-            "enable_onchain_sniper": os.getenv("ENABLE_ONCHAIN_SNIPER", "false"),
-            "real_trading_env": os.getenv("REAL_TRADING", "false"),
-            "manual_confirm_env": os.getenv("MANUAL_CONFIRM", "true"),
-            "enable_pump_sniper": os.getenv("ENABLE_PUMP_SNIPER", "false"),
-            "enable_dex_sniper": os.getenv("ENABLE_DEX_SNIPER", "true"),
-            "orch_enabled": os.getenv("ORCH_ENABLED", "true"),
+            "AUTO_TRADING": os.getenv("AUTO_TRADING", "false"),
+            "ENABLE_ONCHAIN_SNIPER": os.getenv("ENABLE_ONCHAIN_SNIPER", "false"),
+            "ENABLE_WAR_SNIPER": os.getenv("ENABLE_WAR_SNIPER", "false"),
+            "ENABLE_AUTO_SELL": os.getenv("ENABLE_AUTO_SELL", "true"),
+            "REAL_TRADING": os.getenv("REAL_TRADING", "false"),
+            "MANUAL_CONFIRM": os.getenv("MANUAL_CONFIRM", "true"),
         },
     }
 
 
 @app.get("/api/debug/flow")
 async def debug_flow():
-    try:
-        logs = list(state.get("logs", []) or [])
-        trades = list(state.get("trade_history", []) or [])
-        positions = list(state.get("positions", []) or [])
+    logs = list(state.get("logs", []) or [])
+    trades = list(state.get("trade_history", []) or [])
+    positions = list(state.get("positions", []) or [])
 
-        return {
-            "running": bool(state.get("running", False)),
-            "mode": state.get("mode", "PAPER"),
-            "kill": bool(state.get("kill", False)),
-            "last_logs": logs[-50:],
-            "positions": positions,
-            "recent_trades": trades[-10:],
-            "summary": {
-                "logs_count": len(logs),
-                "positions_count": len(positions),
-                "trades_count": len(trades),
-            },
-            "env": {
-                "AUTO_TRADING": os.getenv("AUTO_TRADING", "false"),
-                "ENABLE_ONCHAIN_SNIPER": os.getenv("ENABLE_ONCHAIN_SNIPER", "false"),
-                "REAL_TRADING": os.getenv("REAL_TRADING", "false"),
-                "MANUAL_CONFIRM": os.getenv("MANUAL_CONFIRM", "true"),
-                "ENABLE_PUMP_SNIPER": os.getenv("ENABLE_PUMP_SNIPER", "false"),
-                "ENABLE_DEX_SNIPER": os.getenv("ENABLE_DEX_SNIPER", "true"),
-                "ORCH_ENABLED": os.getenv("ORCH_ENABLED", "true"),
-                "SOLANA_WS": os.getenv("SOLANA_WS", ""),
-            },
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    return {
+        "running": bool(state.get("running", False)),
+        "mode": state.get("mode", "PAPER"),
+        "kill": bool(state.get("kill", False)),
+        "last_logs": logs[-50:],
+        "positions": positions,
+        "recent_trades": trades[-10:],
+        "summary": {
+            "logs_count": len(logs),
+            "positions_count": len(positions),
+            "trades_count": len(trades),
+        },
+        "env": {
+            "AUTO_TRADING": os.getenv("AUTO_TRADING", "false"),
+            "ENABLE_ONCHAIN_SNIPER": os.getenv("ENABLE_ONCHAIN_SNIPER", "false"),
+            "ENABLE_WAR_SNIPER": os.getenv("ENABLE_WAR_SNIPER", "false"),
+            "ENABLE_AUTO_SELL": os.getenv("ENABLE_AUTO_SELL", "true"),
+            "REAL_TRADING": os.getenv("REAL_TRADING", "false"),
+            "MANUAL_CONFIRM": os.getenv("MANUAL_CONFIRM", "true"),
+            "SOLANA_WS": os.getenv("SOLANA_WS", ""),
+            "JUP_QUOTE_URL": os.getenv("JUP_QUOTE_URL", ""),
+            "JUP_QUOTE_URL_BACKUP": os.getenv("JUP_QUOTE_URL_BACKUP", ""),
+        },
+    }
 
 
 @app.post("/api/trading/start")
@@ -247,32 +287,41 @@ async def trading_start():
 
     runtime_started = start_runtime()
 
-    sniper_started = False
+    onchain_started = False
+    war_started = False
+    auto_sell_started = False
+
     if _enabled("ENABLE_ONCHAIN_SNIPER", "false") and start_onchain_sniper:
-        sniper_started = start_onchain_sniper()
+        onchain_started = start_onchain_sniper()
+
+    if _enabled("ENABLE_WAR_SNIPER", "false") and start_war_sniper:
+        war_started = start_war_sniper()
+
+    if _enabled("ENABLE_AUTO_SELL", "true") and start_auto_sell:
+        auto_sell_started = start_auto_sell()
 
     return {
         "success": True,
         "running": True,
         "runtime_started": runtime_started,
-        "onchain_sniper_started": sniper_started,
-        "mode": state.get("mode", "PAPER"),
+        "onchain_sniper_started": onchain_started,
+        "war_sniper_started": war_started,
+        "auto_sell_started": auto_sell_started,
     }
 
 
 @app.post("/api/trading/stop")
 async def trading_stop():
     stop_runtime()
-
     if stop_onchain_sniper:
         stop_onchain_sniper()
+    if stop_war_sniper:
+        stop_war_sniper()
+    if stop_auto_sell:
+        stop_auto_sell()
 
     state["running"] = False
-
-    return {
-        "success": True,
-        "running": False,
-    }
+    return {"success": True, "running": False}
 
 
 @app.post("/api/killswitch")
@@ -281,15 +330,14 @@ async def api_killswitch():
     state["running"] = False
 
     stop_runtime()
-
     if stop_onchain_sniper:
         stop_onchain_sniper()
+    if stop_war_sniper:
+        stop_war_sniper()
+    if stop_auto_sell:
+        stop_auto_sell()
 
-    return {
-        "success": True,
-        "kill": True,
-        "running": False,
-    }
+    return {"success": True, "kill": True, "running": False}
 
 
 @app.post("/api/killswitch/reset")
@@ -300,34 +348,26 @@ async def api_killswitch_reset():
 
 @app.get("/api/plugins")
 async def list_plugins():
-    return {
-        "plugins": [
-            {
-                "id": pid,
-                "name": info["manifest"].get("name", pid),
-                "description": info["manifest"].get("description", ""),
-                "version": info["manifest"].get("version", "1.0.0"),
-                "enabled": info["enabled"],
-                "category": info["manifest"].get("category", "utility"),
-                "price": info["manifest"].get("price", 0),
-                "tools": [t.get("name") for t in info["manifest"].get("tools", [])],
-            }
-            for pid, info in plugin_registry.items()
-        ]
-    }
+    return {"plugins": [
+        {
+            "id": pid,
+            "name": info["manifest"].get("name", pid),
+            "description": info["manifest"].get("description", ""),
+            "version": info["manifest"].get("version", "1.0.0"),
+            "enabled": info["enabled"],
+            "category": info["manifest"].get("category", "utility"),
+            "price": info["manifest"].get("price", 0),
+            "tools": [t.get("name") for t in info["manifest"].get("tools", [])],
+        }
+        for pid, info in plugin_registry.items()
+    ]}
 
 
 @app.get("/api/store")
 async def store():
     data = get_store_registry()
     installed = set(plugin_registry.keys())
-    return {
-        "plugins": [
-            {**p, "installed": p.get("id") in installed}
-            for p in data
-            if isinstance(p, dict)
-        ]
-    }
+    return {"plugins": [{**p, "installed": p.get("id") in installed} for p in data if isinstance(p, dict)]}
 
 
 @app.post("/api/plugins/install")
@@ -335,13 +375,13 @@ async def install_plugin(req: InstallPluginRequest):
     if req.manifest:
         ok = install_plugin_from_inline_manifest(req.name, dict(req.manifest))
         if ok:
-            return {"success": True, "message": f"Plugin '{req.name}' installed from manifest"}
+            return {"success": True}
         raise HTTPException(status_code=400, detail="Install failed from manifest")
 
     if req.url:
         ok = await install_plugin_from_url(req.name, req.url, remember=True)
         if ok:
-            return {"success": True, "message": f"Plugin '{req.name}' installed from URL"}
+            return {"success": True}
         raise HTTPException(status_code=400, detail="Install failed from URL")
 
     raise HTTPException(status_code=400, detail="Provide manifest or url")
@@ -379,7 +419,6 @@ async def delete_plugin(plugin_id: str):
     ok = remove_plugin(plugin_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Plugin not found")
-
     return {"success": True}
 
 
@@ -399,16 +438,13 @@ async def provider_status():
 async def chat(req: ChatRequest):
     session = get_session(req.session_id)
     result = await session.run(req.message, req.history.copy() if req.history else [])
-
-    return JSONResponse(
-        {
-            "response": result.get("response", ""),
-            "steps": result.get("steps", []),
-            "provider": result.get("provider"),
-            "error": result.get("error"),
-            "session_id": req.session_id,
-        }
-    )
+    return JSONResponse({
+        "response": result.get("response", ""),
+        "steps": result.get("steps", []),
+        "provider": result.get("provider"),
+        "error": result.get("error"),
+        "session_id": req.session_id,
+    })
 
 
 @app.post("/api/command")
@@ -427,7 +463,6 @@ async def command(req: CommandRequest):
 @app.get("/api/env/latest")
 async def download_latest_env():
     env_path = Path("latest.env")
-
     if not env_path.exists():
         raise HTTPException(status_code=404, detail="latest.env not found")
 
@@ -443,11 +478,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     log.error(f"Unhandled error on {request.url.path}: {exc}")
     return JSONResponse(
         status_code=500,
-        content={
-            "success": False,
-            "error": str(exc),
-            "path": str(request.url.path),
-        },
+        content={"success": False, "error": str(exc), "path": str(request.url.path)},
     )
 
 
