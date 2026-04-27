@@ -5,6 +5,8 @@ import json
 import os
 import re
 import time
+
+import httpx
 import websockets
 
 from app.state import state
@@ -63,14 +65,24 @@ def extract_mint(log_line: str):
     return None
 
 
+async def get_jupiter_quote(mint: str, amount: int):
+    url = os.getenv("JUP_QUOTE_URL", "https://quote-api.jup.ag/v6/quote")
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(
+            url,
+            params={
+                "inputMint": SOL_MINT,
+                "outputMint": mint,
+                "amount": amount,
+                "slippageBps": _i(os.getenv("SLIPPAGE_BPS", "120"), 120),
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
+
 async def wait_until_tradable(mint: str, size_sol: float):
-    """
-    自動判斷 token 是否真的可交易：
-    1. 等 liquidity 出現
-    2. quote 有 outAmount
-    3. price impact 沒太高
-    4. 連續 retry，不是馬上放棄
-    """
     retries = _i(os.getenv("TRADE_READY_RETRIES", "8"), 8)
     delay = _f(os.getenv("TRADE_READY_DELAY_SEC", "2"), 2)
     min_out = _i(os.getenv("MIN_OUT_AMOUNT", "10"), 10)
@@ -80,11 +92,7 @@ async def wait_until_tradable(mint: str, size_sol: float):
 
     for i in range(retries):
         try:
-            quote = await call("get_quote", {
-                "inputMint": SOL_MINT,
-                "outputMint": mint,
-                "amount": amount,
-            })
+            quote = await get_jupiter_quote(mint, amount)
 
             if not isinstance(quote, dict):
                 log(f"[TRADE_READY] retry={i+1}/{retries} invalid_quote {mint}")
@@ -113,7 +121,7 @@ async def wait_until_tradable(mint: str, size_sol: float):
             return True, quote
 
         except Exception as e:
-            log(f"[TRADE_READY] retry={i+1}/{retries} error {mint}: {e}")
+            log(f"[TRADE_READY] retry={i+1}/{retries} quote_error {mint}: {e}")
             await asyncio.sleep(delay)
 
     return False, None
