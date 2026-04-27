@@ -40,9 +40,23 @@ from app.api.orchestrator import router as orchestrator_router
 from app.state import state
 from app.runtime.original_auto import start_runtime, stop_runtime
 
+try:
+    from app.runtime.onchain_sniper import start as start_onchain_sniper
+    from app.runtime.onchain_sniper import stop as stop_onchain_sniper
+except Exception as e:
+    start_onchain_sniper = None
+    stop_onchain_sniper = None
+    ONCHAIN_IMPORT_ERROR = e
+else:
+    ONCHAIN_IMPORT_ERROR = None
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+
+
+def _enabled(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
 
 
 @asynccontextmanager
@@ -78,11 +92,20 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("DB unavailable, skipping installed plugin restore")
 
-    if os.getenv("AUTO_TRADING", "false").lower() == "true":
+    if _enabled("AUTO_TRADING", "false"):
         started = start_runtime()
         log.info(f"AUTO_TRADING enabled: original runtime started={started}")
     else:
         log.info("AUTO_TRADING disabled")
+
+    if _enabled("ENABLE_ONCHAIN_SNIPER", "false"):
+        if start_onchain_sniper:
+            started = start_onchain_sniper()
+            log.info(f"ONCHAIN_SNIPER enabled: started={started}")
+        else:
+            log.warning(f"ONCHAIN_SNIPER unavailable: {ONCHAIN_IMPORT_ERROR}")
+    else:
+        log.info("ONCHAIN_SNIPER disabled")
 
     log.info("AI Plugin Terminal started")
 
@@ -90,6 +113,13 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         stop_runtime()
+
+        if stop_onchain_sniper:
+            try:
+                stop_onchain_sniper()
+            except Exception as e:
+                log.warning(f"stop_onchain_sniper failed: {e}")
+
         log.info("AI Plugin Terminal stopped")
 
 
@@ -126,9 +156,12 @@ async def health():
         "plugins": len(plugin_registry),
         "claude_enabled": ENABLE_CLAUDE,
         "openai_enabled": ENABLE_OPENAI,
-        "auto_trading": os.getenv("AUTO_TRADING", "false").lower() == "true",
-        "real_trading": os.getenv("REAL_TRADING", "false").lower() == "true",
-        "manual_confirm": os.getenv("MANUAL_CONFIRM", "true").lower() == "true",
+        "auto_trading": _enabled("AUTO_TRADING", "false"),
+        "onchain_sniper": _enabled("ENABLE_ONCHAIN_SNIPER", "false"),
+        "onchain_import_ok": ONCHAIN_IMPORT_ERROR is None,
+        "onchain_import_error": str(ONCHAIN_IMPORT_ERROR) if ONCHAIN_IMPORT_ERROR else None,
+        "real_trading": _enabled("REAL_TRADING", "false"),
+        "manual_confirm": _enabled("MANUAL_CONFIRM", "true"),
         "running": bool(state.get("running", False)),
         "kill": bool(state.get("kill", False)),
     }
@@ -159,9 +192,11 @@ async def api_state():
         },
         "meta": {
             "auto_trading_env": os.getenv("AUTO_TRADING", "false"),
+            "enable_onchain_sniper": os.getenv("ENABLE_ONCHAIN_SNIPER", "false"),
             "real_trading_env": os.getenv("REAL_TRADING", "false"),
             "manual_confirm_env": os.getenv("MANUAL_CONFIRM", "true"),
-            "enable_pump_sniper": os.getenv("ENABLE_PUMP_SNIPER", "true"),
+            "enable_pump_sniper": os.getenv("ENABLE_PUMP_SNIPER", "false"),
+            "enable_dex_sniper": os.getenv("ENABLE_DEX_SNIPER", "true"),
             "orch_enabled": os.getenv("ORCH_ENABLED", "true"),
         },
     }
@@ -178,7 +213,7 @@ async def debug_flow():
             "running": bool(state.get("running", False)),
             "mode": state.get("mode", "PAPER"),
             "kill": bool(state.get("kill", False)),
-            "last_logs": logs[-30:],
+            "last_logs": logs[-50:],
             "positions": positions,
             "recent_trades": trades[-10:],
             "summary": {
@@ -188,10 +223,13 @@ async def debug_flow():
             },
             "env": {
                 "AUTO_TRADING": os.getenv("AUTO_TRADING", "false"),
+                "ENABLE_ONCHAIN_SNIPER": os.getenv("ENABLE_ONCHAIN_SNIPER", "false"),
                 "REAL_TRADING": os.getenv("REAL_TRADING", "false"),
                 "MANUAL_CONFIRM": os.getenv("MANUAL_CONFIRM", "true"),
-                "ENABLE_PUMP_SNIPER": os.getenv("ENABLE_PUMP_SNIPER", "true"),
+                "ENABLE_PUMP_SNIPER": os.getenv("ENABLE_PUMP_SNIPER", "false"),
+                "ENABLE_DEX_SNIPER": os.getenv("ENABLE_DEX_SNIPER", "true"),
                 "ORCH_ENABLED": os.getenv("ORCH_ENABLED", "true"),
+                "SOLANA_WS": os.getenv("SOLANA_WS", ""),
             },
         }
     except Exception as e:
@@ -202,12 +240,18 @@ async def debug_flow():
 async def trading_start():
     state["kill"] = False
     state["running"] = True
-    started = start_runtime()
+
+    runtime_started = start_runtime()
+
+    sniper_started = False
+    if _enabled("ENABLE_ONCHAIN_SNIPER", "false") and start_onchain_sniper:
+        sniper_started = start_onchain_sniper()
 
     return {
         "success": True,
         "running": True,
-        "started_new_task": started,
+        "runtime_started": runtime_started,
+        "onchain_sniper_started": sniper_started,
         "mode": state.get("mode", "PAPER"),
     }
 
@@ -215,6 +259,10 @@ async def trading_start():
 @app.post("/api/trading/stop")
 async def trading_stop():
     stop_runtime()
+
+    if stop_onchain_sniper:
+        stop_onchain_sniper()
+
     state["running"] = False
 
     return {
@@ -227,7 +275,11 @@ async def trading_stop():
 async def api_killswitch():
     state["kill"] = True
     state["running"] = False
+
     stop_runtime()
+
+    if stop_onchain_sniper:
+        stop_onchain_sniper()
 
     return {
         "success": True,
@@ -239,7 +291,6 @@ async def api_killswitch():
 @app.post("/api/killswitch/reset")
 async def api_killswitch_reset():
     state["kill"] = False
-
     return {
         "success": True,
         "kill": False,
@@ -283,19 +334,13 @@ async def install_plugin(req: InstallPluginRequest):
     if req.manifest:
         ok = install_plugin_from_inline_manifest(req.name, dict(req.manifest))
         if ok:
-            return {
-                "success": True,
-                "message": f"Plugin '{req.name}' installed from manifest",
-            }
+            return {"success": True, "message": f"Plugin '{req.name}' installed from manifest"}
         raise HTTPException(status_code=400, detail="Install failed from manifest")
 
     if req.url:
         ok = await install_plugin_from_url(req.name, req.url, remember=True)
         if ok:
-            return {
-                "success": True,
-                "message": f"Plugin '{req.name}' installed from URL",
-            }
+            return {"success": True, "message": f"Plugin '{req.name}' installed from URL"}
         raise HTTPException(status_code=400, detail="Install failed from URL")
 
     raise HTTPException(status_code=400, detail="Provide manifest or url")
