@@ -3,6 +3,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
@@ -11,6 +12,7 @@ from app.agent_runtime import get_session
 from app.builtin_plugins import ensure_builtin_plugins
 from app.command_router import execute_platform_command
 from app.db import init_plugin_db
+from app.env_guard import check_env, assert_env_ready
 from app.models import (
     ChatRequest,
     CommandRequest,
@@ -52,16 +54,6 @@ else:
     ONCHAIN_IMPORT_ERROR = None
 
 try:
-    from app.runtime.war_sniper import start as start_war_sniper
-    from app.runtime.war_sniper import stop as stop_war_sniper
-except Exception as e:
-    start_war_sniper = None
-    stop_war_sniper = None
-    WAR_IMPORT_ERROR = e
-else:
-    WAR_IMPORT_ERROR = None
-
-try:
     from app.runtime.auto_sell import start as start_auto_sell
     from app.runtime.auto_sell import stop as stop_auto_sell
 except Exception as e:
@@ -82,6 +74,12 @@ def _enabled(name: str, default: str = "false") -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    env_check = check_env()
+    log.info(f"ENV CHECK: {env_check}")
+
+    if _enabled("ENV_STRICT", "false"):
+        assert_env_ready()
+
     db_ok = True
 
     try:
@@ -125,13 +123,8 @@ async def lifespan(app: FastAPI):
             log.info(f"ONCHAIN_SNIPER enabled: started={started}")
         else:
             log.warning(f"ONCHAIN_SNIPER unavailable: {ONCHAIN_IMPORT_ERROR}")
-
-    if _enabled("ENABLE_WAR_SNIPER", "false"):
-        if start_war_sniper:
-            started = start_war_sniper()
-            log.info(f"WAR_SNIPER enabled: started={started}")
-        else:
-            log.warning(f"WAR_SNIPER unavailable: {WAR_IMPORT_ERROR}")
+    else:
+        log.info("ONCHAIN_SNIPER disabled")
 
     if _enabled("ENABLE_AUTO_SELL", "true"):
         if start_auto_sell:
@@ -139,6 +132,8 @@ async def lifespan(app: FastAPI):
             log.info(f"AUTO_SELL enabled: started={started}")
         else:
             log.warning(f"AUTO_SELL unavailable: {AUTO_SELL_IMPORT_ERROR}")
+    else:
+        log.info("AUTO_SELL disabled")
 
     log.info("AI Plugin Terminal started")
 
@@ -153,12 +148,6 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 log.warning(f"stop_onchain_sniper failed: {e}")
 
-        if stop_war_sniper:
-            try:
-                stop_war_sniper()
-            except Exception as e:
-                log.warning(f"stop_war_sniper failed: {e}")
-
         if stop_auto_sell:
             try:
                 stop_auto_sell()
@@ -170,7 +159,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Plugin Terminal",
-    version="3.2.0-war-mode",
+    version="3.2.0-env-guard",
     lifespan=lifespan,
 )
 
@@ -204,9 +193,6 @@ async def health():
         "onchain_sniper": _enabled("ENABLE_ONCHAIN_SNIPER", "false"),
         "onchain_import_ok": ONCHAIN_IMPORT_ERROR is None,
         "onchain_import_error": str(ONCHAIN_IMPORT_ERROR) if ONCHAIN_IMPORT_ERROR else None,
-        "war_sniper": _enabled("ENABLE_WAR_SNIPER", "false"),
-        "war_import_ok": WAR_IMPORT_ERROR is None,
-        "war_import_error": str(WAR_IMPORT_ERROR) if WAR_IMPORT_ERROR else None,
         "auto_sell": _enabled("ENABLE_AUTO_SELL", "true"),
         "auto_sell_import_ok": AUTO_SELL_IMPORT_ERROR is None,
         "auto_sell_import_error": str(AUTO_SELL_IMPORT_ERROR) if AUTO_SELL_IMPORT_ERROR else None,
@@ -216,6 +202,51 @@ async def health():
         "kill": bool(state.get("kill", False)),
         "claude_enabled": ENABLE_CLAUDE,
         "openai_enabled": ENABLE_OPENAI,
+        "env_ok": check_env()["ok"],
+    }
+
+
+@app.get("/api/debug/env")
+async def debug_env():
+    return {
+        "success": True,
+        "env": check_env(),
+    }
+
+
+@app.get("/api/debug/net")
+async def debug_network():
+    results = {}
+
+    urls = {
+        "jupiter_lite": os.getenv("JUP_QUOTE_URL", "https://lite-api.jup.ag/swap/v1/quote"),
+        "jupiter_backup": os.getenv("JUP_QUOTE_URL_BACKUP", "https://quote-api.jup.ag/v6/quote"),
+        "solana_rpc": os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com"),
+    }
+
+    async with httpx.AsyncClient(timeout=5) as client:
+        for name, url in urls.items():
+            try:
+                r = await client.get(url)
+                results[name] = {
+                    "ok": True,
+                    "status_code": r.status_code,
+                }
+            except Exception as e:
+                results[name] = {
+                    "ok": False,
+                    "error": str(e),
+                }
+
+    return {
+        "success": True,
+        "network": results,
+        "env": {
+            "JUP_QUOTE_URL": os.getenv("JUP_QUOTE_URL"),
+            "JUP_QUOTE_URL_BACKUP": os.getenv("JUP_QUOTE_URL_BACKUP"),
+            "SOLANA_RPC": os.getenv("SOLANA_RPC"),
+            "SOLANA_WS": os.getenv("SOLANA_WS"),
+        },
     }
 
 
@@ -231,8 +262,13 @@ async def api_state():
             "running": bool(state.get("running", False)),
             "mode": state.get("mode", "PAPER"),
             "kill": bool(state.get("kill", False)),
+            "pnl": float(state.get("pnl", 0.0)),
+            "unrealized_pnl": float(state.get("unrealized_pnl", 0.0)),
             "positions_count": len(positions),
             "trades_count": len(trades),
+            "winrate": float(state.get("winrate", 0.0)),
+            "drawdown": float(state.get("drawdown", 0.0)),
+            "total_exposure": float(state.get("total_exposure", 0.0)),
             "positions": positions,
             "recent_trades": trades[-20:],
             "logs": logs[-100:],
@@ -240,10 +276,12 @@ async def api_state():
         "meta": {
             "AUTO_TRADING": os.getenv("AUTO_TRADING", "false"),
             "ENABLE_ONCHAIN_SNIPER": os.getenv("ENABLE_ONCHAIN_SNIPER", "false"),
-            "ENABLE_WAR_SNIPER": os.getenv("ENABLE_WAR_SNIPER", "false"),
             "ENABLE_AUTO_SELL": os.getenv("ENABLE_AUTO_SELL", "true"),
             "REAL_TRADING": os.getenv("REAL_TRADING", "false"),
             "MANUAL_CONFIRM": os.getenv("MANUAL_CONFIRM", "true"),
+            "SOLANA_WS": os.getenv("SOLANA_WS", ""),
+            "JUP_QUOTE_URL": os.getenv("JUP_QUOTE_URL", ""),
+            "JUP_QUOTE_URL_BACKUP": os.getenv("JUP_QUOTE_URL_BACKUP", ""),
         },
     }
 
@@ -269,7 +307,6 @@ async def debug_flow():
         "env": {
             "AUTO_TRADING": os.getenv("AUTO_TRADING", "false"),
             "ENABLE_ONCHAIN_SNIPER": os.getenv("ENABLE_ONCHAIN_SNIPER", "false"),
-            "ENABLE_WAR_SNIPER": os.getenv("ENABLE_WAR_SNIPER", "false"),
             "ENABLE_AUTO_SELL": os.getenv("ENABLE_AUTO_SELL", "true"),
             "REAL_TRADING": os.getenv("REAL_TRADING", "false"),
             "MANUAL_CONFIRM": os.getenv("MANUAL_CONFIRM", "true"),
@@ -285,18 +322,15 @@ async def trading_start():
     state["kill"] = False
     state["running"] = True
 
-    runtime_started = start_runtime()
+    runtime_started = False
+    if _enabled("AUTO_TRADING", "false"):
+        runtime_started = start_runtime()
 
-    onchain_started = False
-    war_started = False
-    auto_sell_started = False
-
+    sniper_started = False
     if _enabled("ENABLE_ONCHAIN_SNIPER", "false") and start_onchain_sniper:
-        onchain_started = start_onchain_sniper()
+        sniper_started = start_onchain_sniper()
 
-    if _enabled("ENABLE_WAR_SNIPER", "false") and start_war_sniper:
-        war_started = start_war_sniper()
-
+    auto_sell_started = False
     if _enabled("ENABLE_AUTO_SELL", "true") and start_auto_sell:
         auto_sell_started = start_auto_sell()
 
@@ -304,24 +338,28 @@ async def trading_start():
         "success": True,
         "running": True,
         "runtime_started": runtime_started,
-        "onchain_sniper_started": onchain_started,
-        "war_sniper_started": war_started,
+        "onchain_sniper_started": sniper_started,
         "auto_sell_started": auto_sell_started,
+        "mode": state.get("mode", "PAPER"),
     }
 
 
 @app.post("/api/trading/stop")
 async def trading_stop():
     stop_runtime()
+
     if stop_onchain_sniper:
         stop_onchain_sniper()
-    if stop_war_sniper:
-        stop_war_sniper()
+
     if stop_auto_sell:
         stop_auto_sell()
 
     state["running"] = False
-    return {"success": True, "running": False}
+
+    return {
+        "success": True,
+        "running": False,
+    }
 
 
 @app.post("/api/killswitch")
@@ -330,14 +368,18 @@ async def api_killswitch():
     state["running"] = False
 
     stop_runtime()
+
     if stop_onchain_sniper:
         stop_onchain_sniper()
-    if stop_war_sniper:
-        stop_war_sniper()
+
     if stop_auto_sell:
         stop_auto_sell()
 
-    return {"success": True, "kill": True, "running": False}
+    return {
+        "success": True,
+        "kill": True,
+        "running": False,
+    }
 
 
 @app.post("/api/killswitch/reset")
@@ -348,26 +390,34 @@ async def api_killswitch_reset():
 
 @app.get("/api/plugins")
 async def list_plugins():
-    return {"plugins": [
-        {
-            "id": pid,
-            "name": info["manifest"].get("name", pid),
-            "description": info["manifest"].get("description", ""),
-            "version": info["manifest"].get("version", "1.0.0"),
-            "enabled": info["enabled"],
-            "category": info["manifest"].get("category", "utility"),
-            "price": info["manifest"].get("price", 0),
-            "tools": [t.get("name") for t in info["manifest"].get("tools", [])],
-        }
-        for pid, info in plugin_registry.items()
-    ]}
+    return {
+        "plugins": [
+            {
+                "id": pid,
+                "name": info["manifest"].get("name", pid),
+                "description": info["manifest"].get("description", ""),
+                "version": info["manifest"].get("version", "1.0.0"),
+                "enabled": info["enabled"],
+                "category": info["manifest"].get("category", "utility"),
+                "price": info["manifest"].get("price", 0),
+                "tools": [t.get("name") for t in info["manifest"].get("tools", [])],
+            }
+            for pid, info in plugin_registry.items()
+        ]
+    }
 
 
 @app.get("/api/store")
 async def store():
     data = get_store_registry()
     installed = set(plugin_registry.keys())
-    return {"plugins": [{**p, "installed": p.get("id") in installed} for p in data if isinstance(p, dict)]}
+    return {
+        "plugins": [
+            {**p, "installed": p.get("id") in installed}
+            for p in data
+            if isinstance(p, dict)
+        ]
+    }
 
 
 @app.post("/api/plugins/install")
@@ -375,13 +425,13 @@ async def install_plugin(req: InstallPluginRequest):
     if req.manifest:
         ok = install_plugin_from_inline_manifest(req.name, dict(req.manifest))
         if ok:
-            return {"success": True}
+            return {"success": True, "message": f"Plugin '{req.name}' installed from manifest"}
         raise HTTPException(status_code=400, detail="Install failed from manifest")
 
     if req.url:
         ok = await install_plugin_from_url(req.name, req.url, remember=True)
         if ok:
-            return {"success": True}
+            return {"success": True, "message": f"Plugin '{req.name}' installed from URL"}
         raise HTTPException(status_code=400, detail="Install failed from URL")
 
     raise HTTPException(status_code=400, detail="Provide manifest or url")
@@ -438,13 +488,16 @@ async def provider_status():
 async def chat(req: ChatRequest):
     session = get_session(req.session_id)
     result = await session.run(req.message, req.history.copy() if req.history else [])
-    return JSONResponse({
-        "response": result.get("response", ""),
-        "steps": result.get("steps", []),
-        "provider": result.get("provider"),
-        "error": result.get("error"),
-        "session_id": req.session_id,
-    })
+
+    return JSONResponse(
+        {
+            "response": result.get("response", ""),
+            "steps": result.get("steps", []),
+            "provider": result.get("provider"),
+            "error": result.get("error"),
+            "session_id": req.session_id,
+        }
+    )
 
 
 @app.post("/api/command")
@@ -463,6 +516,7 @@ async def command(req: CommandRequest):
 @app.get("/api/env/latest")
 async def download_latest_env():
     env_path = Path("latest.env")
+
     if not env_path.exists():
         raise HTTPException(status_code=404, detail="latest.env not found")
 
@@ -478,7 +532,11 @@ async def global_exception_handler(request: Request, exc: Exception):
     log.error(f"Unhandled error on {request.url.path}: {exc}")
     return JSONResponse(
         status_code=500,
-        content={"success": False, "error": str(exc), "path": str(request.url.path)},
+        content={
+            "success": False,
+            "error": str(exc),
+            "path": str(request.url.path),
+        },
     )
 
 
@@ -488,39 +546,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     host = os.getenv("HOST", "0.0.0.0")
     uvicorn.run(app, host=host, port=port)
-
-import httpx
-
-@app.get("/api/debug/net")
-async def debug_network():
-    results = {}
-
-    urls = {
-        "jupiter_lite": os.getenv("JUP_QUOTE_URL", "https://lite-api.jup.ag/swap/v1/quote"),
-        "jupiter_backup": os.getenv("JUP_QUOTE_URL_BACKUP", "https://quote-api.jup.ag/v6/quote"),
-        "solana_rpc": os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com"),
-    }
-
-    async with httpx.AsyncClient(timeout=5) as client:
-        for name, url in urls.items():
-            try:
-                r = await client.get(url)
-                results[name] = {
-                    "ok": True,
-                    "status_code": r.status_code,
-                }
-            except Exception as e:
-                results[name] = {
-                    "ok": False,
-                    "error": str(e),
-                }
-
-    return {
-        "success": True,
-        "network": results,
-        "env": {
-            "JUP_QUOTE_URL": os.getenv("JUP_QUOTE_URL"),
-            "JUP_QUOTE_URL_BACKUP": os.getenv("JUP_QUOTE_URL_BACKUP"),
-            "SOLANA_RPC": os.getenv("SOLANA_RPC"),
-        }
-    }
