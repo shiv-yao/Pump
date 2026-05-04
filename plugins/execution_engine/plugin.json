@@ -1,9 +1,0 @@
-{
-  "id": "execution_engine",
-  "name": "execution_engine",
-  "enabled": true,
-  "category": "execution",
-  "tools": [
-    {"name": "execute_trade"}
-  ]
-}
