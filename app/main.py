@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.health import router as health_router
@@ -12,6 +13,7 @@ from app.runtime.trading_loop import trading_loop
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD_DIR = PROJECT_ROOT / "dashboard"
+DASHBOARD_INDEX = DASHBOARD_DIR / "index.html"
 
 
 @asynccontextmanager
@@ -31,9 +33,26 @@ app.include_router(state_router)
 app.include_router(positions_router)
 
 if DASHBOARD_DIR.exists():
-    app.mount("/dashboard", StaticFiles(directory=DASHBOARD_DIR, html=True), name="dashboard")
+    app.mount("/dashboard/assets", StaticFiles(directory=DASHBOARD_DIR), name="dashboard_assets")
 
 
 @app.get("/")
 async def root():
-    return {"system": "KRONOS OMEGA ADVANCED", "status": "running", "dashboard_url": "/dashboard"}
+    return {
+        "system": "KRONOS OMEGA ADVANCED",
+        "status": "running",
+        "dashboard_url": "/dashboard",
+        "dashboard_index_url": "/dashboard/index.html",
+    }
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard_home():
+    return RedirectResponse(url="/dashboard/index.html")
+
+
+@app.get("/dashboard/index.html", include_in_schema=False)
+async def dashboard_index():
+    if DASHBOARD_INDEX.exists():
+        return FileResponse(DASHBOARD_INDEX)
+    return {"detail": "Dashboard index not found in deployment artifact."}
