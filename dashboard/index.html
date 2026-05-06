@@ -1,237 +1,175 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KRONOS OMEGA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>KRONOS OMEGA Dashboard</title>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #04060d;
-      --panel: #101828;
-      --panel-muted: #182338;
-      --primary: #4f80ff;
-      --text: #f2f4f8;
-      --text-muted: #9ca9bf;
-      --ok: #2dd4bf;
+      --bg: #050812;
+      --card: #0f1728;
+      --card-2: #131f35;
+      --line: rgba(149, 165, 190, 0.2);
+      --primary: #5b8dff;
+      --text: #f0f5ff;
+      --muted: #8fa2c1;
+      --ok: #22d3a6;
       --warn: #f59e0b;
+      --danger: #ef4444;
     }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      min-height: 100vh;
-      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: radial-gradient(circle at top, #122445, var(--bg) 45%);
+      background: radial-gradient(circle at 10% -10%, #1d315f, var(--bg) 45%);
       color: var(--text);
-      padding: 24px;
-    }
-
-    .shell {
-      width: min(1120px, 100%);
-      margin: 0 auto;
-      display: grid;
-      gap: 16px;
-    }
-
-    .header {
-      background: linear-gradient(130deg, rgba(79, 128, 255, 0.25), rgba(16, 24, 40, 0.9));
-      border: 1px solid rgba(79, 128, 255, 0.25);
-      border-radius: 20px;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
       padding: 20px;
     }
-
-    .header h1 {
-      font-size: clamp(1.5rem, 4vw, 2rem);
-      margin-bottom: 8px;
-    }
-
-    .header p {
-      color: var(--text-muted);
-      line-height: 1.5;
-    }
-
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
-    }
-
-    .kpi,
-    .panel {
-      background: var(--panel);
-      border: 1px solid rgba(156, 169, 191, 0.15);
-      border-radius: 16px;
-      padding: 14px;
-    }
-
-    .kpi label {
-      color: var(--text-muted);
-      font-size: 0.85rem;
-      display: block;
-      margin-bottom: 8px;
-    }
-
-    .kpi strong {
-      font-size: 1.25rem;
-    }
-
-    .panel-wrap {
-      display: grid;
-      grid-template-columns: 1.2fr 1fr;
-      gap: 12px;
-    }
-
-    .panel h2 {
-      font-size: 1rem;
-      margin-bottom: 12px;
-    }
-
-    .list {
-      list-style: none;
-      display: grid;
-      gap: 10px;
-    }
-
-    .list li {
-      padding: 10px;
-      border-radius: 10px;
-      background: var(--panel-muted);
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      font-size: 0.9rem;
-    }
-
-    .badge {
-      padding: 4px 8px;
-      border-radius: 999px;
-      font-size: 0.78rem;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-
-    .ok {
-      background: rgba(45, 212, 191, 0.2);
-      color: var(--ok);
-    }
-
-    .warn {
-      background: rgba(245, 158, 11, 0.2);
-      color: var(--warn);
-    }
-
-    .mobile-nav {
-      display: none;
-    }
-
+    .shell { width: min(1100px, 100%); margin: 0 auto; display: grid; gap: 14px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+    .hero h1 { font-size: clamp(1.2rem, 4.2vw, 2rem); margin-bottom: 6px; }
+    .hero p { color: var(--muted); }
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .kpi label { display:block; color: var(--muted); font-size: .82rem; margin-bottom: 6px; }
+    .kpi strong { font-size: 1.2rem; }
+    .layout { display:grid; grid-template-columns: 1.1fr .9fr; gap: 10px; }
+    h2 { font-size: .95rem; margin-bottom: 10px; color: #dbe6ff; }
+    .list { list-style:none; display:grid; gap:8px; }
+    .list li { background: var(--card-2); border-radius: 10px; padding: 9px; display:flex; justify-content:space-between; gap:10px; font-size:.88rem; }
+    .badge { padding: 3px 8px; border-radius: 999px; font-size: .74rem; font-weight: 700; white-space: nowrap; }
+    .ok { color: var(--ok); background: rgba(34,211,166,.16); }
+    .warn { color: var(--warn); background: rgba(245,158,11,.16); }
+    .danger { color: var(--danger); background: rgba(239,68,68,.16); }
+    .mobile-nav { display:none; }
     @media (max-width: 900px) {
-      body {
-        padding: 16px;
-      }
-
-      .kpi-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
-      .panel-wrap {
-        grid-template-columns: 1fr;
-      }
+      .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .layout { grid-template-columns: 1fr; }
     }
-
     @media (max-width: 640px) {
-      body {
-        padding: 12px 12px 84px;
-      }
-
-      .shell {
-        gap: 12px;
-      }
-
-      .header,
-      .kpi,
-      .panel {
-        border-radius: 14px;
-      }
-
-      .kpi-grid {
-        grid-template-columns: 1fr;
-      }
-
+      body { padding: 12px 12px 78px; }
+      .kpi-grid { grid-template-columns: 1fr; }
       .mobile-nav {
-        position: fixed;
-        left: 12px;
-        right: 12px;
-        bottom: 12px;
-        background: rgba(16, 24, 40, 0.92);
-        border: 1px solid rgba(156, 169, 191, 0.25);
-        border-radius: 14px;
-        padding: 8px;
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 8px;
+        position: fixed; display:grid; left:12px; right:12px; bottom:12px;
+        grid-template-columns: repeat(4,1fr); gap: 8px; padding:8px;
+        background: rgba(15,23,40,.93); border:1px solid var(--line); border-radius:12px;
         backdrop-filter: blur(10px);
       }
-
-      .mobile-nav button {
-        border: none;
-        background: transparent;
-        color: var(--text-muted);
-        font-size: 0.75rem;
-        padding: 8px 0;
-      }
-
-      .mobile-nav button.active {
-        color: var(--text);
-        background: rgba(79, 128, 255, 0.18);
-        border-radius: 10px;
-      }
+      .mobile-nav button { border:none; border-radius:8px; padding:8px 0; color:var(--muted); background:transparent; font-size:.75rem; }
+      .mobile-nav .active { color:var(--text); background: rgba(91,141,255,.18); }
     }
   </style>
 </head>
 <body>
   <main class="shell">
-    <section class="header">
-      <h1>KRONOS OMEGA ADVANCED</h1>
-      <p>Autonomous Quant Infrastructure Dashboard — responsive layout optimized for desktop and mobile operation.</p>
+    <section class="card hero">
+      <h1>KRONOS OMEGA 手機監控 Dashboard</h1>
+      <p>即時對應 FastAPI 交易系統：State / Positions / Risk Event / Decision。</p>
     </section>
 
     <section class="kpi-grid">
-      <article class="kpi"><label>Equity</label><strong>$2,143,992</strong></article>
-      <article class="kpi"><label>24h PnL</label><strong>+4.82%</strong></article>
-      <article class="kpi"><label>Exposure</label><strong>63%</strong></article>
-      <article class="kpi"><label>Latency</label><strong>13ms</strong></article>
+      <article class="card kpi"><label>系統狀態</label><strong id="kpi-running">--</strong></article>
+      <article class="card kpi"><label>權益 Equity</label><strong id="kpi-equity">--</strong></article>
+      <article class="card kpi"><label>PnL</label><strong id="kpi-pnl">--</strong></article>
+      <article class="card kpi"><label>Exposure</label><strong id="kpi-exposure">--</strong></article>
     </section>
 
-    <section class="panel-wrap">
-      <article class="panel">
-        <h2>Strategy Status</h2>
-        <ul class="list">
-          <li><span>Momentum Engine</span><span class="badge ok">ACTIVE</span></li>
-          <li><span>Reversion Engine</span><span class="badge ok">ACTIVE</span></li>
-          <li><span>Arb Scanner</span><span class="badge warn">THROTTLED</span></li>
-        </ul>
+    <section class="layout">
+      <article class="card">
+        <h2>持倉 Positions</h2>
+        <ul class="list" id="positions-list"></ul>
       </article>
-      <article class="panel">
-        <h2>Risk Events</h2>
-        <ul class="list">
-          <li><span>BTC drawdown guard</span><span class="badge warn">-2.1%</span></li>
-          <li><span>ETH hedge auto-adjust</span><span class="badge ok">FILLED</span></li>
-          <li><span>SOL spread alert</span><span class="badge warn">WATCH</span></li>
-        </ul>
+      <article class="card">
+        <h2>決策與風險事件</h2>
+        <ul class="list" id="events-list"></ul>
       </article>
+    </section>
+
+    <section class="card">
+      <h2>最新 Tick / Feature / Decision</h2>
+      <ul class="list" id="snapshots-list"></ul>
     </section>
   </main>
 
-  <nav class="mobile-nav" aria-label="Mobile quick navigation">
+  <nav class="mobile-nav" aria-label="mobile quick nav">
     <button class="active">Overview</button>
     <button>Positions</button>
-    <button>Risk</button>
-    <button>Settings</button>
+    <button>Events</button>
+    <button>System</button>
   </nav>
+
+  <script>
+    const stateUrl = '/api/state';
+    const positionsUrl = '/api/positions';
+
+    const runningEl = document.getElementById('kpi-running');
+    const equityEl = document.getElementById('kpi-equity');
+    const pnlEl = document.getElementById('kpi-pnl');
+    const exposureEl = document.getElementById('kpi-exposure');
+    const positionsEl = document.getElementById('positions-list');
+    const eventsEl = document.getElementById('events-list');
+    const snapshotsEl = document.getElementById('snapshots-list');
+
+    function badgeClass(text) {
+      if (!text) return 'warn';
+      const t = String(text).toLowerCase();
+      if (t.includes('approved') || t.includes('filled') || t.includes('long') || t.includes('short')) return 'ok';
+      if (t.includes('low') || t.includes('max') || t.includes('reject')) return 'danger';
+      return 'warn';
+    }
+
+    function itemRow(left, right, cls='warn') {
+      return `<li><span>${left}</span><span class="badge ${cls}">${right}</span></li>`;
+    }
+
+    async function refresh() {
+      try {
+        const [stateRes, posRes] = await Promise.all([fetch(stateUrl), fetch(positionsUrl)]);
+        const state = await stateRes.json();
+        const positions = await posRes.json();
+
+        runningEl.textContent = state.running ? 'RUNNING' : 'STOPPED';
+        runningEl.className = state.running ? 'ok' : 'danger';
+        equityEl.textContent = `$${Number(state.equity || 0).toLocaleString()}`;
+        pnlEl.textContent = `${Number(state.pnl || 0).toFixed(2)}`;
+        pnlEl.className = Number(state.pnl || 0) >= 0 ? 'ok' : 'danger';
+        exposureEl.textContent = `${(Number(state.exposure || 0) * 100).toFixed(1)}%`;
+
+        if (!positions.length) {
+          positionsEl.innerHTML = itemRow('目前無持倉', 'EMPTY', 'warn');
+        } else {
+          positionsEl.innerHTML = positions.slice(0, 8).map((p) => {
+            const side = p.side || 'N/A';
+            const cls = side === 'LONG' ? 'ok' : 'warn';
+            return itemRow(`${p.symbol} | qty ${p.qty} @ ${p.entry}`, side, cls);
+          }).join('');
+        }
+
+        const events = state.recent_events || [];
+        if (!events.length) {
+          eventsEl.innerHTML = itemRow('暫無事件', 'NONE', 'warn');
+        } else {
+          eventsEl.innerHTML = events.slice(0, 8).map((e) => {
+            const type = e.type || 'event';
+            return itemRow(`${type} | ${new Date(e.ts).toLocaleTimeString()}`, type.toUpperCase(), badgeClass(type));
+          }).join('');
+        }
+
+        const tick = state.last_tick ? `Tick ${state.last_tick.symbol} @ ${state.last_tick.price}` : 'Tick 暫無';
+        const feature = state.features ? `Regime ${state.features.regime}, mom ${state.features.momentum_score}` : 'Feature 暫無';
+        const decision = state.decision ? `${state.decision.action} (conf ${state.decision.confidence})` : 'Decision 暫無';
+        snapshotsEl.innerHTML = [
+          itemRow(tick, 'MARKET', 'ok'),
+          itemRow(feature, 'FEATURE', 'warn'),
+          itemRow(decision, 'DECISION', badgeClass(decision)),
+        ].join('');
+      } catch (err) {
+        eventsEl.innerHTML = itemRow(`API 讀取失敗: ${err.message}`, 'ERROR', 'danger');
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 2500);
+  </script>
 </body>
 </html>
